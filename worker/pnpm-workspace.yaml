@@ -1,0 +1,7 @@
+# pnpm 10.16+ は package.json の "pnpm" フィールドを読まなくなったため、設定はここに置く。
+# wrangler deploy に必要なネイティブビルド (esbuild/sharp/workerd) の postinstall を明示許可する。
+# 許可しないと pnpm 10 が CI (CI=true) で ERR_PNPM_IGNORED_BUILDS により install を失敗させる。
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - workerd

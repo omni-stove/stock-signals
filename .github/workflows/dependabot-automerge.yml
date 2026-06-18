@@ -20,20 +20,20 @@ jobs:
     steps:
       - name: Fetch dependabot metadata
         id: meta
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       # major はここで打ち切り (以降のマージ step を skip)。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
         with:
           version: latest
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
         with:
           node-version: 22

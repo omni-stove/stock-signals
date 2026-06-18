@@ -63,7 +63,7 @@ jobs:
             echo "worker/schema.sql に変更なし。schema 適用をスキップします。"
           fi
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         if: steps.changed.outputs.run == 'true'
         with:
           version: latest
@@ -95,7 +95,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: latest
 

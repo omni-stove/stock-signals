@@ -77,7 +77,9 @@ jobs:
 
       - name: Install dependencies
         if: steps.changed.outputs.run == 'true'
-        run: pnpm install --frozen-lockfile
+        # lockfile は automerge 時点で検証済み。install では minimumReleaseAge を 0 に無効化し
+        # lockfile を信頼する (依存 bump 直後 24h 未満で install が落ちるのを防ぐ)。
+        run: pnpm install --frozen-lockfile --config.minimumReleaseAge=0
 
       - name: Apply D1 schema (remote)
         if: steps.changed.outputs.run == 'true'
@@ -106,7 +108,9 @@ jobs:
           cache-dependency-path: worker/pnpm-lock.yaml
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # lockfile は automerge 時点で検証済み。install では minimumReleaseAge を 0 に無効化し
+        # lockfile を信頼する (依存 bump 直後 24h 未満で install が落ちるのを防ぐ)。
+        run: pnpm install --frozen-lockfile --config.minimumReleaseAge=0
 
       - name: Deploy to Cloudflare
         run: pnpm exec wrangler deploy

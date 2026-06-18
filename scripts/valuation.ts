@@ -4,9 +4,12 @@
 // 「会社予想EPS からの必要な決算修正率」を算出し、ターミナル表に出す。
 //
 // 読むだけ・計算するだけの確認用スクリプト。LLM 不使用。append もしない。
-//   - data/prices/<code>.jsonl の最終行 → 現在株価
-//   - data/fundamentals/<code>.jsonl の最終行 → 予想PER / 予想EPS / 実績EPS
+//   - Worker /latest?kind=prices&code=<code>&n=1 の rows[0] → 現在株価
+//   - Worker /latest?kind=fundamentals&code=<code>&n=1 の rows[0] → 予想PER / 予想EPS / 実績EPS
 //   - config/watchlist.yaml の fair_per → 適正PERの基準
+//
+// データ取得元は Cloudflare Worker。環境変数 WORKER_URL が必須 (未設定なら exit 1)。
+// SYNC_TOKEN があれば Authorization: Bearer で付ける (未設定なら無害)。
 //
 // 逆算ロジック:
 //   必要EPS         = 現在株価 / fair_per
@@ -15,8 +18,8 @@
 //     マイナス… 会社予想どおりでも fair_per まで上昇余地がある(=割安寄り)
 //   参考: 適正株価 = 会社予想EPS * fair_per
 //
-// 実行: `node scripts/valuation.ts`
-//       `node scripts/valuation.ts --json`  (機械可読なJSONで出す)
+// 実行: `WORKER_URL=https://... node scripts/valuation.ts`
+//       `WORKER_URL=https://... node scripts/valuation.ts --json`  (機械可読なJSONで出す)
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -24,6 +27,29 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+const WORKER_URL = process.env.WORKER_URL;
+if (!WORKER_URL) {
+  console.error("環境変数 WORKER_URL が未設定です (例: WORKER_URL=https://xxx.workers.dev)");
+  process.exit(1);
+}
+const SYNC_TOKEN = process.env.SYNC_TOKEN;
+
+// Worker /latest?kind=... を叩いて rows を返す。失敗時は [] (呼び出し側が握りつぶす)。
+async function fetchLatest<T>(kind: string, code: string, n: number): Promise<T[]> {
+  const url = `${WORKER_URL}/latest?kind=${encodeURIComponent(kind)}&code=${encodeURIComponent(code)}&n=${n}`;
+  const headers: Record<string, string> = {};
+  if (SYNC_TOKEN) headers.Authorization = `Bearer ${SYNC_TOKEN}`;
+  try {
+    const res = await fetch(url, { headers });
+    if (!res.ok) return [];
+    const json = (await res.json()) as { ok?: boolean; rows?: T[] };
+    if (!json.ok || !Array.isArray(json.rows)) return [];
+    return json.rows;
+  } catch {
+    return [];
+  }
+}
 
 type Watchlist = {
   tickers: { code: string; name: string; fair_per?: number | null }[];
@@ -61,23 +87,6 @@ async function loadYaml<T>(path: string): Promise<T> {
   return parseYaml(await readFile(path, "utf8")) as T;
 }
 
-// JSONL の最終行をパースして返す。ファイルなし/空なら null。
-async function lastJsonl<T>(path: string): Promise<T | null> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch {
-    return null;
-  }
-  const lines = raw.split("\n").filter((l) => l.trim() !== "");
-  if (lines.length === 0) return null;
-  try {
-    return JSON.parse(lines[lines.length - 1]) as T;
-  } catch {
-    return null;
-  }
-}
-
 function round(n: number | null, digits = 1): number | null {
   if (n === null || !Number.isFinite(n)) return null;
   const f = 10 ** digits;
@@ -85,8 +94,10 @@ function round(n: number | null, digits = 1): number | null {
 }
 
 async function buildRow(t: { code: string; name: string; fair_per?: number | null }): Promise<Row> {
-  const price = await lastJsonl<PriceSnapshot>(join(ROOT, `data/prices/${t.code}.jsonl`));
-  const fund = await lastJsonl<Fundamentals>(join(ROOT, `data/fundamentals/${t.code}.jsonl`));
+  // 現値は /latest?kind=prices の rows[0] (fetched_at DESC で最新)。
+  // 予想PER/EPS は /latest?kind=fundamentals の rows[0] (date DESC で最新)。
+  const price = (await fetchLatest<PriceSnapshot>("prices", t.code, 1))[0] ?? null;
+  const fund = (await fetchLatest<Fundamentals>("fundamentals", t.code, 1))[0] ?? null;
 
   const p = price?.price ?? null;
   const fairPer = t.fair_per ?? null;

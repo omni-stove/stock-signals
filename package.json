@@ -4,16 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "fetch": "node scripts/fetch-news.ts",
-    "fetch:once": "node scripts/fetch-news.ts --once",
-    "route": "node scripts/route-news-watch.ts",
-    "analyze": "node scripts/analyze-watch.ts"
+    "valuation": "node scripts/valuation.ts",
+    "sector": "node scripts/sector.ts",
+    "events": "node scripts/events.ts"
   },
   "dependencies": {
-    "cheerio": "^1.0.0",
-    "iconv-lite": "^0.6.3",
-    "yaml": "^2.5.0",
-    "chokidar": "^4.0.0"
+    "yaml": "^2.5.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

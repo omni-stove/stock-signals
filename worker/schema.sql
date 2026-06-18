@@ -6,13 +6,16 @@
 
 -- 取得した記事のメタ情報。本文は R2 に置き、ここには参照キー(r2_key)を持つ。
 -- url を一意キーにすることで、ローカルの seen.txt (URLハッシュ重複排除) と同じ働きをする。
+-- IR (source=ir:<site>:<code>) と per_ticker ニュース (source=kabutan:<code>) を同居させ、
+-- signal-report は source で IR/ニュースを振り分けて両方を判定材料にする。
+-- ニュース記事は ir_category=NULL。
 CREATE TABLE IF NOT EXISTS articles (
   url           TEXT PRIMARY KEY,       -- 記事URL (重複排除キー)
   ticker        TEXT NOT NULL,          -- 銘柄コード (例 285A)
-  source        TEXT NOT NULL,          -- 取得元 (例 ir:kioxia:285A)
+  source        TEXT NOT NULL,          -- 取得元 (例 ir:kioxia:285A / kabutan:285A)
   title         TEXT NOT NULL,
   published_at  TEXT,                   -- YYYY-MM-DD
-  ir_category   TEXT,                   -- holdings / corporate / business / personal
+  ir_category   TEXT,                   -- IRのみ: holdings / corporate / business / personal。ニュースはNULL
   r2_key        TEXT NOT NULL,          -- R2 上の本文JSONのキー
   fetched_at    TEXT NOT NULL           -- 取得時刻 (ISO8601)
 );
@@ -104,4 +107,18 @@ CREATE TABLE IF NOT EXISTS premarket_backdrop (
   nikkei_futures_price REAL,              -- CME日経225先物(ドル建て) 現値
   nikkei_contract      TEXT,              -- 限月 (例 6月限)
   us_indexes_json      TEXT               -- 指数明細の生配列 (現値/前日比/参照時刻) を JSON 文字列で保持
+);
+
+-- ── 次回決算発表予定日 ──────────────────────────────────────────────────
+-- ローカルの scripts/fetch-earnings-date.ts が watchlist.yaml の next_earnings_date を
+-- 自動更新していた役割を D1 に移したもの。kabutan finance ページの四半期業績テーブルから
+-- 「直近実績の次四半期 = 前年同期の発表日 +1年」で推定する。
+-- Worker は読み取り専用FSで watchlist.yaml に書き戻せないため、推定結果は D1 を source とする。
+-- 銘柄ごと1行 (INSERT OR REPLACE で最新の推定値に上書き)。
+-- signal-report は /latest?kind=earnings で読み、決算が近ければ confidence をキャップする。
+CREATE TABLE IF NOT EXISTS earnings (
+  ticker          TEXT PRIMARY KEY,    -- 銘柄コード
+  next_date       TEXT,                -- 次回決算発表予定日 YYYY-MM-DD (推定不可なら null)
+  detail          TEXT,                -- 推定根拠 (last/prior 四半期と発表日)
+  fetched_at      TEXT NOT NULL        -- 取得時刻 (ISO8601)
 );

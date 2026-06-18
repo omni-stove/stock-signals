@@ -2,30 +2,58 @@
 // セクターの地合いと、セクター内での各銘柄の相対強弱をまとめて表示する確認用スクリプト。
 //
 // 「今日の値動き(寄り付き・値幅)を読む」ための土台を2軸で並べる:
-//   ① 外部地合い … data/premarket/<最新>.jsonl から SOX 騰落率を読み、半導体セクターの
+//   ① 外部地合い … Worker /latest?kind=premarket の最新行から SOX 騰落率を読み、半導体セクターの
 //        前夜の追い風/逆風を risk-on / risk-off / neutral で判定する。
-//   ② セクター内相対強弱 … 同一 sector の銘柄について data/daily/<code>.jsonl から
+//   ② セクター内相対強弱 … 同一 sector の銘柄について Worker /latest?kind=daily から
 //        直近の前日比%・5日リターン%・出来高比を計算し、セクター平均からの乖離で
 //        「この銘柄がセクター内で相対的に強いか弱いか」を出す。
 //        (セクター全体が上げている日に独り負けしている、等を捉えるのが目的)
 //
 // 読むだけ・計算するだけ。LLM 不使用。append もしない (valuation.ts と同じ流儀)。
 //   - config/watchlist.yaml の sector / sector_role
-//   - data/daily/<code>.jsonl     → 日足 (前日比・5日リターン・出来高)
-//   - data/premarket/<最新>.jsonl → SOX 騰落率 (外部地合い)
+//   - Worker /latest?kind=daily&code=<code>&n=20  → 日足 (前日比・5日リターン・出来高)
+//   - Worker /latest?kind=premarket&n=1           → SOX 騰落率 (外部地合い)
+//
+// データ取得元は Cloudflare Worker。環境変数 WORKER_URL が必須 (未設定なら exit 1)。
+// SYNC_TOKEN があれば Authorization: Bearer で付ける (未設定なら無害)。
 //
 // 実行:
-//   node scripts/sector.ts                 (全 sector を表示)
-//   node scripts/sector.ts semiconductor   (指定 sector のみ)
-//   node scripts/sector.ts --json          (機械可読)
-//   node scripts/sector.ts semiconductor --json
+//   WORKER_URL=https://... node scripts/sector.ts                 (全 sector を表示)
+//   WORKER_URL=https://... node scripts/sector.ts semiconductor   (指定 sector のみ)
+//   WORKER_URL=https://... node scripts/sector.ts --json          (機械可読)
+//   WORKER_URL=https://... node scripts/sector.ts semiconductor --json
 
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+const WORKER_URL = process.env.WORKER_URL;
+if (!WORKER_URL) {
+  console.error("環境変数 WORKER_URL が未設定です (例: WORKER_URL=https://xxx.workers.dev)");
+  process.exit(1);
+}
+const SYNC_TOKEN = process.env.SYNC_TOKEN;
+
+// Worker /latest?kind=... を叩いて rows を返す。失敗時は [] (呼び出し側が握りつぶす)。
+// code は premarket では不要なので省略可。
+async function fetchLatest<T>(kind: string, n: number, code?: string): Promise<T[]> {
+  let url = `${WORKER_URL}/latest?kind=${encodeURIComponent(kind)}&n=${n}`;
+  if (code) url += `&code=${encodeURIComponent(code)}`;
+  const headers: Record<string, string> = {};
+  if (SYNC_TOKEN) headers.Authorization = `Bearer ${SYNC_TOKEN}`;
+  try {
+    const res = await fetch(url, { headers });
+    if (!res.ok) return [];
+    const json = (await res.json()) as { ok?: boolean; rows?: T[] };
+    if (!json.ok || !Array.isArray(json.rows)) return [];
+    return json.rows;
+  } catch {
+    return [];
+  }
+}
 
 type Ticker = {
   code: string;
@@ -46,11 +74,16 @@ type DailyBar = {
   volume: number;
 };
 
+// Worker /latest?kind=premarket の1行 (date DESC で最新が rows[0])。
 type PremarketLine = {
   date: string;
-  sox_change_pct?: number;
+  fetched_at?: string;
+  sox_change_pct?: number | null;
+  nasdaq_change_pct?: number | null;
+  dow_change_pct?: number | null;
+  nikkei_futures_price?: number | null;
+  nikkei_contract?: string | null;
   us_indexes?: { key: string; label: string; change_pct: number }[];
-  nikkei_futures?: { price: number; contract?: string } | null;
 };
 
 type SectorRow = {
@@ -83,26 +116,6 @@ async function loadYaml<T>(path: string): Promise<T> {
   return parseYaml(await readFile(path, "utf8")) as T;
 }
 
-// JSONL を全行パースして配列で返す。ファイルなし/空なら []。
-async function readJsonl<T>(path: string): Promise<T[]> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch {
-    return [];
-  }
-  const out: T[] = [];
-  for (const line of raw.split("\n")) {
-    if (line.trim() === "") continue;
-    try {
-      out.push(JSON.parse(line) as T);
-    } catch {
-      /* 壊れた行は無視 */
-    }
-  }
-  return out;
-}
-
 function round(n: number | null, digits = 2): number | null {
   if (n === null || !Number.isFinite(n)) return null;
   const f = 10 ** digits;
@@ -115,15 +128,8 @@ function avg(ns: (number | null)[]): number | null {
   return xs.reduce((a, b) => a + b, 0) / xs.length;
 }
 
-// data/premarket/ の最新日付ファイルから外部地合いを読む。
+// Worker /latest?kind=premarket&n=1 の rows[0] から外部地合いを読む。
 async function loadBackdrop(): Promise<SectorReport["backdrop"]> {
-  const dir = join(ROOT, "data/premarket");
-  let files: string[];
-  try {
-    files = (await readdir(dir)).filter((f) => f.endsWith(".jsonl"));
-  } catch {
-    files = [];
-  }
   const empty: SectorReport["backdrop"] = {
     sox_change_pct: null,
     nasdaq_change_pct: null,
@@ -131,20 +137,18 @@ async function loadBackdrop(): Promise<SectorReport["backdrop"]> {
     premarket_date: null,
     tone: "unknown",
   };
-  if (files.length === 0) return empty;
-  files.sort(); // YYYY-MM-DD.jsonl なので辞書順 = 日付順
-  const latest = files[files.length - 1];
-  const lines = await readJsonl<PremarketLine>(join(dir, latest));
-  // 米国指数を含む行 (kehai 行ではない方) を拾う。
-  const idxLine = lines.find((l) => l.us_indexes && l.us_indexes.length > 0) ?? lines[0];
-  if (!idxLine) return { ...empty, premarket_date: latest.replace(".jsonl", "") };
+  const idxLine = (await fetchLatest<PremarketLine>("premarket", 1))[0] ?? null;
+  if (!idxLine) return empty;
 
   const sox =
     idxLine.sox_change_pct ??
     idxLine.us_indexes?.find((i) => i.key === "sox")?.change_pct ??
     null;
-  const ndx = idxLine.us_indexes?.find((i) => i.key === "ndx")?.change_pct ?? null;
-  const fut = idxLine.nikkei_futures?.price ?? null;
+  const ndx =
+    idxLine.nasdaq_change_pct ??
+    idxLine.us_indexes?.find((i) => i.key === "ndx")?.change_pct ??
+    null;
+  const fut = idxLine.nikkei_futures_price ?? null;
 
   let tone: SectorReport["backdrop"]["tone"] = "unknown";
   if (sox !== null) {
@@ -157,14 +161,16 @@ async function loadBackdrop(): Promise<SectorReport["backdrop"]> {
     sox_change_pct: round(sox),
     nasdaq_change_pct: round(ndx),
     nikkei_futures: fut,
-    premarket_date: idxLine.date ?? latest.replace(".jsonl", ""),
+    premarket_date: idxLine.date ?? null,
     tone,
   };
 }
 
 // 1銘柄の日足から指標を計算 (相対強弱はまだ入れない。あとでセクター平均と突き合わせる)。
 async function buildRowBase(t: Ticker): Promise<Omit<SectorRow, "rel_strength_pct">> {
-  const bars = await readJsonl<DailyBar>(join(ROOT, `data/daily/${t.code}.jsonl`));
+  // /latest?kind=daily の rows は date DESC (新しい順)。5日リターン・出来高平均の
+  // 算出に直近6本+αが要るので n=20 取得し、下で昇順に並べ替えて自前計算する。
+  const bars = await fetchLatest<DailyBar>("daily", 20, t.code);
   const role = t.sector_role ?? null;
   if (bars.length === 0) {
     return {

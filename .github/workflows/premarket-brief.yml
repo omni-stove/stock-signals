@@ -1,7 +1,7 @@
 # 寄り前ブリーフ: 毎朝 寄り付き前に「今日の地合い+各銘柄の傾き」を Claude Code Action で
 # まとめ、Slack に1本ポストする。
 #
-# IR (ir-report.yml) が repository_dispatch 駆動なのに対し、こちらは GitHub Actions cron 駆動。
+# context-builder.yml / signal-judge.yml が repository_dispatch 駆動なのに対し、こちらは GitHub Actions cron 駆動。
 # 平日 JST 08:30 (= UTC 23:30) に起動する。kehai(寄前気配)は使わず、前夜に確定済みの
 # 地合い(米国指数 SOX/Nasdaq/Dow + 日経先物)と各銘柄の daily/prices/fundamentals だけを
 # 見るので、寄り付き(09:00)前のどの時刻でも成立する。
@@ -47,16 +47,17 @@ jobs:
       # 取得失敗時もブリーフは前日値で続行できるよう、ここでは job を落とさない。
       - name: Refresh premarket backdrop (Worker)
         run: |
-          curl -s -m 60 "${WORKER_URL}/run?kind=premarket" || echo "premarket refresh failed (continuing with existing data)"
+          curl -s -m 60 -H "Authorization: Bearer ${SYNC_TOKEN}" "${WORKER_URL}/run?kind=premarket" || echo "premarket refresh failed (continuing with existing data)"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
       - name: Run premarket-brief skill
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: "/premarket-brief"
-          # Actions の使い捨てサンドボックス内なので Bash を広く許可 (ir-report と同じ理由)。
+          # Actions の使い捨てサンドボックス内なので Bash を広く許可 (context-builder と同じ理由)。
           claude_args: "--allowedTools Bash,Write,Read,Edit --max-turns 50"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}

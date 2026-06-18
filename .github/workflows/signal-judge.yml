@@ -1,0 +1,63 @@
+# 銘柄コンテキスト(Issue本文)+ 価格/地合い → Claude Code Action でスイング判定 → Slack通知。
+#
+# 2段アーキテクチャの後段。前段 context-builder が銘柄の Issue本文(持続コンテキスト)を更新したあと、
+# repository_dispatch (event_type=signal-judge、client_payload.ticker に単一銘柄) でこのワークフローを
+# 起動する。手動でも実行できる。
+#
+# 起動後は .claude/skills/signal-judge が対象銘柄の Issue本文(context-builder が育てたコンテキスト)を
+# 読み、Worker /latest で価格/日足/地合い/決算日を引いて buy/sell/hold + confidence を1本にまとめ、
+# Slack に通知する。**このワークフローは Issue を一切書き換えない**(出力は Slack のみ)。
+# context-builder が Issue本文を書き、signal-judge が Slack を書く、という役割の固定により、
+# judge → context の編集ループは発生しない。
+#
+# 認証は Claude サブスク (OAuth) 方式: ローカルで `claude setup-token` → 生成トークンを
+# リポジトリ Secret CLAUDE_CODE_OAUTH_TOKEN に設定する。
+#
+# 必要な設定 (Settings → Secrets and variables → Actions):
+#   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
+#   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
+#   secret   SLACK_WEBHOOK_URL        … 判定通知の送り先 (任意、未設定なら通知スキップ)
+#   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+# 発火元 (context-builder) は github.token (GITHUB_TOKEN) で repos/.../dispatches を叩く。
+
+name: signal-judge
+
+on:
+  # context-builder が Issue本文(コンテキスト)を更新したあとに銘柄ごとに叩く。
+  repository_dispatch:
+    types: [signal-judge]
+  workflow_dispatch: {}    # 手動実行 (検証用)
+
+# 銘柄ごとに同時実行を1本に抑え、走行中に同じ銘柄の新しい judge 要求が来たら古いジョブをキャンセルする。
+# signal-judge は Slack に出すだけで状態を持たない (Issueを書かない) ので、キャンセルしても整合は崩れない。
+concurrency:
+  group: signal-judge-${{ github.event.client_payload.ticker || 'manual' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: read     # Issue本文(コンテキスト)を読むだけ。書き込みはしない。
+  id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
+
+jobs:
+  signal-judge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run signal-judge skill
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # context-builder (github.token=github-actions[bot]) 発の repository_dispatch を許可する。
+          # 既定では Bot起動のワークフローを Action が弾くため。
+          allowed_bots: "github-actions[bot]"
+          # 発火時は client_payload.ticker に対象銘柄が入る。手動実行や payload 無しのときは 285A。
+          prompt: "/signal-judge ${{ github.event.client_payload.ticker || '285A' }}"
+          # Actions の使い捨てサンドボックス内なので Bash を広く許可。
+          claude_args: "--allowedTools Bash,Read --max-turns 40"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}

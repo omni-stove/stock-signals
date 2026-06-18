@@ -26,18 +26,18 @@ account_id = "020120735d111b7d06111196719171c1"  # admin@omnistove.com
 #   平日のみにしたい場合は曜日を "*" のまま毎日実行とし、土日は新規が無ければ
 #   skip されるだけ (idempotent) なので実害なし。厳密化したい時は別途検討。
 #
-#   IR (寄り前/昼/引け後):  JST 08:30/12:30/18:30 = UTC 23:30(前日)/03:30/09:30
-#   prices (場中5分毎):     JST 09:00-15:00 = UTC 00:00-06:00 を5分毎
-#   eod (引け後1回):        JST 16:00 = UTC 07:00 で daily + fundamentals をまとめて取得
-# ※Cloudflare の cron trigger 上限は5個。daily と fundamentals は引け後1日1回なので
-#   1本 (eod) に統合し、scheduled() 内で両方を順に実行する (旧 2本ぶん)。
+#   IR (寄り前/昼/引け後):  JST 08:30/12:30/18:30 = UTC 23:30(前日)/03:30/09:30。IR+ニュース収集
+#   prices (場中5分毎):     JST 09:00-15:00 = UTC 00:00-06:00 を5分毎。prices+ニュース速報
+#   eod (引け後1回):        JST 16:00 = UTC 07:00 で daily + fundamentals + 決算予定日推定
+# ※Cloudflare の cron trigger 上限は5個。新規 cron は足せないので、ニュース収集は ir/prices に、
+#   決算予定日推定は eod に相乗りさせ、scheduled() 内で複数処理を順に実行する。
 [triggers]
 crons = [
-  "30 23 * * *",    # JST 08:30 寄り前 IR
-  "30 3 * * *",     # JST 12:30 昼   IR
-  "30 9 * * *",     # JST 18:30 引け後 IR
-  "*/5 0-6 * * *",  # JST 09:00-15:00 5分毎  prices
-  "0 7 * * *",      # JST 16:00 引け後  daily + fundamentals (eod)
+  "30 23 * * *",    # JST 08:30 寄り前 IR + ニュース
+  "30 3 * * *",     # JST 12:30 昼   IR + ニュース
+  "30 9 * * *",     # JST 18:30 引け後 IR + ニュース
+  "*/5 0-6 * * *",  # JST 09:00-15:00 5分毎  prices + ニュース速報
+  "0 7 * * *",      # JST 16:00 引け後  daily + fundamentals + earnings (eod)
 ]
 
 # D1: 取得済みURLハッシュ(重複排除)と記事メタを持つ。

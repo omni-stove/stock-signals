@@ -10,9 +10,11 @@
 #     対象アカウント(admin@omnistove.com / account_id 020120735d111b7d06111196719171c1)と
 #     対象の D1 / R2 へのアクセスを含めて発行する。account_id は wrangler.toml に記載済みなので不要。
 #
-# ※ D1 スキーマ (schema.sql) はここでは流さない。schema は初回のみ手動適用済みの想定で、
-#   破壊的変更を避けるため deploy には含めない。スキーマ変更時は手動で:
-#     cd worker && npm run db:init:remote
+# ※ D1 スキーマ (schema.sql) は worker/schema.sql が変更された push のときだけ
+#   deploy 手前で --remote 適用する (apply-schema job)。schema.sql は全て
+#   CREATE TABLE/INDEX IF NOT EXISTS で書かれており冪等なので、流しても既存データ・
+#   テーブルは壊れない。DROP や列削除など破壊的変更を入れる場合は、この自動適用に
+#   頼らず手動移行 (cd worker && npm run db:init:remote 等) を検討すること。
 
 name: deploy-worker
 
@@ -33,8 +35,55 @@ permissions:
   contents: read
 
 jobs:
+  # worker/schema.sql が変更された push のときだけ D1 へ schema を --remote 適用する。
+  # schema は冪等 (IF NOT EXISTS) なので既存データは壊れない。
+  # workflow_dispatch (手動) からも流せるよう、push 以外では常に実行する。
+  apply-schema:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # 直前コミットとの差分で schema.sql 変更を検出するため2コミット分取る。
+          fetch-depth: 2
+
+      - name: Check if schema.sql changed
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "手動実行 (${{ github.event_name }}) のため schema を適用します。"
+          elif git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -q '^worker/schema.sql$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "worker/schema.sql が変更されたため適用します。"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "worker/schema.sql に変更なし。schema 適用をスキップします。"
+          fi
+
+      - uses: actions/setup-node@v5
+        if: steps.changed.outputs.run == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install dependencies
+        if: steps.changed.outputs.run == 'true'
+        run: npm ci
+
+      - name: Apply D1 schema (remote)
+        if: steps.changed.outputs.run == 'true'
+        run: npx wrangler d1 execute stock-signals --remote --file=./schema.sql --yes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
   deploy:
     runs-on: ubuntu-latest
+    # schema 適用が失敗したまま新コードを deploy すると不整合になりうるので待つ。
+    needs: apply-schema
     defaults:
       run:
         working-directory: worker

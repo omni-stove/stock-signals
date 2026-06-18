@@ -17,6 +17,10 @@ All data comes from the **Worker API** (`$WORKER_URL`); this skill reads no
 local data files. It runs once, posts one Slack message, prints one summary
 line, and exits.
 
+All Worker calls (except `/health`) require auth: pass the token in the
+`Authorization: Bearer $SYNC_TOKEN` header (never in the URL — it leaks into
+logs). When `$SYNC_TOKEN` is empty (dev), the header is harmless.
+
 ## Invocation
 
 ```
@@ -24,14 +28,14 @@ line, and exits.
 ```
 
 No argument. It always covers all tickers in `config/watchlist.yaml` (read from
-the repo, same as ir-report).
+the repo, same as context-builder/signal-judge).
 
 ## Inputs (all via the Worker API)
 
 ### 1. Today's market backdrop
 
 ```
-curl -s "$WORKER_URL/latest?kind=premarket&n=1"
+curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/latest?kind=premarket&n=1"
 ```
 
 Response: `{ ok, kind, rows: [{ date, fetched_at, sox_change_pct,
@@ -50,9 +54,9 @@ change_pct / reference time).
 For each watchlist code (`config/watchlist.yaml`):
 
 ```
-curl -s "$WORKER_URL/latest?kind=daily&code=<code>&n=20"
-curl -s "$WORKER_URL/latest?kind=prices&code=<code>&n=20"
-curl -s "$WORKER_URL/latest?kind=fundamentals&code=<code>&n=1"
+curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/latest?kind=daily&code=<code>&n=20"
+curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/latest?kind=prices&code=<code>&n=20"
+curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/latest?kind=fundamentals&code=<code>&n=1"
 ```
 
 - daily: each row carries `ma5` / `ma25` (computed server-side). Read price vs
@@ -79,7 +83,7 @@ factors drove each lean.
 ## Output
 
 Post **one Slack message** to `$SLACK_WEBHOOK_URL` (same mechanism as
-ir-report). If `$SLACK_WEBHOOK_URL` is unset, skip the POST and only print the
+signal-judge). If `$SLACK_WEBHOOK_URL` is unset, skip the POST and only print the
 stdout summary.
 
 ```
@@ -98,7 +102,7 @@ The message body should contain, per watchlist ticker:
 Cover **every watchlist ticker every time**, even neutral ones.
 
 `lean` is the **session direction tilt**, not a buy/sell order — keep it
-distinct from analyze-ticker's `signal`.
+distinct from signal-judge's `signal`.
 
 ## Output style (stdout)
 
@@ -122,8 +126,9 @@ The terminal stays quiet. Print **one** summary line, e.g.:
 
 ## Relation to other skills
 
-- This brief is the **morning, cross-sectional** view. `analyze-ticker` remains
-  the **intraday, per-article** view and keeps writing to `signals/<ticker>.log`.
+- This brief is the **morning, cross-sectional** view. `signal-judge` is the
+  **per-article, per-ticker** view (fired by the Worker on new IR/news), updating
+  each ticker's standing GitHub Issue.
 - Pre-open order imbalance (kehai) is intentionally **not** used: the open is not
   reliably predictable, so the brief leans on last night's confirmed backdrop
   (US indices + Nikkei futures) plus each ticker's trend.

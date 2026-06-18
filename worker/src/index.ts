@@ -16,6 +16,8 @@
 import * as cheerio from "cheerio";
 import { collectTimeseries } from "./timeseries";
 import { collectBackdrop } from "./premarket";
+import { collectNews } from "./news";
+import { collectEarnings } from "./earnings";
 
 export interface Env {
   DB: D1Database;
@@ -26,10 +28,12 @@ export interface Env {
   //   設定: npx wrangler secret put SLACK_WEBHOOK_URL
   //   dev:  worker/.dev.vars に SLACK_WEBHOOK_URL="https://hooks.slack.com/..." と書く
   SLACK_WEBHOOK_URL?: string;
-  // ローカル連携 /dump の簡易認証トークン (Secret)。未設定なら認証なし (dev用)。
+  // 全エンドポイント (/health を除く) の簡易認証トークン (Secret)。未設定なら認証なし (dev用)。
   //   設定: npx wrangler secret put SYNC_TOKEN
+  //   送り方は Authorization: Bearer <token> ヘッダ、または ?token=<token> クエリのどちらでも可。
+  //   ヘッダ推奨 (URL がログ/履歴に残らない)。/run /dispatch-test /test-slack /latest /pull /pull-news が対象。
   SYNC_TOKEN?: string;
-  // 新規IR取得時に GitHub Actions (ir-report) を repository_dispatch で起動するための
+  // 新規IR/ニュース取得時に GitHub Actions (signal-report) を repository_dispatch で起動するための
   // GitHub App (omnistove-internal-auth) 認証情報。App秘密鍵で JWT を署名し
   // installation token に交換して叩く。3つ揃っていなければ発火しない (取得自体は動く)。
   //   GH_APP_ID          … App ID (数値)
@@ -102,10 +106,15 @@ async function getInstallationToken(jwt: string, installId: string): Promise<str
   return ((await res.json()) as { token: string }).token;
 }
 
-// 新規IRを取得したとき、GitHub Actions の ir-report ワークフローを repository_dispatch で起動する。
-// cron で当てずっぽうに起動して0件を引く構造を避け、「新規があるときだけ」LLMを動かす。
+// 新規IR or ニュースを取得したとき、GitHub Actions の signal-report ワークフローを
+// repository_dispatch で起動する。cron で当てずっぽうに起動して0件を引く構造を避け、
+// 「新規があるときだけ」LLMを動かす。判定は IR+ニュース両方の最新状態を読むので、
+// どちらの新着が引き金でも同じイベント (signal-update) で発火する。
+//
+// 銘柄ごとに別ジョブにして concurrency(cancel-in-progress)を銘柄単位で効かせるため、
+// 1銘柄=1 dispatch で撃つ (client_payload.ticker は単一銘柄)。
 // App 認証情報が揃っていなければ no-op (best-effort、発火失敗で収集は止めない)。
-async function dispatchIrReport(env: Env, tickers: string[]): Promise<void> {
+async function dispatchSignalUpdate(env: Env, tickers: string[]): Promise<void> {
   if (tickers.length === 0) return;
   if (!env.GH_APP_ID || !env.GH_APP_PRIVATE_KEY || !env.GH_APP_INSTALL_ID) return;
   const repo = env.GITHUB_REPO || "omni-stove/stock-signals";
@@ -114,15 +123,17 @@ async function dispatchIrReport(env: Env, tickers: string[]): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1000);
     const jwt = await makeAppJwt(env.GH_APP_ID, env.GH_APP_PRIVATE_KEY, nowSec);
     const token = await getInstallationToken(jwt, env.GH_APP_INSTALL_ID);
-    const res = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
-      method: "POST",
-      headers: { ...GH_HEADERS, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      // event_type は workflow の on.repository_dispatch.types と一致させる。
-      // client_payload で新規があった銘柄を渡す (ir-report が対象を絞れる)。
-      body: JSON.stringify({ event_type: "ir-fetched", client_payload: { tickers } }),
-    });
-    if (!res.ok) {
-      console.error(`dispatch failed: HTTP ${res.status} ${await res.text()}`);
+    // 銘柄ごとに dispatch (concurrency group を銘柄単位にするため)。
+    for (const ticker of tickers) {
+      const res = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
+        method: "POST",
+        headers: { ...GH_HEADERS, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        // event_type は workflow の on.repository_dispatch.types と一致させる。
+        body: JSON.stringify({ event_type: "signal-update", client_payload: { ticker } }),
+      });
+      if (!res.ok) {
+        console.error(`dispatch failed (${ticker}): HTTP ${res.status} ${await res.text()}`);
+      }
     }
   } catch (e) {
     console.error(`dispatch error: ${(e as Error).message}`);
@@ -238,6 +249,18 @@ async function saveArticle(
       fetched_at,
     )
     .run();
+}
+
+// 共通認証ゲート。SYNC_TOKEN 未設定なら常に許可 (dev / wrangler dev)。設定済みなら
+// Authorization: Bearer <token> ヘッダ、または ?token=<token> クエリのどちらかが一致すれば許可。
+// 長さの異なる文字列は != で即 false になるが、トークンは固定長の Secret 前提なので
+// タイミング差は実害なし (簡易比較)。/health は呼び出し側で除外済み。
+function isAuthorized(request: Request, url: URL, env: Env): boolean {
+  if (!env.SYNC_TOKEN) return true;
+  const auth = request.headers.get("authorization") || "";
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  const presented = (m ? m[1] : null) ?? url.searchParams.get("token");
+  return presented === env.SYNC_TOKEN;
 }
 
 // URL → 短いハッシュ (R2キー用)。crypto.subtle は async なので簡易版を同期で。
@@ -361,7 +384,7 @@ async function collectAll(
 ): Promise<{ results: Record<string, unknown>; freshTickers: string[] }> {
   const sources = IR_SOURCES.filter((s) => !codeFilter || s.code === codeFilter);
   const results: Record<string, unknown> = {};
-  const freshTickers: string[] = []; // 今回 written > 0 だった銘柄 (= ir-report を起動すべき対象)
+  const freshTickers: string[] = []; // 今回 written > 0 だった銘柄 (= signal-report を起動すべき対象)
   for (const src of sources) {
     try {
       const r = await collectOne(env, src, limit);
@@ -375,14 +398,17 @@ async function collectAll(
 }
 
 // 発火した cron 式 → 取得種別。wrangler.toml の [triggers] crons と対応させること。
-// Cloudflare の cron trigger 上限は5個。daily と fundamentals は引け後1日1回なので、
-// 1本の cron (eod = end of day) にまとめて両方実行し、5個に収める。
+// Cloudflare の cron trigger 上限は5個。新規 cron は足せないので、ニュース収集と
+// 決算予定日推定は既存 cron に相乗りさせる:
+//   - ir   (8:30/12:30/18:30): IR + ニュースを収集し、新規があれば signal-report 起動
+//   - prices (場中5分毎):        prices + ニュース速報を収集し、新規ニュースで signal-report 起動
+//   - eod  (16:00 引け後):       daily + fundamentals + 決算予定日推定 をまとめて実行
 const CRON_KIND: Record<string, "ir" | "prices" | "eod"> = {
   "30 23 * * *": "ir",
   "30 3 * * *": "ir",
   "30 9 * * *": "ir",
   "*/5 0-6 * * *": "prices",
-  "0 7 * * *": "eod", // JST 16:00 引け後: daily + fundamentals をまとめて取得
+  "0 7 * * *": "eod", // JST 16:00 引け後: daily + fundamentals + earnings
 };
 
 export default {
@@ -390,17 +416,29 @@ export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const kind = CRON_KIND[event.cron] ?? "ir"; // 未知の cron は IR にフォールバック
     if (kind === "ir") {
-      const { results, freshTickers } = await collectAll(env, null, DEFAULT_LIMIT);
-      console.log("scheduled ir done:", JSON.stringify(results), "fresh:", freshTickers.join(","));
-      // 新規IRがあった銘柄だけ ir-report (GitHub Actions) を起動する。0件なら発火しない。
-      await dispatchIrReport(env, freshTickers);
+      // IR cron (8:30/12:30/18:30) では IR とニュースを両方収集する。
+      // どちらかに新規があった銘柄をまとめて signal-report を起動する (IR+ニュース統合判定)。
+      const ir = await collectAll(env, null, DEFAULT_LIMIT);
+      const news = await collectNews(env, null);
+      const fresh = [...new Set([...ir.freshTickers, ...news.freshTickers])];
+      console.log("scheduled ir+news done:", JSON.stringify({ ir: ir.results, news: news.results }), "fresh:", fresh.join(","));
+      await dispatchSignalUpdate(env, fresh);
+      return;
+    }
+    if (kind === "prices") {
+      // 場中 5分毎。価格スナップショットに加え、銘柄ニュース速報も拾う (新着で即判定するため)。
+      const p = await collectTimeseries(env, "prices", null);
+      const news = await collectNews(env, null);
+      console.log("scheduled prices+news done:", JSON.stringify({ prices: p, news: news.results }), "fresh:", news.freshTickers.join(","));
+      await dispatchSignalUpdate(env, news.freshTickers);
       return;
     }
     if (kind === "eod") {
-      // 引け後の1日1回。daily と fundamentals を順に取得 (旧 2本の cron を統合)。
+      // 引け後の1日1回。daily + fundamentals + 次回決算予定日の推定をまとめて実行。
       const d = await collectTimeseries(env, "daily", null);
       const f = await collectTimeseries(env, "fundamentals", null);
-      console.log("scheduled eod done:", JSON.stringify({ daily: d, fundamentals: f }));
+      const e = await collectEarnings(env, null);
+      console.log("scheduled eod done:", JSON.stringify({ daily: d, fundamentals: f, earnings: e }));
       return;
     }
     const res = await collectTimeseries(env, kind, null);
@@ -411,18 +449,27 @@ export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // /health は疎通確認用に無認証で残す (外形監視/curl で叩けるように)。
     if (url.pathname === "/health") {
       return new Response("ok", { status: 200 });
     }
 
+    // それ以外の全エンドポイントは SYNC_TOKEN を要求する (未設定なら認証なし = dev)。
+    // トークンは Authorization: Bearer <token> ヘッダ、または ?token=<token> クエリで受ける。
+    // 公開URL (*.workers.dev) では外部から /run?dispatch=1 等で勝手にクロール/Actions起動
+    // できないよう、ここで一括して弾く。
+    if (!isAuthorized(request, url, env)) {
+      return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    }
+
     // /dispatch-test?code=285A
     //   App認証→repository_dispatch の疎通確認用。IR取得はせず、指定銘柄で強制発火する。
-    //   新規IRの有無に関係なく ir-report (workflow_dispatch相当) を起動できるので、
+    //   新規の有無に関係なく signal-report (workflow_dispatch相当) を起動できるので、
     //   発火経路 (JWT署名→installation token→dispatch) のE2E確認に使う。
     if (url.pathname === "/dispatch-test") {
       const code = url.searchParams.get("code") || "285A";
       const configured = !!(env.GH_APP_ID && env.GH_APP_PRIVATE_KEY && env.GH_APP_INSTALL_ID);
-      await dispatchIrReport(env, [code]);
+      await dispatchSignalUpdate(env, [code]);
       return Response.json({ ok: true, dispatched: configured, ticker: code });
     }
 
@@ -441,9 +488,20 @@ export default {
         const limit = parseInt(url.searchParams.get("limit") || String(DEFAULT_LIMIT), 10);
         const { results, freshTickers } = await collectAll(env, code, limit);
         // 手動 /run では既定で発火しない (検証で叩いても Actions を起動させないため)。
-        // &dispatch=1 を付けたときだけ、新規があれば ir-report を起動する。
-        if (url.searchParams.get("dispatch") === "1") await dispatchIrReport(env, freshTickers);
+        // &dispatch=1 を付けたときだけ、新規があれば signal-report を起動する。
+        if (url.searchParams.get("dispatch") === "1") await dispatchSignalUpdate(env, freshTickers);
         return Response.json({ ok: true, kind, result: results, fresh: freshTickers });
+      }
+      if (kind === "news") {
+        // per_ticker ニュース収集。手動では既定で発火しない (&dispatch=1 で起動)。
+        const { results, freshTickers } = await collectNews(env, code);
+        if (url.searchParams.get("dispatch") === "1") await dispatchSignalUpdate(env, freshTickers);
+        return Response.json({ ok: true, kind, result: results, fresh: freshTickers });
+      }
+      if (kind === "earnings") {
+        // 次回決算予定日の推定 → D1 earnings に保存。
+        const res = await collectEarnings(env, code);
+        return Response.json({ ok: true, kind, result: res });
       }
       if (kind === "prices" || kind === "daily" || kind === "fundamentals") {
         const res = await collectTimeseries(env, kind, code);
@@ -452,51 +510,7 @@ export default {
       return Response.json({ ok: false, error: `unknown kind: ${kind}` }, { status: 400 });
     }
 
-    // /dump?kind=prices|daily|fundamentals&code=285A[&token=...]
-    //   ローカル連携用。D1 の全行を「ローカル jsonl と同じ列・同じ並び (古い順)」で返す。
-    //   ローカルの scripts/sync-from-d1.ts がこれを GET して data/<kind>/<code>.jsonl を
-    //   置き換える。本番(公開URL)では SYNC_TOKEN を要求する (dev/未設定なら認証なし)。
-    if (url.pathname === "/dump") {
-      if (env.SYNC_TOKEN && url.searchParams.get("token") !== env.SYNC_TOKEN) {
-        return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
-      }
-      const code = url.searchParams.get("code");
-      const kind = url.searchParams.get("kind") || "";
-
-      // jsonl の列順に合わせる (読み手の最終行/全行パースがそのまま動くように)。
-      const DUMP: Record<string, { table: string; order: string; cols: string }> = {
-        prices: {
-          table: "prices",
-          order: "fetched_at ASC",
-          cols: "fetched_at, source, ticker, price, change, change_pct, volume, quote_time, pts_price, pts_time",
-        },
-        daily: {
-          table: "daily",
-          order: "date ASC",
-          cols: "fetched_at, source, ticker, date, open, high, low, close, change, change_pct, volume",
-        },
-        fundamentals: {
-          table: "fundamentals",
-          order: "fetched_at ASC",
-          cols: "fetched_at, source, ticker, per, pbr, dividend_yield, forecast_eps, forecast_period, actual_eps, actual_period",
-        },
-      };
-      const q = DUMP[kind];
-      if (!q) return Response.json({ ok: false, error: `unknown kind: ${kind}` }, { status: 400 });
-
-      const stmt = code
-        ? env.DB.prepare(`SELECT ${q.cols} FROM ${q.table} WHERE ticker = ? ORDER BY ${q.order}`).bind(code)
-        : env.DB.prepare(`SELECT ${q.cols} FROM ${q.table} ORDER BY ticker, ${q.order}`);
-      const { results } = await stmt.all();
-      // 1行1JSON (jsonl) で返す。ローカルはこれをそのまま書き出せる。
-      const body = (results as Record<string, unknown>[]).map((r) => JSON.stringify(r)).join("\n");
-      return new Response(body, {
-        status: 200,
-        headers: { "content-type": "application/x-ndjson; charset=utf-8" },
-      });
-    }
-
-    // /latest?kind=ir|prices|daily|fundamentals|premarket&code=285A&n=10
+    // /latest?kind=ir|prices|daily|fundamentals|premarket|earnings&code=285A&n=10
     //   D1 から最新行を返す (動作確認/ローカル連携用)。kind 省略時は ir。
     if (url.pathname === "/latest") {
       const code = url.searchParams.get("code") || "285A";
@@ -525,6 +539,18 @@ export default {
           return { ...rest, us_indexes };
         });
         return Response.json({ ok: true, kind, rows });
+      }
+
+      // earnings は銘柄ごと1行 (ticker PK)。code 指定なら1件、なければ全銘柄を返す。
+      //   signal-report は当該銘柄の next_date を読み、決算が近ければ confidence をキャップする。
+      if (kind === "earnings") {
+        const stmt = url.searchParams.get("code")
+          ? env.DB.prepare("SELECT ticker, next_date, detail, fetched_at FROM earnings WHERE ticker = ?").bind(
+              url.searchParams.get("code"),
+            )
+          : env.DB.prepare("SELECT ticker, next_date, detail, fetched_at FROM earnings ORDER BY ticker");
+        const { results } = await stmt.all();
+        return Response.json({ ok: true, kind, rows: results });
       }
 
       // 種別 → (テーブル, 並び順カラム, 取得カラム)。SQL 識別子はホワイトリストのみ。
@@ -563,32 +589,36 @@ export default {
       return Response.json({ ok: true, kind, rows: results });
     }
 
-    // /pull?code=285A&since=<ISO8601>&limit=N[&token=...]
-    //   「since より後に取得した未処理IRだけ」を本文(R2)込みで、古い順 (fetched_at ASC) に返す。
-    //   GitHub Actions (ir-report) が前回処理カーソル last_fetched_at を since に渡し、
-    //   新規IRだけを判断対象として引くためのエンドポイント。/latest はメタのみ・published_at 順
+    // /pull?code=285A&since=<ISO8601>&limit=N[&token=...]      … IR だけ (source LIKE 'ir:%')
+    // /pull-news?code=285A&since=<ISO8601>&limit=N[&token=...]  … ニュースだけ (source LIKE 'kabutan:%')
+    //   「since より後に取得した未処理分だけ」を本文(R2)込みで、古い順 (fetched_at ASC) に返す。
+    //   GitHub Actions (signal-report) が Issue の 2カーソル (ir / news) をそれぞれ since に渡し、
+    //   新規 IR・新規ニュースを別々に引いて統合判定する。/latest はメタのみ・published_at 順
     //   なのに対し、こちらは「判断に必要な本文」を同梱し「取りこぼさないカーソル順」で返す。
     //   since 省略時は直近 limit 件 (= 初回 / カーソル未確立時のフォールバック)。
-    //   公開URLでは /dump と同様 SYNC_TOKEN を要求する (dev/未設定なら認証なし)。
-    if (url.pathname === "/pull") {
-      if (env.SYNC_TOKEN && url.searchParams.get("token") !== env.SYNC_TOKEN) {
-        return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
-      }
+    //   IR とニュースは同じ articles テーブルに同居するので source プレフィクスで振り分ける。
+    if (url.pathname === "/pull" || url.pathname === "/pull-news") {
       const code = url.searchParams.get("code") || "285A";
       const since = url.searchParams.get("since");
       const limit = parseInt(url.searchParams.get("limit") || "20", 10);
+      const sourceLike = url.pathname === "/pull-news" ? "kabutan:%" : "ir:%";
+
+      // スイング判断に古い記事は不要。published_at が30日より古いものは保管はするが返さない
+      // (取得時に一覧の下まで遡れず back-dated 記事が新しい fetched_at で入ることがあるため、
+      //  カーソル順とは別に published_at の鮮度で足切りする)。published_at は YYYY-MM-DD 文字列。
+      const cutoff = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
 
       // since があれば fetched_at > since で絞る。無ければ直近 limit 件を ASC で返す。
       const stmt = since
         ? env.DB.prepare(
-            "SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND fetched_at > ? ORDER BY fetched_at ASC LIMIT ?",
-          ).bind(code, since, limit)
+            "SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND source LIKE ? AND published_at >= ? AND fetched_at > ? ORDER BY fetched_at ASC LIMIT ?",
+          ).bind(code, sourceLike, cutoff, since, limit)
         : env.DB.prepare(
-            "SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? ORDER BY fetched_at ASC LIMIT ?",
-          ).bind(code, limit);
+            "SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND source LIKE ? AND published_at >= ? ORDER BY fetched_at ASC LIMIT ?",
+          ).bind(code, sourceLike, cutoff, limit);
       const { results } = await stmt.all();
 
-      // 各メタに R2 本文を同梱する。本文は判断 (analyze) に必須。R2 欠損は body=null で返す。
+      // 各メタに R2 本文を同梱する。本文は判断に必須。R2 欠損は body=null で返す。
       const rows = await Promise.all(
         (results as Record<string, unknown>[]).map(async (r) => {
           let body: string | null = null;
@@ -632,7 +662,7 @@ export default {
     }
 
     return new Response(
-      "stock-signals collector. routes: /run?kind= /dump?kind= /latest?kind= /pull?code= /health /test-slack",
+      "stock-signals collector. routes: /run?kind=ir|news|prices|daily|fundamentals|earnings|premarket /latest?kind= /pull?code= /pull-news?code= /health /test-slack",
       { status: 404 },
     );
   },

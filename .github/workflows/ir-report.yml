@@ -45,7 +45,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # 現状 IR取得対応は 285A (キオクシア) のみ。他銘柄のIRパーサが増えたら銘柄を足す。
           prompt: "/ir-report 285A"
-          claude_args: "--allowedTools Bash(gh:*),Bash(curl:*),Bash(jq:*),Read --max-turns 30"
+          # Actions の使い捨てサンドボックス内なので Bash を広く許可 (パイプ/heredoc/tmpfile書き込みが
+          # 細かい Bash(gh:*) 指定だと弾かれ、リトライでターンを浪費して失敗していたため)。
+          claude_args: "--allowedTools Bash,Write,Read,Edit --max-turns 50"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

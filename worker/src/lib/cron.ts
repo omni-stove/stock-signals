@@ -7,6 +7,7 @@ import type { Env } from "./env";
 import { dispatchSignalUpdate } from "./github-dispatch";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
+import { collectMargin } from "./margin";
 import { collectNews } from "./news";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
@@ -52,6 +53,14 @@ export async function runScheduled(
 		if (event.cron === "30 23 * * *") {
 			await collectBackdrop(env).catch((e) =>
 				console.error("backdrop failed:", e),
+			);
+		}
+		// 信用残 (週次の需給データ) は引け後 (20:00) intake にだけ相乗りさせる。週1更新なので
+		// 毎日取っても (ticker, 集計基準日) PK で1週1行に収束する (margin.ts 参照)。新規行が
+		// 出ても signal-judge は次回の他材料発火時に最新を読むため、ここでは dispatch しない。
+		if (event.cron === "0 11 * * *") {
+			await collectMargin(env, null).catch((e) =>
+				console.error("margin failed:", e),
 			);
 		}
 		// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) のいずれかに新規があった

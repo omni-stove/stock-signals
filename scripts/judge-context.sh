@@ -47,6 +47,7 @@ EARNINGS="$(fetch "kind=earnings&code=$TICKER")"
 PRICES="$(fetch "kind=prices&code=$TICKER&n=20")"
 DAILY="$(fetch "kind=daily&code=$TICKER&n=20")"
 PREMARKET="$(fetch "kind=premarket&n=1")"
+MARGIN="$(fetch "kind=margin&code=$TICKER&n=4")"
 
 # --- earnings: days_to_earnings を計算 --------------------------------------
 NEXT_DATE="$(echo "$EARNINGS" | jq -r '.rows[0].next_date // empty' 2>/dev/null || echo "")"
@@ -67,6 +68,29 @@ if [[ -n "$PM_FETCHED" ]]; then
     '.rows[0] | {status:$st, age_hours:$age, sox_change_pct, nasdaq_change_pct, dow_change_pct, nikkei_futures_price, nikkei_contract}')"
 else
   PREMARKET_JSON='{"status":"unavailable"}'
+fi
+
+# --- margin: 信用残の前週比 (需給) を正規化。判断は skill (SKILL 4c) ----------
+# rows は date DESC。最新週 (rows[0]) と前週 (rows[1]) から WoW 増減 (千株) と信用倍率を渡す。
+MARGIN_ROWS="$(echo "$MARGIN" | jq '.rows // []' 2>/dev/null || echo "[]")"
+MARGIN_N="$(echo "$MARGIN_ROWS" | jq 'length')"
+if [[ "$MARGIN_N" -ge 1 ]]; then
+  MARGIN_JSON="$(echo "$MARGIN_ROWS" | jq '
+    .[0] as $cur |
+    (.[1] // null) as $prev |
+    {
+      status: "ok",
+      rows_n: length,
+      latest_date: $cur.date,
+      long_qty: $cur.long_qty,
+      short_qty: $cur.short_qty,
+      ratio: $cur.ratio,
+      long_chg:  (if $prev != null and $cur.long_qty  != null and $prev.long_qty  != null then (($cur.long_qty  - $prev.long_qty)  * 10 | floor / 10) else null end),
+      short_chg: (if $prev != null and $cur.short_qty != null and $prev.short_qty != null then (($cur.short_qty - $prev.short_qty) * 10 | floor / 10) else null end),
+      prev_date: ($prev.date // null)
+    }')"
+else
+  MARGIN_JSON='{"status":"unavailable"}'
 fi
 
 # --- daily: 20日レンジ位置 / MA位置 / 出来高倍率を正規化 ----------------------
@@ -124,4 +148,5 @@ jq -n \
   --argjson premarket "$PREMARKET_JSON" \
   --argjson daily "$DAILY_JSON" \
   --argjson prices "$PRICES_JSON" \
-  '{ticker:$ticker, today:$today, earnings:$earnings, premarket:$premarket, daily:$daily, prices:$prices}'
+  --argjson margin "$MARGIN_JSON" \
+  '{ticker:$ticker, today:$today, earnings:$earnings, premarket:$premarket, daily:$daily, prices:$prices, margin:$margin}'

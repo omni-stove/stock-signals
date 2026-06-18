@@ -43,7 +43,7 @@ flowchart TB
         direction TB
         CRON_CF["Cron Triggers<br/>intake(IR+news+開示+レーティング+寄り前は地合い)/prices/eod(daily+fundamentals+earnings)"]
         WORKER["Worker<br/>routes/(HTTP層) + lib/(Cron配線/スクレイプ/IR収集/dispatch発火)"]
-        D1[("D1 (SQLite)<br/>prices/daily/fundamentals<br/>articles(IR+news+開示+レーティング)メタ<br/>premarket/earnings/intraday_dispatch")]
+        D1[("D1 (SQLite)<br/>prices/daily/fundamentals/margin(信用残)<br/>articles(IR+news+開示+レーティング)メタ<br/>premarket/earnings/intraday_dispatch")]
         R2[("R2<br/>記事本文JSON")]
         API((HTTP API<br/>/run /pull /pull-news /latest))
         CRON_CF --> WORKER
@@ -86,7 +86,7 @@ flowchart TB
     %% Actions → Worker (材料引きは workflow step が代行し skill へ @path で渡す)
     %% 縦積みを崩さぬよう横断する戻り参照は破線 (重み低)
     API -.->|/pull（IR/開示/レーティング本文） /pull-news（ニュース本文）| CTXIN
-    API -.->|/latest（prices/daily/premarket/earnings）| JUDGECTX
+    API -.->|/latest（prices/daily/premarket/earnings/margin）| JUDGECTX
 
     classDef cloud stroke:#4285f4,stroke-width:2px
     classDef gha stroke:#8e44ad,stroke-width:2px
@@ -101,7 +101,7 @@ Worker の cron trigger は UTC 基準 (`worker/wrangler.toml`)。JST 換算は�
 | JST | cron式 (UTC) | 種別 | 内容 |
 | --- | --- | --- | --- |
 | 08:30 | `30 23 * * *` | intake | IR + ニュース + 適時開示(TDnet) + 証券会社レーティング + 地合い(寄り前のみ) |
-| 20:00 | `0 11 * * *` | intake | IR + ニュース + 適時開示 + レーティング(決算・適時開示・レーティング日報を当夜に拾う) |
+| 20:00 | `0 11 * * *` | intake | IR + ニュース + 適時開示 + レーティング + 信用残(週次の需給。引け後にだけ相乗り) |
 | 09:00–15:00 5分毎 | `*/5 0-6 * * *` | prices | 株価スナップショット + ニュース速報。12:30 相当スロットでは IR intake も相乗り。新着ニュースの dispatch は銘柄ごと 15分デバウンス (下記) |
 | 16:00 | `0 7 * * *` | eod | 日足 + ファンダ + 決算日推定 |
 
@@ -121,7 +121,7 @@ sequenceDiagram
         GH->>CB: カーソル以降の新着 IR/news を渡して起動
         CB->>GH: Issue本文を更新 (コンテキスト畳み込み + カーソル更新)
         CB->>GH: dispatch(signal-judge)
-        GH->>SJ: 現在の数値 (価格/日足/寄り前/決算) + 需給イベントを渡して起動
+        GH->>SJ: 現在の数値 (価格/日足/寄り前/決算/信用残) + 需給イベントを渡して起動
         SJ->>GH: Issue本文 (銘柄コンテキスト) を読む
         SJ->>SL: buy/sell + 水準修飾子 (押し目/追い/利確/逃げ) を通知
     end
@@ -156,6 +156,11 @@ signal-judge は精度優先で `--effort high` (reasoning effort) で走る。
 - **Slack (判定)**: signal-judge が出す buy/sell + 水準修飾子 + 根拠が1行流れる。
   根拠には判定の核になった「直近の重大トピック」が引用される。寄り前 (intake cron) は地合いを
   取得してから新着のある銘柄の signal-judge を発火するので、寄り前判定も地合い込みで Slack に届く。
+  送り先は `SLACK_WEBHOOK_URL`。
+- **Slack (新規IR)**: Worker が新着IRを通知する。送り先は IR専用の `SLACK_IR_WEBHOOK_URL`
+  (未設定なら `SLACK_WEBHOOK_URL` にフォールバックし判定と同一チャンネルに出る)。
+  IR とレポート(判定)を別チャンネルに分けたい場合は同一 Slack App から2本目の Incoming Webhook を
+  IR用チャンネル向けに発行し、`npx wrangler secret put SLACK_IR_WEBHOOK_URL` で設定する。
 
 確認用スクリプトを手元で叩くこともできる (要 `WORKER_URL` 環境変数):
 
@@ -169,7 +174,7 @@ node scripts/events.ts --days 45
 
 各銘柄の次回決算発表予定日は **Worker が eod cron (引け後1日1回) で自動推定**し D1 に保持する。
 kabutan finance ページの四半期業績テーブルから「直近実績の次四半期 = 前年同期の発表日 +1年」で算出。
-signal-judge はこれを読み、決算が5日以内なら原則 `sell` に倒す(de-risk into the print。最新コンテキスト
+signal-judge はこれを読み、決算が間近なら `sell・逃げ` 方向に倒す(de-risk into the print。最新コンテキスト
 そのものが決算リリースの場合を除く。スイング前提で持ち越しガラを避けるため)。決算発表後は翌営業日の cron で
 自動的に次の予定日へ繰り上がる。
 

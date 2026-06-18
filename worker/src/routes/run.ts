@@ -1,5 +1,5 @@
 // Cloudflare Worker: 手動起動 (dev検証/オンデマンド) ルート。
-//   /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|premarket&code=285A[&limit=N]
+//   /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket&code=285A[&limit=N]
 //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
 //   premarket は地合い (米国指数+日経先物) を1回取得して D1 premarket_backdrop に書く。
 //   通常は寄り前 intake cron が自動取得するが、手動/dev 検証用に残す。
@@ -14,6 +14,7 @@ import type { Env } from "../lib/env";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
 import { collectAll } from "../lib/ir-collect";
 import { DEFAULT_LIMIT } from "../lib/ir-sources";
+import { collectMargin } from "../lib/margin";
 import { collectNews } from "../lib/news";
 import { collectBackdrop } from "../lib/premarket";
 import { collectRatings } from "../lib/ratings";
@@ -61,6 +62,11 @@ run.get("/", async (c) => {
 	if (kind === "earnings") {
 		// 次回決算予定日の推定 → D1 earnings に保存。
 		const result = await collectEarnings(env, code);
+		return c.json({ ok: true, kind, result });
+	}
+	if (kind === "margin") {
+		// 信用残 (週次) の収集 → D1 margin に保存。通常は引け後 intake cron で自動取得。
+		const result = await collectMargin(env, code);
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "prices" || kind === "daily" || kind === "fundamentals") {

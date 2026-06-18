@@ -29,11 +29,14 @@ function categoryHeading(cat: string): string {
 
 // 新規取得したIRを Slack に通知する。Webhook未設定なら何もしない。
 // 1リクエストで全件まとめて送る (1記事1メッセージにすると場中に連投になるため)。
+// 送り先は IR専用の SLACK_IR_WEBHOOK_URL を優先し、無ければ SLACK_WEBHOOK_URL にフォールバック
+// (レポート判定と同一チャンネルに出る従来挙動)。
 export async function notifySlack(
 	env: Env,
 	items: NotifyItem[],
 ): Promise<void> {
-	if (!env.SLACK_WEBHOOK_URL || items.length === 0) return;
+	const webhook = env.SLACK_IR_WEBHOOK_URL || env.SLACK_WEBHOOK_URL;
+	if (!webhook || items.length === 0) return;
 
 	// holdings(適時開示) を先頭に寄せて目立たせる。
 	const order = (c: string) => (c === "holdings" ? 0 : 1);
@@ -67,7 +70,7 @@ export async function notifySlack(
 		.join("\n");
 
 	try {
-		const res = await fetch(env.SLACK_WEBHOOK_URL, {
+		const res = await fetch(webhook, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ text: fallback, blocks }),

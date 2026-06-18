@@ -29,7 +29,7 @@ app.route("/", misc); // /dispatch-test, /test-slack
 
 app.notFound((c) =>
 	c.text(
-		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|premarket /latest?kind= /pull?code= /pull-news?code= /health /test-slack",
+		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /health /test-slack",
 		404,
 	),
 );

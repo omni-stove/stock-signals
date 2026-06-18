@@ -9,7 +9,12 @@ export interface Env {
 	// Slack Incoming Webhook URL (Secret)。未設定なら通知をスキップ (取得自体は動く)。
 	//   設定: npx wrangler secret put SLACK_WEBHOOK_URL
 	//   dev:  worker/.dev.vars に SLACK_WEBHOOK_URL="https://hooks.slack.com/..." と書く
+	//   judge(レポート)通知の送り先でもある (GitHub Actions signal-judge が同じ URL を使う)。
 	SLACK_WEBHOOK_URL?: string;
+	// 新規IR通知専用の Slack Webhook URL (Secret)。IR をレポートと別チャンネルに出すための分離。
+	// 未設定なら SLACK_WEBHOOK_URL にフォールバック (= 従来どおり同一チャンネル)。
+	//   設定: npx wrangler secret put SLACK_IR_WEBHOOK_URL
+	SLACK_IR_WEBHOOK_URL?: string;
 	// 全エンドポイント (/health を除く) の簡易認証トークン (Secret)。未設定なら認証なし (dev用)。
 	//   設定: npx wrangler secret put SYNC_TOKEN
 	//   送り方は Authorization: Bearer <token> ヘッダ、または ?token=<token> クエリのどちらでも可。

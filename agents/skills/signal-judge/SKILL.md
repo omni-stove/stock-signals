@@ -5,12 +5,20 @@ description: For a single ticker given as argument, read that ticker's standing 
 
 # signal-judge
 
-**Decision stage.** Read the ticker's living context (the standing Issue body, owned by
-context-builder) + the current market picture → emit one **swing** judgment to Slack.
+You are a swing trader (horizon: days to a few weeks) making one call on one ticker. Read
+the living context and the current market picture, decide, and post to Slack. This is
+judgment — the notes below say what the inputs mean and where the traps are; they don't
+give you the answer. Trust the read and state your confidence.
 
-- **Direction carries a 水準 qualifier** (step 4b): `buy・押し目` vs `buy・追い`, `sell・利確` vs
-  `sell・逃げ`. The direction (2-value) never changes; the qualifier tells *where in the move* it is.
-- **Swing horizon**: days to a few weeks. Not day-trading, not buy-and-hold.
+## Output
+
+Pick one **direction** — `buy` or `sell`, no hold, no hedging both ways — plus a **水準**
+qualifier saying where in the move you're calling it:
+
+- `buy・押し目` — entering on weakness.
+- `buy・追い` — chasing strength; you're late, so flag it.
+- `sell・利確` — taking profit into strength.
+- `sell・逃げ` — getting out ahead of risk.
 
 ## Invocation
 
@@ -18,119 +26,71 @@ context-builder) + the current market picture → emit one **swing** judgment to
 /signal-judge <ticker> -- <event-context> @<numeric-context.json>
 ```
 
-`<ticker>` is this run's symbol. After `--` come two inputs the workflow computed at launch — use them as-is:
-- the **event context** — a one-line 需給イベント string (SQ + nearby macro events). No `--` →
-  treat as 需給イベント: 特になし.
-- `@<path>` — the **numeric context** JSON (`scripts/judge-context.sh` output): earnings, premarket,
-  daily, prices, **already fetched and normalized** (`days_to_earnings`, range position, MA position,
-  volume ratio, freshness flags). **Read this file** for these.
+After `--`: the **event context** (one-line 需給イベント string — SQ + nearby macro; missing →
+特になし), and `@<path>`, the **numeric context** JSON from `scripts/judge-context.sh`
+(earnings/premarket/daily/prices/margin, already fetched & normalized — **read it**). Fired by
+context-builder's `repository_dispatch` after the Issue updates, or manually.
 
-Fired by context-builder's `repository_dispatch` (one per ticker) after the Issue updates, or manually.
+## Inputs
 
-## Steps
+1. **Metadata** — `<ticker>` in `config/watchlist.yaml` for `name`/`sector`/`fair_per` (a
+   valuation anchor, not a trigger).
+2. **Living context (the Issue body) — your primary fundamental input, read it in full:**
+   ```
+   gh issue list --label ir-report --label "ticker:<ticker>" --state open --json number,body --limit 1
+   ```
+   The **直近の重大トピック** list is freshest and usually the heart of the call; older structural
+   context tells you whether a move continues or reverses; **証券会社レーティング** is a 6–12mo view
+   that corroborates (weight by 発行日 / アップサイド% / 信頼度), never dominates. No Issue → say
+   `context: unavailable` and call on price + backdrop alone.
+3. **Numeric context (`@<path>`)** — already normalized, just interpret. Each block has a
+   `status`; skip any that's `insufficient`/`stale`/`unavailable`. Key fields: `daily.range_pct`
+   (0 = bottom of 20-day range, 100 = top), `daily.ma_position` (trend), `daily.ma25_dev_pct` /
+   `ma5_dev_pct` (how steep the run is), `vol_x_20d`, `earnings.days_to_earnings`,
+   `premarket.sox_change_pct` (last night's US tape), `margin.ratio` + WoW `long_chg`/`short_chg`.
+   **Ignore `pts_price`.**
 
-**1. Metadata + numeric context.** Read `<ticker>` from `config/watchlist.yaml`; cache
-`name`/`fair_per`/`sector`. Read the `@<path>` JSON — its fields drive steps 3–5:
-- `earnings.days_to_earnings` (null → risk unknown).
-- `daily` (`status` ok/insufficient): `range_pct` (0=安値圏 / 100=高値圏), `ma_position`
-  (above=uptrend / between=chop / below=downtrend), `vol_x_20d` (>2 = unusual), `close`, range hi/lo.
-  `ma25_dev_pct` / `ma5_dev_pct` = 終値の ma25 / ma5 からの乖離率(%, 傾斜の鋭さ)。`insufficient`
-  (<5 rows) → proceed on context alone.
-- `premarket` (`status` ok/stale/unavailable): `sox_change_pct` etc. `stale`/`unavailable` (row >20h
-  old, predates last NY close) → backdrop unavailable, skip step 5.
-- `prices` (`status` ok/unavailable): `series` `change_pct`/`volume` rising, fading, or choppy? A
-  volume spike with no fresh context = caution ("unusual volume", lean against chasing). **Ignore
-  `pts_price`** — thin after-hours, fades at the open.
+## Forming the call
 
-**2. Context Issue.**
-```
-gh issue list --label ir-report --label "ticker:<ticker>" --state open --json number,body --limit 1
-```
-The body is the living context (business shape, product/roadmap, capital & management, the rolling
-**直近の重大トピック** list, **証券会社レーティング**, **決算・ガイダンス**). **Primary fundamental
-input — read it in full.** 直近の重大トピック is freshest and usually the core of the call.
-証券会社レーティング is a **6–12mo** view (corroborates, doesn't dominate): weight by **発行日**
-(discount older), **アップサイド% to 目標株価** (near/over → `sell`), **信頼度**.
-No Issue / empty → `context: unavailable`, call on price/backdrop alone (weaker, still a side).
+**Context sets direction; price sets the 水準.** Fresh, corroborating topics (or a just-released
+earnings/guidance) make the strongest call; a thin single line still picks a side, flagged weak;
+nothing materially new leans sell. Then read where the move is: `ma_position` is the trend,
+`range_pct` how far it's run, the MA-deviation pair how steep. Good context arriving *after* a
+multi-day run is often priced in — that pulls a `buy` toward `sell`. Clean entries are fresh
+context low in the range, not high.
 
-**3. Read the price picture** (from the step-1 JSON).
-- `daily.ma_position` = trend; `daily.range_pct` = where in the 20-day range (near 100 → buying late
-  is risky; near 0 + bullish context = clean R/R); `vol_x_20d` >2 = unusual.
-- **傾斜の鋭さ** (`ma25_dev_pct` / `ma5_dev_pct`): range_pct はレンジ内の*相対位置*しか見ず「+70%上げた後の
-  93」と「揉み合いの93」を潰す。乖離率は*どれだけ立ち上がったか*を捉える。`ma25_dev_pct` 大 (≳+25%)
-  かつ `ma5_dev_pct` 小 (close が ma5 に張り付き) = **放物線的な垂直加速**(天井圏で傾斜が増え続ける形)。
-  vol_x_20d が低い(出来高細り)とさらに息切れサイン。step 4b の追い禁止ルールへ。
+Traps that override the naive read:
 
-**Fire window** (current JST) — changes what the price data means:
+- **Parabola — don't chase it.** A large `ma25_dev_pct` with a small `ma5_dev_pct` (close pinned
+  to a fast-rising ma5) is a near-vertical, late-stage move; worse if `vol_x_20d` is thinning.
+  Refuse `buy・追い` here — lean it to a warning.
+- **Earnings near** → `sell・逃げ`, unless the freshest context *is* that release. No earnings lean
+  once `days_to_earnings` is negative/unknown.
+- **Unexplained volume** (spike with nothing new behind it) → caution, don't chase.
+- **Margin (需給) is subordinate** — tilts the 水準, never the direction. High 買残 caps upside
+  (toward 利確, mutes 追い); 売り長 leaves squeeze room; a buy spike right after a run = priced-in.
+  Contradicts the context → keep direction, step the 水準 down one, note it.
+- **Event context** — SQ週/メジャーSQ unwind distorts the tape (treat the move as noise, fall back
+  to fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX, so discount it; a near
+  high-impact macro print argues 逃げ.
 
-| window | `prices` means | backdrop weight |
-|---|---|---|
-| pre-open (~08:30, <09:00) | last session's close, no today's tape | **most** (step 5) |
-| intraday (09:00–15:00) | today's session | secondary |
-| after-close (~18:30) | today's `daily` row exists | least |
+**Fire window (JST)** changes what `prices` means and how much the overnight tape counts:
+pre-open (~08:30) = last close, no tape yet, US backdrop weighs **most**; intraday = today's live
+tape, backdrop secondary; after-close (~18:30) = today's `daily` row exists, backdrop least.
+Pre-open only: the backdrop *tilts* direction but won't flip a clearly bearish context — for semis
+weight `sox_change_pct` (6981 tracks it loosely), hostile tape pushes `sell`, supportive `buy`.
 
-`premarket` = last night's US backdrop. `sox_change_pct` is the primary read for semis (285A/6857/6920);
-6981 (Murata, MLCC) responds loosely. `status` stale/unavailable → skip step 5.
+## Post to Slack (only output)
 
-**4. Form one judgment.** Weigh bull vs bear, pick the stronger side *now*.
-- **直近の重大トピック** + 経営判断・資本政策 / 商品ラインナップ are the driver. Recent topics weigh most;
-  older structural context informs continuation vs reversal.
-- **Nothing materially new** (restated known facts) = sell-side hint; easy money's made.
-- **Priced in**: good context after a multi-day *regular*-session run weakens `buy` → `sell`. Judge from
-  `daily.range_pct` (near 100 after a run → `sell`; near 0 + live context → `buy`).
-- Freshest, best-corroborated topics (multiple aligned, or an earnings/guidance release) = strongest
-  call. A single thin line still picks a side — flag it as a weak read.
-- **Earnings ≤5d out** → `sell` (de-risk into the print), unless the freshest context *is* the release.
-  No lean once `days_to_earnings` is negative/unknown.
-- Separate macro from idiosyncratic drivers; tag them distinctly.
-- **Event context** (`--` arg) — SQ 週/明け can co-occur (JP SQ = 2nd Fri, US = 3rd):
-
-  | phase | meaning | how to use |
-  |---|---|---|
-  | 日本SQ週 | direct supply/demand; メジャーSQ (3/6/9/12月) unwind distorts open (SQ値 vs 実勢,「幻のSQ」) & tape | such moves = **noise, not signal** → fall back to fundamentals; note it |
-  | 日本SQ明け | unwind done, tape **cleaner** | read the move at face value; a sharp 歪み剥落の戻り (reversal of last week's SQ move) = real signal |
-  | 米メジャーSQ週 | *not* direct; reaches JP names only via SOX/US indices | fold into backdrop (step 5) but **discount** — partly clearing-driven, less persistent |
-  | 米メジャーSQ明け | distortion gone | backdrop at full weight |
-  | FOMC/日銀/CPI `[high]`/`[medium]` + days-until | known binary macro | `[high]` ≤3d out → `sell` |
-
-**4b. 水準 qualifier.** After the direction, tag *where in the move* it is — from `daily.range_pct` ×
-`ma_position` × `ma25_dev_pct` × context freshness. No new data needed.
-
-| dir | qualifier | when |
-|---|---|---|
-| buy | **押し目** (default) | `range_pct` low/mid, or pullback toward ma25, with intact/live context — clean entry |
-| buy | **追い** | `range_pct` near 100 / fresh breakout — context new enough to chase, but flag the late entry. **`ma25_dev_pct` ≳+25% は「追い」を出すな** → 下の放物線ルールへ |
-| sell | **利確** (default) | `range_pct` near 100 after a multi-day run, 材料出尽くし / priced in — sell strength |
-| sell | **逃げ** | `ma_position` below, or risk-off: earnings ≤5d, hostile backdrop, `[high]` macro ≤3d |
-
-**放物線(垂直加速)ガード.** `ma25_dev_pct` が極端 (≳+25%、特に +30% 超) のとき、たとえ文脈が live
-でも `buy・追い` は出さない — 天井圏で傾斜が増え続ける放物線は、当てに行かず警告に倒す:
-- `ma5_dev_pct` も大 (close が ma5 からも大きく離れて上にハネた一発) → **`sell・利確`**(行き過ぎの反落リスク)。
-- `ma5_dev_pct` 小 (close が ma5 に張り付き、垂直に駆け上がり中) → 方向 `buy` は維持しつつ
-  **`追い` で「**深追い厳禁・放物線終盤の可能性**」を rationale で最大限に強調**(出来高 `vol_x_20d` 細りなら息切れも併記)。
-天井を当てるのは目的ではない。「異常加速で R/R が悪い局面」だと明示するのが目的。
-
-Pick the closer fit; when `daily.status` is insufficient, fall back to `ma_position` (above→押し目/利確,
-below→逃げ) and say the qualifier is a weak read.
-
-**5. Pre-open backdrop weighting (pre-open only).** Context drives *direction*; backdrop **tilts** it
-(won't flip a clearly bearish context). With `premarket.status == ok`:
-- Semis (285A/6857/6920): weight `premarket.sox_change_pct`. 6981: loosely, lean on own trend/futures.
-- Hostile (SOX ≲ −2%, or futures sharply down) → `sell`; don't `buy` a red tape unless idiosyncratic
-  context overrides. Supportive (SOX ≳ +2%) → `buy`.
-- 米メジャーSQ週 → discount SOX weight (say so); 米メジャーSQ明け → drop the discount.
-
-**6. Post to Slack (only output).**
 ```
 curl -s -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' -d '{
   "text": "🧭 <ticker> <name> signal: <signal>・<qualifier>",
-  "blocks": [ ... signal (buy|sell) + 水準 qualifier (押し目|追い|利確|逃げ), 1–3 lines of rationale
-              citing the driving context topics, the price/backdrop/earnings tilt + why this 水準,
-              link to the context Issue ... ]
+  "blocks": [ ... signal + 水準, then 1–3 lines: driving topics, the price/backdrop/earnings
+              tilt, why this 水準 (a 需給 line if 信用残 mattered), confidence, Issue link ... ]
 }'
 ```
 
-## Output (stdout) — one line, no narration
+## stdout — one line, no narration
 
 ```
 <ticker> → <signal>・<qualifier> (driving topics, price/MA cue) backdrop <SOX/event tilt>, slack <ok|skipped>

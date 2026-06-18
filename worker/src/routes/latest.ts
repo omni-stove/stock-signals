@@ -1,5 +1,5 @@
 // Cloudflare Worker: D1 から最新行を返す (動作確認/ローカル連携用)。
-//   /latest?kind=ir|prices|daily|fundamentals|premarket|earnings&code=285A&n=10
+//   /latest?kind=ir|prices|daily|fundamentals|margin|premarket|earnings&code=285A&n=10
 //   kind 省略時は ir。
 
 import { Hono } from "hono";
@@ -75,6 +75,11 @@ latest.get("/", async (c) => {
 				table: "fundamentals",
 				order: "date",
 				cols: "ticker, date, per, pbr, forecast_eps, forecast_period, actual_eps, actual_period, fetched_at",
+			},
+			margin: {
+				table: "margin",
+				order: "date",
+				cols: "ticker, date, short_qty, long_qty, ratio, fetched_at",
 			},
 		};
 	const q = LATEST[kind];

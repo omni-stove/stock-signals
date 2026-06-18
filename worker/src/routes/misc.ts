@@ -28,10 +28,13 @@ misc.get("/dispatch-test", async (c) => {
 // /test-slack : Webhook疎通確認。ダミー1件を実際にSlackへ送る。
 misc.get("/test-slack", async (c) => {
 	const env = c.env;
-	if (!env.SLACK_WEBHOOK_URL) {
+	if (!env.SLACK_IR_WEBHOOK_URL && !env.SLACK_WEBHOOK_URL) {
 		throw new HTTPException(400, {
 			res: Response.json(
-				{ ok: false, error: "SLACK_WEBHOOK_URL 未設定" },
+				{
+					ok: false,
+					error: "SLACK_IR_WEBHOOK_URL / SLACK_WEBHOOK_URL とも未設定",
+				},
 				{ status: 400 },
 			),
 		});

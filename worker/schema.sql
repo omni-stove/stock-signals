@@ -143,3 +143,25 @@ CREATE TABLE IF NOT EXISTS intraday_dispatch (
   ticker           TEXT PRIMARY KEY,   -- 銘柄コード
   last_dispatch_at TEXT NOT NULL       -- 最後に場中 dispatch した時刻 (UTC ISO8601)
 );
+
+-- ── 信用取引残高 (信用残) ────────────────────────────────────────────────
+-- 東証/日証金が毎週金曜時点の信用建玉を集計し翌週公表する週次の需給データ。kabutan の個別
+-- 銘柄ページ内の信用残テーブルから取得する (1回で過去5週分が返る)。判断 (買い長で上値重い等)
+-- は signal-judge に委ねる。
+--
+-- 冪等キー = (ticker, date)。date は取得日ではなく kabutan の集計基準日 (毎週金曜)。intake cron
+-- が毎日走っても同じ週は同一 date となり INSERT OR IGNORE で1週1行に収束する (daily と同じ流儀)。
+-- 過去5週が返るので数日 Worker が落ちても次回でまとめて拾える。kabutan の "06/12" (年なし) は
+-- collectMargin が「未来日付なら前年」で YYYY-MM-DD に補完する。
+CREATE TABLE IF NOT EXISTS margin (
+  ticker      TEXT NOT NULL,          -- 銘柄コード
+  date        TEXT NOT NULL,          -- 集計基準日 YYYY-MM-DD (毎週金曜)。冪等キー
+  source      TEXT NOT NULL,          -- 取得元 (例 kabutan:285A)
+  short_qty   REAL,                   -- 信用売残 (千株)
+  long_qty    REAL,                   -- 信用買残 (千株)
+  ratio       REAL,                   -- 信用倍率 (買残/売残)。算出不能は null
+  fetched_at  TEXT NOT NULL,          -- 取得時刻 (ISO8601)
+  PRIMARY KEY (ticker, date)
+);
+CREATE INDEX IF NOT EXISTS idx_margin_ticker_date
+  ON margin (ticker, date DESC);

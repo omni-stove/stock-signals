@@ -9,8 +9,9 @@
 - **完全クラウド**。収集は Cloudflare Worker、LLM判定は GitHub Actions。常駐プロセスもローカル cron も持たない。
 - **収集はWorker (LLM不使用)**。記事・株価・ファンダ・適時開示・証券会社レーティングの取得は素のスクレイプなので Worker の cron trigger から直接実行。
 - **判定はGitHub Actions上のClaude Code (LLM)**。新規データ取得をトリガーに skill (`.claude/skills/`) を起動する。
-- **判定は2段に分離**。前段 `context-builder` が銘柄ごとの常設 Issue 本文を「持続コンテキスト(経営判断・商品ラインナップ・技術ロードマップ + 直近の重大トピック要約)」として育て、後段 `signal-judge` がそのコンテキスト+価格/地合いを読んで buy/sell/hold を判定する。
-- **出力の住み分け**。Issue 本文 = 銘柄を読み解く生きたナレッジ(context-builder が書く)。判定 (buy/sell/hold) = Slack に流れる(signal-judge が書く)。signal-judge は Issue を一切書き換えないので、判定→本文の編集ループは起きない。source of truth は時系列が D1、銘柄コンテキストが Issue 本文。
+- **判定は2段に分離**。前段 `context-builder` が銘柄ごとの常設 Issue 本文を「持続コンテキスト(経営判断・商品ラインナップ・技術ロードマップ + 直近の重大トピック要約)」として育て、後段 `signal-judge` がそのコンテキスト+価格/地合いを読んで buy/sell を判定する。
+- **判定は必ず buy か sell の2値**。hold も confidence スコアも出さない(薄い材料でも片側に倒す)。方向に「水準」修飾子 (押し目/追い/利確/逃げ) を添えて、トレンド内のどこにいるかを示す。
+- **出力の住み分け**。Issue 本文 = 銘柄を読み解く生きたナレッジ(context-builder が書く)。判定 (buy/sell) = Slack に流れる(signal-judge が書く)。signal-judge は Issue を一切書き換えないので、判定→本文の編集ループは起きない。source of truth は時系列が D1、銘柄コンテキストが Issue 本文。
 - **記事系は1テーブルに合流**。公式IR・銘柄ニュース・適時開示(TDnet)・証券会社レーティングはすべて `articles` テーブルに `source`/`ir_category` プレフィクス付きで保存する。専用テーブルは作らない。`/pull` の IR カーソルが `ir:% tdnet:% rating:%` を、`/pull-news` がニュースをまとめて返すので、収集元が増えても context-builder は無改修で読む。レーティングは目標株価が中期(6〜12ヶ月)ビューなので、context-builder が Issue 本文の専用セクションに畳み込む(直近トピックの30日ルールの例外)。
 
 ## 対象銘柄 (watchlist)
@@ -56,16 +57,18 @@ flowchart TB
     subgraph GHA["⚙️ GitHub Actions (LLM判定)"]
         direction TB
         CTXWF["context-builder.yml<br/>(concurrency: 銘柄ごと cancel-in-progress)"]
-        CTXSKILL["skill: context-builder<br/>(Claude Code / LLM)<br/>IR+ニュースを銘柄コンテキストに反映"]
+        CTXIN["step: context-input.sh<br/>(Issue+カーソル+新規IR/news を 1 JSON に)"]
+        CTXSKILL["skill: context-builder<br/>(Claude Code / LLM)<br/>@path を読み銘柄コンテキストに反映"]
         JUDGEDISP{{"signal-judge<br/>イベント<br/>(repository_dispatch)"}}
         JUDGEWF["signal-judge.yml<br/>(concurrency: 銘柄ごと cancel-in-progress)"]
-        JUDGESKILL["skill: signal-judge<br/>(Claude Code / LLM)<br/>コンテキスト+価格/地合いで判定"]
+        JUDGECTX["step: judge-context.sh + event-context.sh<br/>(数値コンテキストを正規化 + 需給イベント1行)"]
+        JUDGESKILL["skill: signal-judge<br/>(Claude Code / LLM)<br/>@path+Issue を読み buy/sell を判定"]
         ISSUE["銘柄ごとの常設Issue<br/>(銘柄コンテキスト + 2カーソル)"]
         SLACK["Slack"]
-        CTXWF --> CTXSKILL -->|本文を更新| ISSUE
-        CTXSKILL -->|本文更新後 dispatch| JUDGEDISP --> JUDGEWF --> JUDGESKILL
+        CTXWF --> CTXIN --> CTXSKILL -->|本文を更新| ISSUE
+        CTXSKILL -->|本文更新後 dispatch| JUDGEDISP --> JUDGEWF --> JUDGECTX --> JUDGESKILL
         ISSUE -.->|本文を読む| JUDGESKILL
-        JUDGESKILL -->|判定| SLACK
+        JUDGESKILL -->|判定 buy/sell| SLACK
     end
 
     %% 外部 → 収集
@@ -76,14 +79,14 @@ flowchart TB
     %% Worker → Actions
     DISPATCH --> CTXWF
 
-    %% Actions → Worker (材料引き)
-    API -->|/pull（IR/開示/レーティング本文） /pull-news（ニュース本文）| CTXSKILL
-    API -->|/latest（prices/daily/premarket/earnings）| JUDGESKILL
+    %% Actions → Worker (材料引きは workflow step が代行し skill へ @path で渡す)
+    API -->|/pull（IR/開示/レーティング本文） /pull-news（ニュース本文）| CTXIN
+    API -->|/latest（prices/daily/premarket/earnings）| JUDGECTX
 
     classDef cloud stroke:#4285f4,stroke-width:2px
     classDef gha stroke:#8e44ad,stroke-width:2px
     class CLOUD,CRON_CF,WORKER,D1,R2,API,DISPATCH cloud
-    class GHA,CTXWF,CTXSKILL,JUDGEDISP,JUDGEWF,JUDGESKILL,ISSUE,SLACK gha
+    class GHA,CTXWF,CTXIN,CTXSKILL,JUDGEDISP,JUDGEWF,JUDGECTX,JUDGESKILL,ISSUE,SLACK gha
 ```
 
 ### Cron スケジュール
@@ -110,70 +113,29 @@ sequenceDiagram
     W->>W: スクレイプ → D1/R2 保存
     alt 新規 IR/ニュース/開示/レーティングあり
         W->>GH: repository_dispatch(signal-update, {ticker})
-        GH->>CB: ワークフロー起動
-        CB->>W: /pull, /pull-news (since以降)
+        GH->>GH: step context-input.sh: /pull, /pull-news (since以降) + Issue/カーソルを 1 JSON に
+        GH->>CB: ワークフロー起動 (@path で入力 JSON を渡す)
         CB->>GH: Issue本文を更新(コンテキスト畳み込み + カーソル更新)
         CB->>GH: repository_dispatch(signal-judge, {ticker})
-        GH->>SJ: ワークフロー起動
+        GH->>GH: step judge-context.sh: /latest (prices/daily/premarket/earnings) を正規化した 1 JSON に + event-context.sh
+        GH->>SJ: ワークフロー起動 (@path で数値コンテキスト + 需給イベント1行を渡す)
         SJ->>GH: Issue本文を読む
-        SJ->>W: /latest (prices/daily/premarket/earnings)
-        SJ->>SL: buy/sell/hold + confidence を通知
+        SJ->>SL: buy/sell + 水準修飾子 (押し目/追い/利確/逃げ) を通知
     end
 ```
 
 カーソルは Issue 本文に永続化されるため、前段のジョブが途中でキャンセルされても
 カーソルは更新されず、次の発火で取りこぼし分を含めて再取得される (冪等)。
 
-## コンポーネント一覧
+## ディレクトリ構成
 
-### Cloudflare Worker (`worker/`)
-
-| 名前                     | 役割                                                    |
-| ------------------------ | ------------------------------------------------------- |
-| `worker/src/index.ts`    | ルーティング + IR(kioxia公式)収集 + scheduled(cron) で各収集モジュールを束ねる + GitHub App 認証で `repository_dispatch` 発火。`/run?kind=… /pull /pull-news /latest /health` 等の HTTP API |
-| `worker/src/timeseries.ts` | prices / daily / fundamentals の収集 (kabutan)         |
-| `worker/src/premarket.ts`  | 前夜マーケット(SOX/Nasdaq/Dow/日経先物)の収集            |
-| `worker/src/news.ts`       | per_ticker ニュース(kabutan 銘柄ニュース)の収集         |
-| `worker/src/disclosure.ts` | per_ticker 適時開示(TDnet)の収集 (kabutan 開示情報ページ)。`source="tdnet:<code>"` で articles に保存 |
-| `worker/src/ratings.ts`    | 証券会社レーティング(個社別 目標株価)の収集 (kabutan レーティング日報)。`source="rating:<firm>"` で articles に保存。信頼できない機関は本文に「信頼度: 低」を付けて保存 |
-| `worker/src/earnings.ts`   | 次回決算発表予定日の推定 (kabutan finance、eod cron で D1 更新) |
-| `worker/schema.sql`        | D1 スキーマ (articles / prices / daily / fundamentals / premarket / earnings)。IR/ニュース/開示/レーティングはすべて articles に合流 |
-
-### GitHub Actions (`.github/workflows/`)
-
-| 名前                          | トリガー                          | 役割                                       |
-| ----------------------------- | --------------------------------- | ------------------------------------------ |
-| `context-builder.yml`         | `repository_dispatch(signal-update)` / 手動 | context-builder skill で銘柄コンテキスト(Issue本文)を更新し signal-judge を発火 |
-| `signal-judge.yml`            | `repository_dispatch(signal-judge)` / 手動  | signal-judge skill でコンテキスト+価格/地合いを判定し Slack へ (Issueは触らない) |
-| `deploy-worker.yml`           | push to main (`worker/**`)        | wrangler で Worker を自動デプロイ          |
-
-### Claude Code skill (`agents/skills/`)
-
-skill の実体は `agents/skills/<name>/SKILL.md` に置く。Claude Code / GitHub Actions の `claude-code-action` は標準の `.claude/skills/` を探すため、`.claude/skills/<name>` は `agents/skills/<name>` への symlink になっている (実体と symlink の両方が git 管理下なので、Actions のチェックアウトでも解決できる)。
-
-| 名前              | 役割                                                                 |
-| ----------------- | -------------------------------------------------------------------- |
-| `context-builder` | 銘柄の IR + ニュース + 適時開示 + 証券会社レーティングを Worker から引き、Issue 本文を「持続コンテキスト+直近の重大トピック要約」として更新。レーティングは中期ビューなので専用セクションに畳み込む。判定はせず signal-judge を発火。one-shot |
-| `signal-judge`    | Issue 本文(コンテキスト)+ 価格/地合い/決算を読み buy/sell/hold + confidence を判定し Slack 通知。Issue は書き換えない。one-shot |
-
-### 確認用スクリプト (`scripts/`、手動の読み取り専用)
-
-| 名前                  | 役割                                                                          |
-| --------------------- | ----------------------------------------------------------------------------- |
-| `scripts/valuation.ts`| Worker `/latest` の prices + fundamentals + watchlist の `fair_per` から、必要EPS・必要な決算修正率・適正株価を表で出力 (`--json` 可) |
-| `scripts/sector.ts`   | Worker `/latest` の premarket(SOX) と各銘柄 daily から、セクターの地合いと相対強弱を出力 |
-| `scripts/events.ts`   | `config/events.yaml` の FOMC/SQ/日銀会合などから直近N日以内の未来イベントを一覧表示 |
-| `scripts/event-context.sh` | 需給イベント文脈(SQ週は日付から算出 + events.yaml の FOMC/日銀等)を1行に組み立て signal-judge の prompt 引数に渡す。GitHub Actions の workflow step 用 (要 GNU date)。人間の確認は `events.ts` を使う |
-
-### 設定 (`config/`)
-
-| 名前                   | 役割                                            |
-| ---------------------- | ----------------------------------------------- |
-| `config/watchlist.yaml`| 対象銘柄 + キーワード + IRソース + `fair_per` / `next_earnings_date` 初期値 |
-| `config/sources.yaml`  | ニュース / IR ソース定義                        |
-| `config/events.yaml`   | マクロ/需給イベント (FOMC/SQ/日銀会合、手動メンテ) |
-
-各 skill の詳細は `agents/skills/<name>/SKILL.md`、Worker のデプロイ/初期化は `worker/README-cloud.md` を参照。
+| パス | 中身 |
+| ---- | ---- |
+| `worker/`            | Cloudflare Worker (収集) |
+| `.github/workflows/` | LLM判定の Actions |
+| `agents/skills/`     | Claude Code skill 実体 (`.claude/skills/` は symlink) |
+| `scripts/`           | Actions 前処理 (`*.sh`) と手動ツール (`*.ts`) |
+| `config/`            | watchlist / sources / events |
 
 ## 判定結果の見方
 
@@ -181,8 +143,8 @@ skill の実体は `agents/skills/<name>/SKILL.md` に置く。Claude Code / Git
 
 - **GitHub Issue (銘柄コンテキスト)**: 銘柄ごとに `label: ir-report` + `label: ticker:<code>` の
   常設 Issue が1本あり、本文が銘柄コンテキスト + 末尾の 2カーソル。証券会社レーティング(機関・格付・目標株価)は
-  本文の「証券会社レーティング」セクションに新しい順で畳み込まれる。**判定 (buy/sell/hold) は本文には書かれない**。
-- **Slack (判定)**: signal-judge が出す buy/sell/hold + confidence + 根拠が1行流れる。
+  本文の「証券会社レーティング」セクションに新しい順で畳み込まれる。**判定 (buy/sell) は本文には書かれない**。
+- **Slack (判定)**: signal-judge が出す buy/sell + 水準修飾子 (押し目/追い/利確/逃げ) + 根拠が1行流れる。
   根拠には判定の核になった「直近の重大トピック」が引用される。寄り前 (intake cron) は地合いを
   取得してから新着のある銘柄の signal-judge を発火するので、寄り前判定も地合い込みで Slack に届く。
 
@@ -198,8 +160,9 @@ node scripts/events.ts --days 45
 
 各銘柄の次回決算発表予定日は **Worker が eod cron (引け後1日1回) で自動推定**し D1 に保持する。
 kabutan finance ページの四半期業績テーブルから「直近実績の次四半期 = 前年同期の発表日 +1年」で算出。
-signal-judge はこれを読み、決算が5日以内なら confidence を low、6-14日なら medium にキャップする
-(スイング前提で持ち越しガラを避けるため)。決算発表後は翌営業日の cron で自動的に次の予定日へ繰り上がる。
+signal-judge はこれを読み、決算が5日以内なら原則 `sell` に倒す(de-risk into the print。最新コンテキスト
+そのものが決算リリースの場合を除く。スイング前提で持ち越しガラを避けるため)。決算発表後は翌営業日の cron で
+自動的に次の予定日へ繰り上がる。
 
 `config/watchlist.yaml` の `next_earnings_date` は初期値/参考用。source of truth は D1。
 

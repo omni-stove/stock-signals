@@ -56,6 +56,22 @@ jobs:
       # Action 実行時は CLAUDE.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
+      # 既存 Issue + カーソル以降の新規 IR/ニュースを fetch + 正規化し、1 つの JSON に
+      # まとめて prompt に渡す。Issue 取得・カーソル抽出・/pull /pull-news の since 付き取得・
+      # 新規0判定・次カーソル算出は決定論的なのでここ (step) で完結させ、skill には curl/gh を
+      # 叩かせず「新規アイテムの取捨選択と本文の再生成」だけをさせる (signal-judge と同じ思想)。
+      # JSON は Issue 本文込みで巨大・特殊文字を含むので prompt に直接埋めず、ファイルに書いて
+      # skill にパスを渡す。skill はそのファイルを Read するだけ。status (no-issue / no-update /
+      # ok) で skill の分岐が決まる。
+      - name: Build context input
+        run: |
+          ticker="${{ github.event.client_payload.ticker || inputs.ticker }}"
+          bash scripts/context-input.sh "$ticker" > "$RUNNER_TEMP/ctxin.json"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run context-builder skill
         uses: anthropics/claude-code-action@v1
         with:
@@ -63,10 +79,14 @@ jobs:
           # Worker(GitHub App=omnistove-internal-auth)発の repository_dispatch を許可する。
           # 既定では Bot起動のワークフローを Action が弾くため。bot名は [bot] サフィックス付き。
           allowed_bots: "omnistove-internal-auth[bot]"
-          # Worker発火時は client_payload.ticker に対象銘柄が入る。手動実行時は inputs.ticker を使う。
-          prompt: "/context-builder ${{ github.event.client_payload.ticker || inputs.ticker }}"
+          # 第1引数=対象銘柄 (Worker発火時 client_payload.ticker / 手動時 inputs.ticker)。
+          # @ で始まる第2引数=入力コンテキスト JSON (context-input.sh 出力) のパス。
+          # skill は JSON を Read し、新規があれば本文を再生成して gh issue edit で上書きし
+          # signal-judge を dispatch する。curl/gh での fetch はしない。
+          prompt: "/context-builder ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/ctxin.json"
           # Actions の使い捨てサンドボックス内なので Bash を広く許可 (パイプ/heredoc/tmpfile書き込みが
           # 細かい Bash(gh:*) 指定だと弾かれ、リトライでターンを浪費して失敗していたため)。
+          # ctxin.json を read するため Read も許可。
           claude_args: "--allowedTools Bash,Write,Read,Edit --max-turns 50"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}

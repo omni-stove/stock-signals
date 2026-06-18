@@ -9,10 +9,8 @@ This skill maintains the **living context** for a ticker in its standing GitHub 
 newly-fetched IR and per-ticker news and folds what matters into the Issue body, so that the body
 is always the best single-page brief for understanding the name.
 
-**It does not produce a buy/sell call.** Judging is a separate stage (the `signal-judge`
-skill). This skill's only job is to keep the context current and then hand off. The split exists so
-the two concerns stay independent and never form an edit loop: context-builder writes the Issue;
-signal-judge reads it and writes only to Slack.
+**It does not produce a buy/sell call** — judging is the separate `signal-judge` skill.
+context-builder writes the Issue; signal-judge reads it and writes only to Slack.
 
 **The system is built for SWING trading (holding several days to a few weeks).** Frame the context
 toward that horizon — what a swing trader needs to know to read this name's next few weeks.
@@ -20,11 +18,16 @@ toward that horizon — what a swing trader needs to know to read this name's ne
 ## Invocation
 
 ```
-/context-builder 285A
+/context-builder 285A @/path/to/ctxin.json
 ```
 
-The argument `<ticker>` is the symbol this run owns. Fired by the Worker's `repository_dispatch`
-(`signal-update`, one dispatch per ticker) when new IR or news arrives, or manually.
+`<ticker>` is the symbol this run owns. The `@<path>` second argument is the **input context**
+JSON the workflow computed at launch (`scripts/context-input.sh` output) — the existing Issue, the
+two cursors, and the newly-fetched IR/news already pulled since each cursor. **Read this file** for
+all of it (the Issue, cursors, and items are already in the JSON).
+
+Fired by the Worker's `repository_dispatch` (`signal-update`, one dispatch per ticker) when new IR
+or news arrives, or manually.
 
 ## Steps
 
@@ -32,45 +35,41 @@ The argument `<ticker>` is the symbol this run owns. Fired by the Worker's `repo
 
 Read the `<ticker>` entry from `config/watchlist.yaml` and cache `name` / `fair_per` / `sector`.
 
-### 2. Get the existing Issue and the two cursors
+### 2. Read the input context JSON and branch on `status`
 
+Read the `@<path>` JSON. Its `status` decides the whole run:
+
+- `status: "no-issue"` → no standing Issue for this ticker. Print `<ticker> no-issue (skipped)` and
+  exit. (Standing Issues are provisioned once, out of band.)
+- `status: "no-update"` → the Issue exists but **both** new-item counts are 0. Print
+  `<ticker> ir=0 news=0 (no update)` and exit (leave the Issue as-is, skip signal-judge).
+- `status: "ok"` → there are new items. Continue to step 3.
+
+For `status: "ok"`, the JSON carries everything you need:
 ```
-gh issue list --label ir-report --label "ticker:<ticker>" --state open --json number,body --limit 1
+{
+  "status": "ok",
+  "issue_number": 12,
+  "issue_body": "<the WHOLE existing body — the context you are amending, not replacing wholesale>",
+  "cursors": {
+    "ir":   { "current": "<old>", "next": "<advance to this>" },
+    "news": { "current": "<old>", "next": "<advance to this>" }
+  },
+  "ir_count": 2, "news_count": 1,
+  "ir_items":   [{ "url", "title", "published_at", "ir_category", "fetched_at", "body" }, ...],
+  "news_items": [{ ... same shape, "ir_category" is null ... }]
+}
 ```
-
-The body ends with two cursor comments:
-```
-<!-- cursor: ir_last_fetched_at=YYYY-MM-DDTHH:MM:SS.sssZ -->
-<!-- cursor: news_last_fetched_at=YYYY-MM-DDTHH:MM:SS.sssZ -->
-```
-Read both, and read the **whole existing body** — it is the context you are amending, not
-replacing wholesale. A missing cursor (first run) means "pull the recent backlog" — omit `since`.
-
-If no Issue exists for this ticker, **do not** invent one silently — print
-`<ticker> no-issue (skipped)` and exit. (The standing Issues are provisioned once, out of band.)
-
-### 3. Pull new IR and new news from the Worker
-
-All Worker calls (except `/health`) require auth: pass the token in the
-`Authorization: Bearer` header (never in the URL — it leaks into logs). When `$SYNC_TOKEN` is
-empty (dev), the header is harmless.
-
-```
-curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/pull?code=<ticker>&since=<ir_last_fetched_at>&limit=20"
-curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/pull-news?code=<ticker>&since=<news_last_fetched_at>&limit=20"
-```
-
-Each response is `{ ok, count, rows: [{ url, title, published_at, ir_category, fetched_at, body }] }`.
-`/pull` returns IR only; `/pull-news` returns per-ticker news only. (`ir_category` is null for news.)
-
-If **both** counts are 0, exit without touching the Issue (nothing new to fold in, and the
-existing context still stands — do **not** fire signal-judge). Print `<ticker> ir=0 news=0 (no update)`.
+`ir_items` are IR (official IR + TDnet + `rating`); `news_items` are per-ticker news. Both are
+already filtered to "since each cursor" and ordered oldest-first. Use `cursors.*.next` verbatim when
+you rewrite the body (step 5) — the workflow already computed the correct max `fetched_at` per kind
+and left a kind's cursor unchanged when it had 0 new rows.
 
 ### 4. Read each new item and decide what is material to the *context*
 
-This is a context update, **not** a judgment. For each new IR / news item ask: *does this change how
-the name should be understood over the next weeks?* Fold in only what shifts the picture; drop pure
-restatements and noise.
+This is a context update, **not** a judgment. For each item in `ir_items` / `news_items` ask: *does
+this change how the name should be understood over the next weeks?* Fold in only what shifts the
+picture; drop pure restatements and noise.
 
 What counts as material context (this is the substance the Issue is for):
 - **Management & capital decisions** — capex plans, capacity ramp up/down, M&A / alliances /
@@ -97,10 +96,8 @@ a 6–12-month view, so it goes in the **## 証券会社レーティング** sec
 
 ### 5. Regenerate and overwrite the Issue body
 
-Rebuild the whole body and overwrite with `gh issue edit`, preserving the section structure below.
-Writing the whole body at once (not incremental edits) keeps it near-atomic: if the job is
-cancelled mid-run (a newer dispatch superseded it via `concurrency: cancel-in-progress`), the old
-body and the old cursors stay intact, and the next run re-pulls everything since those cursors.
+Rebuild the whole body (not incremental edits) and overwrite with `gh issue edit`, preserving the
+section structure below.
 
 **Body structure** (Japanese; keep these headings stable — signal-judge reads them):
 
@@ -129,17 +126,19 @@ body and the old cursors stay intact, and the next run re-pulls everything since
 ## 決算・ガイダンス
 <latest results vs expectations, current guidance, known next-earnings considerations — facts only>
 
-<!-- cursor: ir_last_fetched_at=<max ir fetched_at, or unchanged if 0 new IR> -->
-<!-- cursor: news_last_fetched_at=<max news fetched_at, or unchanged if 0 new news> -->
+<!-- cursor: ir_last_fetched_at=<cursors.ir.next> -->
+<!-- cursor: news_last_fetched_at=<cursors.news.next> -->
 <!-- managed-by: context-builder skill. Auto-updated. Do not edit the body by hand. -->
 ```
 
-**Only advance a cursor to the max `fetched_at` of the rows actually pulled for that kind** (leave
-it unchanged if that kind had 0 new rows).
+**Write `cursors.ir.next` / `cursors.news.next` verbatim** — the workflow already advanced each to
+the max `fetched_at` of the rows it pulled, or left it unchanged when that kind had 0 new rows.
+
+Overwrite with `gh issue edit <issue_number> --body-file <file>` (use `issue_number` from the JSON).
 
 ### 6. Fire signal-judge
 
-The context changed, so the judgment should be refreshed. Trigger the `signal-judge` workflow via a
+After the body is updated (step 5 ran), trigger the `signal-judge` workflow via a
 `repository_dispatch` from inside this job (needs `contents: write` on the workflow token):
 
 ```
@@ -148,16 +147,11 @@ gh api "repos/${GITHUB_REPOSITORY}/dispatches" \
   -F "client_payload[ticker]=<ticker>"
 ```
 
-Do this **only** when the body was actually updated (step 5 ran). If both counts were 0 (step 3),
-you already exited and must not fire.
-
-This skill never posts the judgment to Slack — signal-judge does.
-
 ## Output style (stdout)
 
 A single-line summary, no narration:
 ```
-285A ir=2 news=1 → context updated (issue#12), signal-judge dispatched
+<ticker> ir=<n> news=<n> → context updated (issue#<n>), signal-judge dispatched
 ```
-On zero new (both kinds): `285A ir=0 news=0 (no update)`.
-On missing Issue: `285A no-issue (skipped)`.
+On zero new (both kinds): `<ticker> ir=0 news=0 (no update)`.
+On missing Issue: `<ticker> no-issue (skipped)`.

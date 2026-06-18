@@ -6,31 +6,24 @@ description: For a single ticker given as argument, read that ticker's standing 
 # signal-judge
 
 **Decision stage.** Read the ticker's living context (the standing Issue body, owned by
-context-builder) + the current market picture → emit one **swing** judgment to Slack. Never writes the Issue.
+context-builder) + the current market picture → emit one **swing** judgment to Slack.
 
-- **Always `buy` or `sell`. No `hold`, no confidence score.** Thin evidence still picks a side.
-  Position management is the reader's job (you don't know if they hold / their entry / size), so a
-  weak `buy` on a held name just means "no reason to sell".
 - **Direction carries a 水準 qualifier** (step 4b): `buy・押し目` vs `buy・追い`, `sell・利確` vs
-  `sell・逃げ`. The direction (2-value) never changes; the qualifier tells the reader *where in the
-  move* this is — a pullback to buy vs chasing a breakout, taking profit vs cutting risk.
+  `sell・逃げ`. The direction (2-value) never changes; the qualifier tells *where in the move* it is.
 - **Swing horizon**: days to a few weeks. Not day-trading, not buy-and-hold.
 
 ## Invocation
 
 ```
-/signal-judge 285A
-/signal-judge 285A -- 需給イベント(2026-06-19): 米メジャーSQ週(...) @/tmp/numctx.json
+/signal-judge <ticker> -- <event-context> @<numeric-context.json>
 ```
 
-`<ticker>` is this run's symbol. After `--` come two inputs the workflow computed at launch — never
-re-fetch them yourself:
+`<ticker>` is this run's symbol. After `--` come two inputs the workflow computed at launch — use them as-is:
 - the **event context** — a one-line 需給イベント string (SQ + nearby macro events). No `--` →
-  treat as 需給イベント: 特になし. Never read `config/events.yaml` or run a calendar script.
+  treat as 需給イベント: 特になし.
 - `@<path>` — the **numeric context** JSON (`scripts/judge-context.sh` output): earnings, premarket,
   daily, prices, **already fetched and normalized** (`days_to_earnings`, range position, MA position,
-  volume ratio, freshness flags). **Read this file**; do not curl the Worker for these. No `@<path>`
-  (bare manual run) → fetch yourself via `$WORKER_URL/latest?kind=…` with `Authorization: Bearer $SYNC_TOKEN`.
+  volume ratio, freshness flags). **Read this file** for these.
 
 Fired by context-builder's `repository_dispatch` (one per ticker) after the Issue updates, or manually.
 
@@ -59,7 +52,7 @@ input — read it in full.** 直近の重大トピック is freshest and usually
 (discount older), **アップサイド% to 目標株価** (near/over → `sell`), **信頼度**.
 No Issue / empty → `context: unavailable`, call on price/backdrop alone (weaker, still a side).
 
-**3. Read the price picture** (from the step-1 JSON, no fetch).
+**3. Read the price picture** (from the step-1 JSON).
 - `daily.ma_position` = trend; `daily.range_pct` = where in the 20-day range (near 100 → buying late
   is risky; near 0 + bullish context = clean R/R); `vol_x_20d` >2 = unusual.
 
@@ -115,7 +108,7 @@ below→逃げ) and say the qualifier is a weak read.
   context overrides. Supportive (SOX ≳ +2%) → `buy`.
 - 米メジャーSQ週 → discount SOX weight (say so); 米メジャーSQ明け → drop the discount.
 
-**6. Post to Slack (only output). Do not touch the Issue.**
+**6. Post to Slack (only output).**
 ```
 curl -s -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' -d '{
   "text": "🧭 <ticker> <name> signal: <signal>・<qualifier>",
@@ -124,14 +117,9 @@ curl -s -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' -d '{
               link to the context Issue ... ]
 }'
 ```
-`$SLACK_WEBHOOK_URL` unset → skip POST, print stdout only.
 
 ## Output (stdout) — one line, no narration
 
 ```
-285A → buy・押し目 (holdings capex ramp + BiCS8, ma25付近) backdrop SOX+1.2%, slack ok
-285A → sell・利確 (材料出尽くし, レンジ上限) 日本メジャーSQ週=寄り値ノイズはファンダで判断, slack ok
-285A → buy・追い (BiCS8 上放れ) backdrop SOX+2.1% but 米メジャーSQ週=清算由来で割引, slack ok
-285A → sell・逃げ (決算3d前 de-risk) backdrop SOX-2.4%, slack ok
-285A context-unavailable → sell・利確 (弱い読み, 材料なし), slack ok
+<ticker> → <signal>・<qualifier> (driving topics, price/MA cue) backdrop <SOX/event tilt>, slack <ok|skipped>
 ```

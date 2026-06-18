@@ -29,7 +29,7 @@ export interface Env {
   //   設定: npx wrangler secret put SYNC_TOKEN
   SYNC_TOKEN?: string;
   // 新規IR取得時に GitHub Actions (ir-report) を repository_dispatch で叩くための
-  // Fine-grained PAT (codyNog/stock-signals の Contents:read + Actions:write)。Secret。
+  // Fine-grained PAT (omni-stove/stock-signals の Contents:read + Actions:write)。Secret。
   //   設定: npx wrangler secret put GITHUB_DISPATCH_TOKEN
   //   未設定なら発火しない (取得自体は動く)。
   GITHUB_DISPATCH_TOKEN?: string;
@@ -42,7 +42,7 @@ export interface Env {
 // PAT 未設定なら no-op (best-effort、発火失敗で収集は止めない)。
 async function dispatchIrReport(env: Env, tickers: string[]): Promise<void> {
   if (!env.GITHUB_DISPATCH_TOKEN || tickers.length === 0) return;
-  const repo = env.GITHUB_REPO || "codyNog/stock-signals";
+  const repo = env.GITHUB_REPO || "omni-stove/stock-signals";
   try {
     const res = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
       method: "POST",

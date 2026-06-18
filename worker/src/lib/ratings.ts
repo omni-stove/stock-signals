@@ -23,14 +23,15 @@
 //
 // watchlist 銘柄にレーティング変更があった日だけ新規が出る (毎日は出ない)。
 
+import { WATCHLIST } from "./timeseries";
+import { fetchHtml, hash } from "./utils";
+
 export interface RatingsEnv {
 	DB: D1Database;
 	ARTICLES: R2Bucket;
 	USER_AGENT: string;
 	MIN_INTERVAL_MS: string;
 }
-
-const WATCHLIST: string[] = ["285A", "6857", "6920", "6981"];
 
 // disclosure.ts と同じ銘柄ニュースページ (nmode=3)。当日の日報リンク発見の起点に使う。
 const URL_NEWS = (code: string) =>
@@ -56,22 +57,6 @@ const TRUSTED_FIRMS = new Set<string>([
 	"シティ",
 	"ドイツ",
 ]);
-
-async function fetchHtml(url: string, env: RatingsEnv): Promise<string> {
-	const res = await fetch(url, { headers: { "User-Agent": env.USER_AGENT } });
-	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
-	const buf = await res.arrayBuffer();
-	return new TextDecoder("utf-8").decode(buf);
-}
-
-// URL → 短いハッシュ (R2キー用)。index.ts / disclosure.ts の hash() と同じ規則。
-function hash(s: string): string {
-	let h = 0;
-	for (let i = 0; i < s.length; i++) {
-		h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-	}
-	return (h >>> 0).toString(16).padStart(8, "0");
-}
 
 // 半角化 (全角英数記号 → 半角)。コード照合・機関名比較を安定させる。
 function toHalf(s: string): string {

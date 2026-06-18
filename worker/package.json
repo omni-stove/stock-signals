@@ -11,7 +11,8 @@
     "db:init:remote": "wrangler d1 execute stock-signals --file=./schema.sql --remote"
   },
   "dependencies": {
-    "cheerio": "^1.0.0"
+    "cheerio": "^1.0.0",
+    "hono": "^4.12.26"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240000.0",

@@ -134,7 +134,13 @@ collect_yaml_events() {
     # SQ は計算側で出すので yaml の jp-sq/us-sq はここでは無視 (二重計上回避)。
     case "$kind" in jp-sq|us-sq) date=""; kind=""; label=""; impact=""; jst=""; return 0;; esac
     local eff="${jst:-$date}"
-    local eff_epoch; eff_epoch="$("$DATE" -d "$eff" +%s 2>/dev/null || echo 0)"
+    # パース不能な日付 (events.yaml のタイプミス等) は無言で握りつぶさず警告し、当該イベントを捨てる。
+    # epoch 0 へ倒すと「過去日」扱いで黙って消えてしまい、設定ミスに気づけないため。
+    local eff_epoch
+    if ! eff_epoch="$("$DATE" -d "$eff" +%s 2>/dev/null)"; then
+      echo "event-context: 日付パース失敗 '${eff}' (kind=${kind:-?} label=${label:-?}) → このイベントを無視" >&2
+      date=""; kind=""; label=""; impact=""; jst=""; return 0
+    fi
     if [[ "$eff_epoch" -ge "$today_epoch" && "$eff_epoch" -le "$horizon_epoch" ]]; then
       local days_until=$(( (eff_epoch - today_epoch) / 86400 ))
       local when; if [[ "$days_until" -eq 0 ]]; then when="本日"; else when="${days_until}日後"; fi

@@ -11,6 +11,8 @@
 // 全ソース UTF-8 なので TextDecoder で十分。
 
 import * as cheerio from "cheerio";
+import { WATCHLIST } from "./timeseries";
+import { fetchHtml, sleep } from "./utils";
 
 export interface EarningsEnv {
 	DB: D1Database;
@@ -18,22 +20,10 @@ export interface EarningsEnv {
 	MIN_INTERVAL_MS: string;
 }
 
-const WATCHLIST: string[] = ["285A", "6857", "6920", "6981"];
 const URL_FINANCE = (code: string) =>
 	`https://kabutan.jp/stock/finance?code=${code}`;
 
 type Quarter = { y: number; startM: number; endM: number; raw: string };
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((r) => setTimeout(r, ms));
-}
-
-async function fetchHtml(url: string, env: EarningsEnv): Promise<string> {
-	const res = await fetch(url, { headers: { "User-Agent": env.USER_AGENT } });
-	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
-	const buf = await res.arrayBuffer();
-	return new TextDecoder("utf-8").decode(buf);
-}
 
 // 四半期ラベル "25.04-06" -> { y: 2025, startM: 4, endM: 6, raw }
 function parseQLabel(label: string): Quarter | null {

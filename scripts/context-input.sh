@@ -34,6 +34,8 @@ AUTH=(-H "Authorization: Bearer ${SYNC_TOKEN:-}")
 # (Issue は out-of-band で provision される前提。skill は勝手に作らない)。
 ISSUE="$(gh issue list --label ir-report --label "ticker:$TICKER" --state open \
   --json number,body --limit 1 2>/dev/null || echo '[]')"
+# gh 失敗や非 JSON は "[]" に正規化 (status=no-issue に倒す)。
+echo "$ISSUE" | jq -e . >/dev/null 2>&1 || ISSUE='[]'
 ISSUE_N="$(echo "$ISSUE" | jq 'length')"
 if [[ "$ISSUE_N" -eq 0 ]]; then
   jq -n --arg t "$TICKER" '{ticker:$t, status:"no-issue"}'
@@ -58,7 +60,13 @@ pull() {
   local q="code=$TICKER&limit=20"
   [[ -n "$cursor" ]] && q+="&since=$cursor"
   local out; out="$(curl -sf "${AUTH[@]}" "$WORKER_URL/$path?$q" 2>/dev/null || true)"
-  if [[ -z "$out" ]]; then echo "{}"; else echo "$out"; fi
+  # curl 失敗 (空) または非 JSON (タイムアウトで途中まで返った等) は "{}" に正規化し、
+  # 以降の jq を確実に走らせる。jq -e で妥当性を判定する。
+  if [[ -z "$out" ]] || ! echo "$out" | jq -e . >/dev/null 2>&1; then
+    echo "{}"
+  else
+    echo "$out"
+  fi
 }
 
 IR="$(pull "pull" "$IR_CURSOR")"

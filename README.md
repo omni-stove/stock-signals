@@ -42,7 +42,7 @@ flowchart TB
     subgraph CLOUD["☁️ Cloudflare Worker (収集)"]
         direction TB
         CRON_CF["Cron Triggers<br/>intake(IR+news+開示+レーティング+寄り前は地合い)/prices/eod(daily+fundamentals+earnings)"]
-        WORKER["Worker<br/>src/index.ts + timeseries.ts + premarket.ts<br/>+ news.ts + disclosure.ts + ratings.ts + earnings.ts"]
+        WORKER["Worker<br/>src/index.ts(Honoアプリ組立+エントリ)<br/>routes/(run/latest/pull/misc/auth = HTTP層)<br/>lib/cron.ts(Cron配線) + ir-collect.ts(公式IR収集) + slack.ts(新規IR通知)<br/>+ timeseries.ts + premarket.ts + news.ts + disclosure.ts + ratings.ts + earnings.ts<br/>+ ir-sources.ts(IR site別パーサ) + github-dispatch.ts(repository_dispatch発火)<br/>(共通: lib/env.ts = Env型 / lib/utils.ts = hash/sleep/fetchHtml)"]
         D1[("D1 (SQLite)<br/>prices/daily/fundamentals<br/>articles(IR+news+開示+レーティング)メタ<br/>premarket/earnings/intraday_dispatch")]
         R2[("R2<br/>記事本文JSON")]
         API((HTTP API<br/>/run /pull /pull-news /latest))
@@ -182,9 +182,9 @@ signal-judge はこれを読み、決算が5日以内なら原則 `sell` に倒�
 
 - データは専用テーブルを持たず `articles` に `source="rating:<firm>"` / `ir_category="rating"` で保存し、
   `/pull` の IR カーソルに合流する。context-builder は無改修で読み、Issue 本文の専用セクションに畳み込む。
-- 信頼する証券会社は `worker/src/ratings.ts` の `TRUSTED_FIRMS` で定義する。**ここに無い機関も捨てず保存し**、
+- 信頼する証券会社は `worker/src/lib/ratings.ts` の `TRUSTED_FIRMS` で定義する。**ここに無い機関も捨てず保存し**、
   本文に「信頼度: 低」を付けて judge 側で割り引けるようにする (後でリストを変えても再取得不要)。
-- レーティング収集対象の銘柄コードは `ratings.ts` の `WATCHLIST` に直書き。watchlist を増やしたら同期させる。
+- レーティング収集対象の銘柄コードは `worker/src/lib/timeseries.ts` の `WATCHLIST` (Worker 全モジュール共通の唯一の定義) を参照する。watchlist を増やすときはここと `config/watchlist.yaml` だけ直す。
 
 ## イベントカレンダーメンテナンス
 

@@ -9,6 +9,7 @@
 // 銘柄追加時は WATCHLIST を更新する。
 
 import * as cheerio from "cheerio";
+import { fetchHtml, sleep } from "./utils";
 
 export interface TimeseriesEnv {
 	DB: D1Database;
@@ -16,7 +17,8 @@ export interface TimeseriesEnv {
 	MIN_INTERVAL_MS: string;
 }
 
-// ローカル config/watchlist.yaml の tickers と対応。
+// ローカル config/watchlist.yaml の tickers と対応。Worker 内の全モジュールが
+// この定義を import して使う唯一の出所 (銘柄追加時はここ + watchlist.yaml だけ直す)。
 export const WATCHLIST: string[] = ["285A", "6857", "6920", "6981"];
 
 // ローカル config/sources.yaml の url_template と対応。
@@ -26,18 +28,6 @@ const URL_DAILY = (code: string) =>
 const URL_FUNDAMENTALS = (code: string) =>
 	`https://kabutan.jp/stock/?code=${code}`;
 const SITE = "kabutan";
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((r) => setTimeout(r, ms));
-}
-
-// 全ソース UTF-8 (調査済) なので TextDecoder で十分。
-async function fetchHtml(url: string, env: TimeseriesEnv): Promise<string> {
-	const res = await fetch(url, { headers: { "User-Agent": env.USER_AGENT } });
-	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
-	const buf = await res.arrayBuffer();
-	return new TextDecoder("utf-8").decode(buf);
-}
 
 function toNumber(raw: string | undefined | null): number | null {
 	if (!raw) return null;

@@ -18,6 +18,8 @@
 // 重複排除は articles.url の PRIMARY KEY + INSERT OR IGNORE (news.ts と同じ)。
 
 import * as cheerio from "cheerio";
+import { WATCHLIST } from "./timeseries";
+import { fetchHtml, hash } from "./utils";
 
 export interface DisclosureEnv {
 	DB: D1Database;
@@ -26,9 +28,6 @@ export interface DisclosureEnv {
 	MIN_INTERVAL_MS: string;
 }
 
-// ローカル config/watchlist.yaml の tickers と対応 (news.ts / timeseries.ts と同じ並び)。
-const WATCHLIST: string[] = ["285A", "6857", "6920", "6981"];
-
 // kabutan の開示情報ページ (nmode=3)。ニュース一覧 (news.ts) と同ドメイン・同テーブル構造。
 const URL_DISCLOSURE = (code: string) =>
 	`https://kabutan.jp/stock/news?code=${code}&nmode=3`;
@@ -36,22 +35,6 @@ const SITE = "tdnet";
 
 // 1銘柄あたり記録する最大件数 (新しい順)。本文取得はしないので件数は多めでも軽い。
 const DISCLOSURE_LIMIT = 20;
-
-async function fetchHtml(url: string, env: DisclosureEnv): Promise<string> {
-	const res = await fetch(url, { headers: { "User-Agent": env.USER_AGENT } });
-	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
-	const buf = await res.arrayBuffer();
-	return new TextDecoder("utf-8").decode(buf);
-}
-
-// URL → 短いハッシュ (R2キー用)。index.ts / news.ts の hash() と同じ規則。
-function hash(s: string): string {
-	let h = 0;
-	for (let i = 0; i < s.length; i++) {
-		h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-	}
-	return (h >>> 0).toString(16).padStart(8, "0");
-}
 
 // 開示一覧 (table.s_news_list の各 tr) を抽出。news.ts の parseKabutanList と同構造だが
 // time が "26/05/29 17:00" 形式 (年2桁・&nbsp;区切り) なので date はそのまま渡し normDate で正規化する。

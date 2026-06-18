@@ -34,7 +34,8 @@ Fired by context-builder's `repository_dispatch` (one per ticker) after the Issu
 - `earnings.days_to_earnings` (null → risk unknown).
 - `daily` (`status` ok/insufficient): `range_pct` (0=安値圏 / 100=高値圏), `ma_position`
   (above=uptrend / between=chop / below=downtrend), `vol_x_20d` (>2 = unusual), `close`, range hi/lo.
-  `insufficient` (<5 rows) → proceed on context alone.
+  `ma25_dev_pct` / `ma5_dev_pct` = 終値の ma25 / ma5 からの乖離率(%, 傾斜の鋭さ)。`insufficient`
+  (<5 rows) → proceed on context alone.
 - `premarket` (`status` ok/stale/unavailable): `sox_change_pct` etc. `stale`/`unavailable` (row >20h
   old, predates last NY close) → backdrop unavailable, skip step 5.
 - `prices` (`status` ok/unavailable): `series` `change_pct`/`volume` rising, fading, or choppy? A
@@ -55,6 +56,10 @@ No Issue / empty → `context: unavailable`, call on price/backdrop alone (weake
 **3. Read the price picture** (from the step-1 JSON).
 - `daily.ma_position` = trend; `daily.range_pct` = where in the 20-day range (near 100 → buying late
   is risky; near 0 + bullish context = clean R/R); `vol_x_20d` >2 = unusual.
+- **傾斜の鋭さ** (`ma25_dev_pct` / `ma5_dev_pct`): range_pct はレンジ内の*相対位置*しか見ず「+70%上げた後の
+  93」と「揉み合いの93」を潰す。乖離率は*どれだけ立ち上がったか*を捉える。`ma25_dev_pct` 大 (≳+25%)
+  かつ `ma5_dev_pct` 小 (close が ma5 に張り付き) = **放物線的な垂直加速**(天井圏で傾斜が増え続ける形)。
+  vol_x_20d が低い(出来高細り)とさらに息切れサイン。step 4b の追い禁止ルールへ。
 
 **Fire window** (current JST) — changes what the price data means:
 
@@ -89,14 +94,21 @@ No Issue / empty → `context: unavailable`, call on price/backdrop alone (weake
   | FOMC/日銀/CPI `[high]`/`[medium]` + days-until | known binary macro | `[high]` ≤3d out → `sell` |
 
 **4b. 水準 qualifier.** After the direction, tag *where in the move* it is — from `daily.range_pct` ×
-`ma_position` × context freshness. No new data needed.
+`ma_position` × `ma25_dev_pct` × context freshness. No new data needed.
 
 | dir | qualifier | when |
 |---|---|---|
 | buy | **押し目** (default) | `range_pct` low/mid, or pullback toward ma25, with intact/live context — clean entry |
-| buy | **追い** | `range_pct` near 100 / fresh breakout — context new enough to chase, but flag the late entry |
+| buy | **追い** | `range_pct` near 100 / fresh breakout — context new enough to chase, but flag the late entry. **`ma25_dev_pct` ≳+25% は「追い」を出すな** → 下の放物線ルールへ |
 | sell | **利確** (default) | `range_pct` near 100 after a multi-day run, 材料出尽くし / priced in — sell strength |
 | sell | **逃げ** | `ma_position` below, or risk-off: earnings ≤5d, hostile backdrop, `[high]` macro ≤3d |
+
+**放物線(垂直加速)ガード.** `ma25_dev_pct` が極端 (≳+25%、特に +30% 超) のとき、たとえ文脈が live
+でも `buy・追い` は出さない — 天井圏で傾斜が増え続ける放物線は、当てに行かず警告に倒す:
+- `ma5_dev_pct` も大 (close が ma5 からも大きく離れて上にハネた一発) → **`sell・利確`**(行き過ぎの反落リスク)。
+- `ma5_dev_pct` 小 (close が ma5 に張り付き、垂直に駆け上がり中) → 方向 `buy` は維持しつつ
+  **`追い` で「**深追い厳禁・放物線終盤の可能性**」を rationale で最大限に強調**(出来高 `vol_x_20d` 細りなら息切れも併記)。
+天井を当てるのは目的ではない。「異常加速で R/R が悪い局面」だと明示するのが目的。
 
 Pick the closer fit; when `daily.status` is insufficient, fall back to `ma_position` (above→押し目/利確,
 below→逃げ) and say the qualifier is a weak read.

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreBinaries": ["wrangler"],
+  "workspaces": {
+    ".": {
+      "project": ["scripts/**/*.ts"]
+    },
+    "worker": {
+      "project": ["src/**/*.ts"]
+    }
+  }
+}

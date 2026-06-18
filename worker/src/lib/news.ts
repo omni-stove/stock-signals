@@ -13,6 +13,8 @@
 // 全ソース UTF-8 (調査済) なので TextDecoder で十分。iconv 不要。
 
 import * as cheerio from "cheerio";
+import { WATCHLIST } from "./timeseries";
+import { fetchHtml, hash, sleep } from "./utils";
 
 export interface NewsEnv {
 	DB: D1Database;
@@ -21,35 +23,12 @@ export interface NewsEnv {
 	MIN_INTERVAL_MS: string;
 }
 
-// ローカル config/watchlist.yaml の tickers と対応。
-const WATCHLIST: string[] = ["285A", "6857", "6920", "6981"];
-
 // ローカル config/watchlist.yaml の news_url と対応。
 const URL_NEWS = (code: string) => `https://kabutan.jp/stock/news?code=${code}`;
 const SITE = "kabutan";
 
 // 1ソースあたり本文取得する最大件数 (新しい順)。場中の連投を避けるため控えめに。
 const NEWS_LIMIT = 20;
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((r) => setTimeout(r, ms));
-}
-
-async function fetchHtml(url: string, env: NewsEnv): Promise<string> {
-	const res = await fetch(url, { headers: { "User-Agent": env.USER_AGENT } });
-	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
-	const buf = await res.arrayBuffer();
-	return new TextDecoder("utf-8").decode(buf);
-}
-
-// URL → 短いハッシュ (R2キー用)。index.ts の hash() と同じ規則。
-function hash(s: string): string {
-	let h = 0;
-	for (let i = 0; i < s.length; i++) {
-		h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-	}
-	return (h >>> 0).toString(16).padStart(8, "0");
-}
 
 // 株探の銘柄ニュース一覧 (table.s_news_list の各 tr) を抽出。
 // scripts/fetch-news.ts の parseKabutanList と同じ。

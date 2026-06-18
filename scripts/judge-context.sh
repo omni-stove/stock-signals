@@ -35,7 +35,12 @@ AUTH=(-H "Authorization: Bearer ${SYNC_TOKEN:-}")
 # 落ちるため、ここで必ず有効な JSON ("{}") に正規化しておく (以降の jq は安全に走る)。
 fetch() {
   local out; out="$(curl -sf "${AUTH[@]}" "$WORKER_URL/latest?$1" 2>/dev/null || true)"
-  if [[ -z "$out" ]]; then echo "{}"; else echo "$out"; fi
+  # 失敗 (空) でも、タイムアウトで途中まで返った非 JSON でも "{}" に正規化する。
+  if [[ -z "$out" ]] || ! echo "$out" | jq -e . >/dev/null 2>&1; then
+    echo "{}"
+  else
+    echo "$out"
+  fi
 }
 
 EARNINGS="$(fetch "kind=earnings&code=$TICKER")"
@@ -89,6 +94,10 @@ if [[ "$DAILY_N" -ge 5 ]]; then
         if   $cur.ma5 != null and $cur.ma25 != null and $cur.close > $cur.ma5 and $cur.close > $cur.ma25 then "above"   # uptrend
         elif $cur.ma5 != null and $cur.ma25 != null and $cur.close < $cur.ma5 and $cur.close < $cur.ma25 then "below"   # downtrend
         else "between" end),                                                                                            # chop
+      # 平均線からの乖離率。傾斜(立ち上がり)の鋭さを数値化する。ma25_dev_pct が大きいのに
+      # ma5_dev_pct が小さい (close が ma5 に張り付き) = 放物線的な垂直加速のサイン。SKILL 4b 参照。
+      ma25_dev_pct: (if $cur.ma25 != null and $cur.ma25 > 0 then (($cur.close - $cur.ma25) / $cur.ma25 * 1000 | floor / 10) else null end),
+      ma5_dev_pct:  (if $cur.ma5  != null and $cur.ma5  > 0 then (($cur.close - $cur.ma5)  / $cur.ma5  * 1000 | floor / 10) else null end),
       vol_x_20d: (if $avgvol > 0 then ($cur.volume / $avgvol * 10 | floor / 10) else null end)
     }')"
 else

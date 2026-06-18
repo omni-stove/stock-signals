@@ -11,6 +11,7 @@
 // ※LLM は使わない。スクレイピング・正規化のみ。kabutan は全ソース UTF-8 なので iconv 不要。
 
 import * as cheerio from "cheerio";
+import { fetchHtml, sleep } from "./utils";
 
 export interface PremarketEnv {
 	DB: D1Database;
@@ -47,18 +48,6 @@ type IndexQuote = {
 	ny_time: string | null;
 	jst_time: string | null;
 };
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((r) => setTimeout(r, ms));
-}
-
-// 全ソース UTF-8 (調査済) なので TextDecoder で十分 (timeseries.ts と同じ)。
-async function fetchHtml(url: string, env: PremarketEnv): Promise<string> {
-	const res = await fetch(url, { headers: { "User-Agent": env.USER_AGENT } });
-	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
-	const buf = await res.arrayBuffer();
-	return new TextDecoder("utf-8").decode(buf);
-}
 
 // scripts/fetch-premarket.ts の toNumber と同じ (円/株/% や全角マイナスを吸収)。
 function toNumber(raw: string | undefined | null): number | null {

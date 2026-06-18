@@ -18,6 +18,7 @@ import { collectDisclosures } from "./disclosure";
 import { collectEarnings } from "./earnings";
 import { collectNews } from "./news";
 import { collectBackdrop } from "./premarket";
+import { collectRatings } from "./ratings";
 import { collectTimeseries } from "./timeseries";
 
 export interface Env {
@@ -517,19 +518,25 @@ export default {
 			const ir = await collectAll(env, null, DEFAULT_LIMIT);
 			const disc = await collectDisclosures(env, null);
 			const news = await collectNews(env, null);
+			// 証券会社レーティング (個社別 目標株価) も intake で収集する。日報は当日夕方〜夜に
+			// 出揃うため、引け後 (20:00) intake で拾うと取りこぼしが少ない。新規があれば
+			// 目標株価変更も判定材料なので signal-report 起動対象に含める。
+			const rat = await collectRatings(env, null);
 			const fresh = [
 				...new Set([
 					...ir.freshTickers,
 					...disc.freshTickers,
 					...news.freshTickers,
+					...rat.freshTickers,
 				]),
 			];
 			console.log(
-				"scheduled ir+disclosure+news done:",
+				"scheduled ir+disclosure+news+ratings done:",
 				JSON.stringify({
 					ir: ir.results,
 					disclosure: disc.results,
 					news: news.results,
+					ratings: rat.results,
 				}),
 				"fresh:",
 				fresh.join(","),
@@ -677,6 +684,19 @@ export default {
 					fresh: freshTickers,
 				});
 			}
+			if (kind === "ratings") {
+				// 証券会社レーティング (kabutan 日報) を収集 → articles に rating:% で保存。
+				// 手動では既定で発火しない (&dispatch=1 で起動)。/pull の ir カーソルに合流する。
+				const { results, freshTickers } = await collectRatings(env, code);
+				if (url.searchParams.get("dispatch") === "1")
+					await dispatchSignalUpdate(env, freshTickers);
+				return Response.json({
+					ok: true,
+					kind,
+					result: results,
+					fresh: freshTickers,
+				});
+			}
 			if (kind === "earnings") {
 				// 次回決算予定日の推定 → D1 earnings に保存。
 				const res = await collectEarnings(env, code);
@@ -814,13 +834,16 @@ export default {
 			const limit = parseInt(url.searchParams.get("limit") || "20", 10);
 			// /pull-news はニュース (kabutan:%) のみ。/pull は「IR一次情報」として
 			// 公式IR (ir:%) と TDnet 適時開示 (tdnet:%) の両方を1本のカーソルで返す
-			// (どちらも銘柄の材料で、context-builder は同じ ir カーソルで読むため)。
+			// (いずれも銘柄の材料で、context-builder は同じ ir カーソルで読むため)。
+			// rating:% は証券会社レーティング (個社別 目標株価)。
 			const sourceClause =
 				url.pathname === "/pull-news"
 					? "source LIKE ?"
-					: "(source LIKE ? OR source LIKE ?)";
+					: "(source LIKE ? OR source LIKE ? OR source LIKE ?)";
 			const sourceBinds =
-				url.pathname === "/pull-news" ? ["kabutan:%"] : ["ir:%", "tdnet:%"];
+				url.pathname === "/pull-news"
+					? ["kabutan:%"]
+					: ["ir:%", "tdnet:%", "rating:%"];
 
 			// スイング判断に古い記事は不要。published_at が30日より古いものは保管はするが返さない
 			// (取得時に一覧の下まで遡れず back-dated 記事が新しい fetched_at で入ることがあるため、
@@ -892,7 +915,7 @@ export default {
 		}
 
 		return new Response(
-			"stock-signals collector. routes: /run?kind=ir|news|disclosure|prices|daily|fundamentals|earnings|premarket /latest?kind= /pull?code= /pull-news?code= /health /test-slack",
+			"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|premarket /latest?kind= /pull?code= /pull-news?code= /health /test-slack",
 			{ status: 404 },
 		);
 	},

@@ -4,8 +4,8 @@
 //   https://kabutan.jp/stock/news?code=<code>&nmode=3
 // これは TDnet 適時開示 (決算短信/業績修正/配当/自己株取得/大株主異動 等) の一覧で、
 // 各社の公式IRを個別スクレイプする代わりに全 watchlist 銘柄ぶんを同じ構造で取れる。
-// kioxia(285A) だけは worker/src/index.ts の IR_SOURCES で公式サイトを直接取っているが、
-// 他3銘柄はこちらで適時開示を拾う (kioxia もここに含めて二重に押さえても INSERT OR IGNORE で冪等)。
+// 全銘柄が worker/src/index.ts の IR_SOURCES でも公式サイトIRを取っているが、こちらの TDnet は
+// 適時開示を別ソースとして二重に押さえる保険 (同一URLは articles.url PK + INSERT OR IGNORE で冪等)。
 //
 // 一覧の各行は table.s_news_list で news.ts の parseKabutanList と同一構造。
 // ただしリンク先は実PDFのラッパーページ (本文テキストは取れない) なので、

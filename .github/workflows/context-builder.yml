@@ -7,7 +7,7 @@
 #
 # 起動後は .claude/skills/context-builder が Worker /pull(IR) と /pull-news(ニュース) を
 # 「前回カーソル以降の新規だけ」本文込みで引き、銘柄の持続コンテキスト(経営判断/商品ラインナップ/
-# 技術ロードマップ + 直近の重大トピック要約)として Issue本文を更新する。判定(buy/sell/hold)はここでは
+# 技術ロードマップ + 直近の重大トピック要約)として Issue本文を更新する。判定(buy/sell)はここでは
 # 出さない。本文更新が終わったら repository_dispatch (event_type=signal-judge) で後段の判定を起動する。
 #
 # 判定は signal-judge.yml が担う(Issue本文+価格/地合いを読み Slackに通知)。本文には判定を書かない
@@ -28,13 +28,18 @@ on:
   # Worker が新規IR/ニュース取得時に銘柄ごとに叩く。client_payload.ticker に対象銘柄が入る。
   repository_dispatch:
     types: [signal-update]
-  workflow_dispatch: {}    # 手動実行 (検証用)
+  workflow_dispatch:       # 手動実行 (検証用)。対象銘柄を選んで実行する。
+    inputs:
+      ticker:
+        description: 対象銘柄コード (例 285A)
+        required: true
+        type: string
 
 # 銘柄ごとに同時実行を1本に抑え、走行中に同じ銘柄の新着が来たら古いジョブをキャンセルして
 # 新しい材料を含むジョブだけ走らせる。skill は最後に Issue を一括上書きするので、
 # キャンセルされてもカーソル未更新 → 次回 dispatch で取りこぼし分も含めて再判定される (冪等)。
 concurrency:
-  group: context-builder-${{ github.event.client_payload.ticker || 'manual' }}
+  group: context-builder-${{ github.event.client_payload.ticker || inputs.ticker }}
   cancel-in-progress: true
 
 permissions:
@@ -58,8 +63,8 @@ jobs:
           # Worker(GitHub App=omnistove-internal-auth)発の repository_dispatch を許可する。
           # 既定では Bot起動のワークフローを Action が弾くため。bot名は [bot] サフィックス付き。
           allowed_bots: "omnistove-internal-auth[bot]"
-          # Worker発火時は client_payload.ticker に対象銘柄が入る。手動実行や payload 無しのときは 285A。
-          prompt: "/context-builder ${{ github.event.client_payload.ticker || '285A' }}"
+          # Worker発火時は client_payload.ticker に対象銘柄が入る。手動実行時は inputs.ticker を使う。
+          prompt: "/context-builder ${{ github.event.client_payload.ticker || inputs.ticker }}"
           # Actions の使い捨てサンドボックス内なので Bash を広く許可 (パイプ/heredoc/tmpfile書き込みが
           # 細かい Bash(gh:*) 指定だと弾かれ、リトライでターンを浪費して失敗していたため)。
           claude_args: "--allowedTools Bash,Write,Read,Edit --max-turns 50"

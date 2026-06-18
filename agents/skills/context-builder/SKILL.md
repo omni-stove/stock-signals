@@ -9,7 +9,7 @@ This skill maintains the **living context** for a ticker in its standing GitHub 
 newly-fetched IR and per-ticker news and folds what matters into the Issue body, so that the body
 is always the best single-page brief for understanding the name.
 
-**It does not produce a buy/sell/hold call.** Judging is a separate stage (the `signal-judge`
+**It does not produce a buy/sell call.** Judging is a separate stage (the `signal-judge`
 skill). This skill's only job is to keep the context current and then hand off. The split exists so
 the two concerns stay independent and never form an edit loop: context-builder writes the Issue;
 signal-judge reads it and writes only to Slack.
@@ -84,7 +84,7 @@ What counts as material context (this is the substance the Issue is for):
   reaction).
 
 What is **not** context (leave it out — it's signal-judge's transient input, not the Issue's):
-- A buy/sell/hold call or confidence. Never write a recommendation into the body.
+- A buy/sell call. Never write a recommendation into the body.
 - Intraday price moves, PTS premiums, single-session volume spikes.
 - Stale rehashes of already-recorded facts.
 

@@ -24,9 +24,12 @@ per_ticker:
 # 銘柄別 公式IR: 企業/持株会社の公式サイトから一次情報 (適時開示・プレスリリース) を取る。
 # 株探ニュース (per_ticker) は速報だが二次情報。決算・上方修正・提携・自己株買い等の
 # 一次情報は公式IRに最初に出るため、ラグなく拾うのが目的。
-# IRページは企業ごとにHTML構造が違うので、site ごとに専用パーサ (scripts/fetch-ir.ts) を持つ。
-# 取得物は per_ticker と同様 data/queue/<code>/ に入る (route-news 不要、銘柄確定済み)。
-# scripts/fetch-ir.ts が ir ブロックを読み、対象銘柄だけ取得する。
+# IRページは企業ごとにHTML構造が違うので、site ごとに専用パーサを持つ
+# (実装は worker/src/index.ts の parseList。ローカルの scripts/fetch-ir.ts は廃止済み)。
+# 取得物は per_ticker と同様 data/queue/<code>/ 相当 (D1 articles, source=ir:<site>:<code>) に入る
+# (route-news 不要、銘柄確定済み)。kioxia だけ記事本文HTMLが安定して取れるので本文も取得し、
+# 他3社は記事リンクが PDF/カレンダーで本文HTMLが取れないため一覧の見出しを本文として保存する
+# (適時開示はタイトルで「何が起きたか」が分かる。disclosure.ts と同思想)。
 ir:
   # 285A キオクシア。
   #  www.kioxia.com/ja-jp/news.html 1ページに、事業会社(kioxia.com)と
@@ -42,7 +45,38 @@ ir:
     site: "kioxia"
     list_url: "https://www.kioxia.com/ja-jp/news.html"
     encoding: "utf-8"
-    note: "持株会社(kioxia-holdings.com)発の記事を IR一次情報として優先扱いする"
+    note: "持株会社(kioxia-holdings.com)発の記事を IR一次情報として優先扱いする。本文も取得する"
+
+  # 6857 アドバンテスト。
+  #  各記事は <li class="m-list-news__item">。
+  #    リンク = a.m-list-news__wrapper の href、日付 = time.m-list-news__date の datetime、
+  #    カテゴリ = b.m-list-news__category (例「投資家の皆様へ」)、タイトル = p.m-text__item。
+  #  リンク先は IRカレンダー/PDF が混在し本文HTMLは一定しないので見出しを本文として保存する。
+  - code: "6857"
+    site: "advantest"
+    list_url: "https://www.advantest.com/ja/news/"
+    encoding: "utf-8"
+    note: "一覧の見出しを本文として保存 (リンク先はPDF/カレンダーで本文HTML不可)"
+
+  # 6920 レーザーテック。
+  #  各記事は <article class="news__article">。
+  #    リンク = a.news__type の href (/news/YYYY/...html)、日付 = time.news__date の datetime、
+  #    カテゴリ = i.util-badge--news (例「ニュース」「IR」)、タイトル = h3.news__title。
+  #  list_url(/news/) は当年ページにリダイレクトされ当年のみ表示 (新着順に拾えれば足りる)。
+  - code: "6920"
+    site: "lasertec"
+    list_url: "https://www.lasertec.co.jp/news/"
+    encoding: "utf-8"
+    note: "当年ページのみ表示。見出しを本文として保存"
+
+  # 6981 村田製作所。
+  #  IRニュース専用 RSS。<item> ごとに link/title/pubDate (RFC822 JST 表記)。
+  #  pubDate は new Date() を経由すると暦日が UTC に1日ずれるので、文字列から JST 暦日を直接拾う。
+  - code: "6981"
+    site: "murata"
+    list_url: "https://corporate.murata.com/ja-jp/newsroom/news/irnews/irnews/rssfeed"
+    encoding: "utf-8"
+    note: "IRニュース RSS。pubDate は JST 暦日のまま正規化 (rfc822ToYmd)"
 
 # マクロ: 全銘柄横断のニュース。route-news が銘柄判定する。
 # 株探にRSSは存在しないので、こちらもHTML一覧をスクレイプする。

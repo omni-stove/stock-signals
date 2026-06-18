@@ -7,7 +7,8 @@
 #     担い、結果を 1 行の文字列として prompt 引数に埋め込む。skill は渡された文字列を解釈するだけ。
 #   - SQ は日付から計算で出る (install / yaml メンテ不要):
 #       日本SQ = 各月 第2金曜 / 米SQ = 各月 第3金曜 / 3・6・9・12月 = メジャーSQ
-#     窓は「SQ週全体 (月〜金)」。週前半から先物・オプションの建玉調整で需給が歪むため。
+#     2つの窓を出す: 「SQ週 (当日を含む月〜金)」= 建玉調整で歪む / 「SQ明け (翌週 月〜金)」=
+#     清算が抜けて実勢が見えやすい (歪みの戻りに注意)。明けは月初に前月SQ分が来るため当月+前月を計算。
 #   - FOMC / 日銀 / CPI 等は計算できないので config/events.yaml を grep で拾う。
 #     公式が年初に全日程を出すので yaml は年1回手動転記する運用 (events.yaml 冒頭参照)。
 #
@@ -46,43 +47,73 @@ nth_friday() {
   "$DATE" -d "${ym}-01 +$(( day - 1 )) days" +%F
 }
 
-# 指定日が属する週 (月〜金) に SQ 日が入るか判定する。
+# 指定日と SQ 日の位置関係を「同じ週(=SQ週)」「翌週(=SQ明け)」「それ以外」に分類する。
+# echo で classify する: "week" / "post" / "" を返す。
+sq_phase() {
+  local today="$1" sq="$2" monday="$3" friday="$4"
+  # 今週(月〜金)に SQ 日が入る → SQ週。
+  if [[ "$sq" > "$("$DATE" -d "$monday -1 day" +%F)" && "$sq" < "$("$DATE" -d "$friday +1 day" +%F)" ]]; then
+    echo "week"; return
+  fi
+  # 先週(=SQ週)の SQ で、今週がその翌週 → SQ明け。先週金曜が SQ週金曜なら今週は明け。
+  local last_friday; last_friday="$("$DATE" -d "$monday -3 days" +%F)"   # 今週月曜の3日前=先週金曜
+  local last_monday; last_monday="$("$DATE" -d "$monday -7 days" +%F)"
+  if [[ "$sq" > "$("$DATE" -d "$last_monday -1 day" +%F)" && "$sq" < "$("$DATE" -d "$last_friday +1 day" +%F)" ]]; then
+    echo "post"; return
+  fi
+  echo ""
+}
+
+# 指定日が属する週 (月〜金) に SQ 日が入る / その翌週かを判定する。
 # 戻り値を介さず、グローバル変数 SQ_NOTE に文脈断片を積む。
 SQ_NOTE=""
 check_sq() {
   local today="$1"
-  local ym; ym="$("$DATE" -d "$today" +%Y-%m)"
-  local month; month="$("$DATE" -d "$today" +%-m)"
 
   # today が属する週の月曜と金曜 (ISO週: 月曜起点)。
   local dow; dow="$("$DATE" -d "$today" +%u)"
   local monday; monday="$("$DATE" -d "$today -$(( dow - 1 )) days" +%F)"
   local friday; friday="$("$DATE" -d "$monday +4 days" +%F)"
 
-  # メジャー判定 (3/6/9/12月)。
-  local is_major="no"
-  case "$month" in 3|6|9|12) is_major="yes";; esac
+  # 当月と前月の SQ を両方計算する (月初は前月 SQ の「明け」が今週に来るため)。
+  # 日本SQ = 第2金曜 / 米SQ = 第3金曜。
+  local this_ym; this_ym="$("$DATE" -d "$today" +%Y-%m)"
+  local prev_ym; prev_ym="$("$DATE" -d "${this_ym}-01 -1 day" +%Y-%m)"
 
-  # 日本SQ = 第2金曜 / 米SQ = 第3金曜。今月分を計算し、今週の月〜金レンジに入るか見る。
-  local jp_sq; jp_sq="$(nth_friday "$ym" 2)"
-  local us_sq; us_sq="$(nth_friday "$ym" 3)"
+  # SQ 日 → 「その SQ が属する月」でメジャー判定 (3/6/9/12月)。明け週は別月になりうるので
+  # today の月ではなく SQ 日の月で判定する。
+  local d
+  for d in "$(nth_friday "$this_ym" 2):jp" "$(nth_friday "$prev_ym" 2):jp" \
+           "$(nth_friday "$this_ym" 3):us" "$(nth_friday "$prev_ym" 3):us"; do
+    local sq="${d%:*}" mkt="${d#*:}"
+    local phase; phase="$(sq_phase "$today" "$sq" "$monday" "$friday")"
+    [[ -z "$phase" ]] && continue
+    local sq_month; sq_month="$("$DATE" -d "$sq" +%-m)"
+    local is_major="no"; case "$sq_month" in 3|6|9|12) is_major="yes";; esac
 
-  if [[ "$jp_sq" > "$("$DATE" -d "$monday -1 day" +%F)" && "$jp_sq" < "$("$DATE" -d "$friday +1 day" +%F)" ]]; then
-    if [[ "$is_major" == "yes" ]]; then
-      SQ_NOTE+="日本メジャーSQ週(${month}月限, SQ=${jp_sq}/直接需給イベント・建玉清算で寄り値歪み・確信度を一段抑制); "
-    else
-      SQ_NOTE+="日本SQ週(${month}月限オプションのみ, SQ=${jp_sq}/需給やや歪み); "
+    if [[ "$mkt" == "jp" ]]; then
+      if [[ "$phase" == "week" ]]; then
+        if [[ "$is_major" == "yes" ]]; then
+          SQ_NOTE+="日本メジャーSQ週(${sq_month}月限, SQ=${sq}/直接需給イベント・建玉清算で寄り値歪み); "
+        else
+          SQ_NOTE+="日本SQ週(${sq_month}月限オプションのみ, SQ=${sq}/需給やや歪み); "
+        fi
+      else  # post
+        if [[ "$is_major" == "yes" ]]; then
+          SQ_NOTE+="日本メジャーSQ明け(${sq_month}月限, SQ=${sq}/建玉清算が抜け実勢が見えやすい・歪み剥落の戻りに注意); "
+        fi
+        # マイナーSQの明けはノイズ小さく波及無視。
+      fi
+    else  # us
+      # 米SQは日本個別へ SOX/米指数経由の間接(マクロ)要因。米マイナーSQは波及無視 (メジャーのみ積む)。
+      [[ "$is_major" != "yes" ]] && continue
+      if [[ "$phase" == "week" ]]; then
+        SQ_NOTE+="米メジャーSQ週(${sq_month}月, SQ=${sq}/SOX・米指数経由のマクロ要因・SQ清算由来の振れは持続性低い); "
+      else  # post
+        SQ_NOTE+="米メジャーSQ明け(${sq_month}月, SQ=${sq}/SOX清算の歪みが抜けた後・地合いは素直に読んでよい); "
+      fi
     fi
-  fi
-
-  if [[ "$us_sq" > "$("$DATE" -d "$monday -1 day" +%F)" && "$us_sq" < "$("$DATE" -d "$friday +1 day" +%F)" ]]; then
-    if [[ "$is_major" == "yes" ]]; then
-      # 米メジャーSQ = トリプル/クアドルプル・ウィッチング。日本の個別銘柄には SOX/米指数経由の
-      # 間接(マクロ)要因として効く。個別判定に直結させず、SOX の振れの持続性に注記。
-      SQ_NOTE+="米メジャーSQ週(${month}月, SQ=${us_sq}/SOX・米指数経由のマクロ要因・SQ清算由来の振れは持続性低い); "
-    fi
-    # 米マイナーSQはノイズが小さく日本個別への波及は無視できるため積まない。
-  fi
+  done
 }
 
 # --- config/events.yaml から近接イベントを拾う ------------------------------

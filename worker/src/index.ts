@@ -1,17 +1,23 @@
-// Cloudflare Worker: stock-signals 収集 (PoC: fetch-ir)
+// Cloudflare Worker: stock-signals 収集 (fetch-ir)
 //
-// ローカルの scripts/fetch-ir.ts と同じ解析ロジックで kioxia の公式IRを取得し、
-// 記事本文を R2 (ARTICLES) に、メタ+重複排除キーを D1 (DB) に保存する。
+// watchlist 各銘柄の公式IRページを site ごとの専用パーサで取得し、メタ+重複排除キーを
+// D1 (DB) に、本文(または見出し)を R2 (ARTICLES) に保存する。site ごとに一覧の構造が違うので
+// parseList() で振り分ける (IR_SOURCES 参照):
+//   - kioxia    (285A): https://www.kioxia.com/ja-jp/news.html
+//                       <a class="cmp-button"> の href が記事URL、.cmp-button__text がタイトル。
+//                       日付は URL の YYYYMMDD、カテゴリは URL パスから判別。事業会社(kioxia.com)と
+//                       持株会社(kioxia-holdings.com=上場主体)の両方が並ぶ。記事本文HTMLが取れるので
+//                       本文も取得する (唯一 fetchBody=true)。
+//   - advantest (6857): li.m-list-news__item (time.datetime / p.m-text__item)。
+//   - lasertec  (6920): article.news__article (time.datetime / h3.news__title)。当年ページのみ。
+//   - murata    (6981): IRニュース RSS (item の link/title/pubDate)。
+//   advantest/lasertec/murata は記事リンクが PDF/カレンダーで本文HTMLが取れないため、
+//   一覧の見出しを本文として保存する (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。
 //
 // エントリポイント:
 //   - scheduled(): Cron Trigger 発火時。ir定義の全銘柄を取得。
 //   - fetch():     /run?code=285A&limit=3 で手動起動 (dev検証/オンデマンド用)。
 //                  /health で疎通確認。
-//
-// 解析対象 (kioxia): https://www.kioxia.com/ja-jp/news.html
-//   <a class="cmp-button"> の href が記事URL、.cmp-button__text がタイトル。
-//   日付は URL の YYYYMMDD、カテゴリは URL パスから判別。
-//   事業会社(kioxia.com)と持株会社(kioxia-holdings.com=上場主体)の両方が並ぶ。
 
 import * as cheerio from "cheerio";
 import { collectDisclosures } from "./disclosure";
@@ -174,11 +180,32 @@ async function dispatchSignalUpdate(
 }
 
 // ir定義 (ローカルの config/sources.yaml の ir 相当。PoC ではコードに直書き)。
+// site ごとに一覧パーサ (parseList) が違う。kioxia だけ記事本文HTMLが安定して取れるので
+// 本文取得する (fetchBody=true)。他3社の記事リンクは IRカレンダー/PDFラッパーで本文HTMLが
+// 取れないため、disclosure.ts と同様「一覧のタイトル」を本文として保存する (fetchBody=false)。
+// 適時開示はタイトルだけで「何が起きたか」は判定材料になる。
 const IR_SOURCES = [
 	{
 		code: "285A",
 		site: "kioxia",
 		list_url: "https://www.kioxia.com/ja-jp/news.html",
+	},
+	{
+		code: "6857",
+		site: "advantest",
+		list_url: "https://www.advantest.com/ja/news/",
+	},
+	{
+		code: "6920",
+		site: "lasertec",
+		list_url: "https://www.lasertec.co.jp/news/",
+	},
+	{
+		code: "6981",
+		site: "murata",
+		// IRニュース専用 RSS (最も堅牢)。link/title/pubDate を持つ。
+		list_url:
+			"https://corporate.murata.com/ja-jp/newsroom/news/irnews/irnews/rssfeed",
 	},
 ];
 
@@ -218,6 +245,133 @@ function parseKioxiaList(html: string, baseUrl: string): ListItem[] {
 		out.push({ url, title, date, category: categoryFromUrl(url) });
 	});
 	return out;
+}
+
+// アドバンテスト ニュース一覧 (https://www.advantest.com/ja/news/)。
+//   各記事は <li class="m-list-news__item">。
+//     リンク : a.m-list-news__wrapper の href (HTMLページ or PDF or /ja/investors/...)
+//     日付   : time.m-list-news__date の datetime="YYYY-MM-DD"
+//     カテゴリ: b.m-list-news__category (例「投資家の皆様へ」)
+//     タイトル: p.m-text__item
+//   本文は取らない (リンク先がPDF/カレンダーで一定しないため)。category はそのまま日本語で持つ。
+function parseAdvantestList(html: string, baseUrl: string): ListItem[] {
+	const $ = cheerio.load(html);
+	const out: ListItem[] = [];
+	const seenUrl = new Set<string>();
+	$("li.m-list-news__item").each((_, li) => {
+		const $li = $(li);
+		const a = $li.find("a.m-list-news__wrapper").first();
+		const href = a.attr("href");
+		if (!href) return;
+		const url = new URL(href, baseUrl).toString();
+		if (seenUrl.has(url)) return;
+		const date = $li.find("time.m-list-news__date").attr("datetime")?.trim();
+		if (!date) return;
+		const title = $li.find("p.m-text__item").first().text().trim();
+		if (!title) return;
+		seenUrl.add(url);
+		const category = $li.find("b.m-list-news__category").first().text().trim();
+		out.push({ url, title, date, category: category || "advantest" });
+	});
+	return out;
+}
+
+// レーザーテック ニュース一覧 (https://www.lasertec.co.jp/news/ → 当年ページにリダイレクト)。
+//   各記事は <article class="news__article">。
+//     リンク : a.news__type の href (/news/YYYY/...html)
+//     日付   : time.news__date の datetime="YYYY-MM-DD"
+//     カテゴリ: i.util-badge--news (例「ニュース」「IR」)
+//     タイトル: h3.news__title (子の <i class="news__filesize"> は除く)
+//   list_url は当年のみ表示。新着順に拾えれば足りるので当年で十分。本文は取らない。
+function parseLasertecList(html: string, baseUrl: string): ListItem[] {
+	const $ = cheerio.load(html);
+	const out: ListItem[] = [];
+	const seenUrl = new Set<string>();
+	$("article.news__article").each((_, art) => {
+		const $art = $(art);
+		const a = $art.find("a.news__type").first();
+		const href = a.attr("href");
+		if (!href) return;
+		const url = new URL(href, baseUrl).toString();
+		if (seenUrl.has(url)) return;
+		const date = $art.find("time.news__date").attr("datetime")?.trim();
+		if (!date) return;
+		const $title = $art.find("h3.news__title").first().clone();
+		$title.find("i").remove();
+		const title = $title.text().trim();
+		if (!title) return;
+		seenUrl.add(url);
+		const category =
+			$art.find(".news__category").first().text().trim() || "lasertec";
+		out.push({ url, title, date, category });
+	});
+	return out;
+}
+
+// RFC822 日付 ("Thu, 11 Jun 2026 00:00:00 +0900") の暦日部分を YYYY-MM-DD にする。
+// new Date() を経由しないのでタイムゾーン補正で日付がずれない (RSS の表記日をそのまま使う)。
+const RFC822_MONTHS: Record<string, string> = {
+	Jan: "01",
+	Feb: "02",
+	Mar: "03",
+	Apr: "04",
+	May: "05",
+	Jun: "06",
+	Jul: "07",
+	Aug: "08",
+	Sep: "09",
+	Oct: "10",
+	Nov: "11",
+	Dec: "12",
+};
+function rfc822ToYmd(raw: string): string {
+	const m = raw.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
+	if (!m) return "";
+	const mon = RFC822_MONTHS[m[2]];
+	if (!mon) return "";
+	return `${m[3]}-${mon}-${m[1].padStart(2, "0")}`;
+}
+
+// 村田製作所 IRニュース RSS (rssfeed)。<item> ごとに link/title/pubDate。
+//   pubDate は RFC822 (JST 表記) → rfc822ToYmd で JST 暦日のまま YYYY-MM-DD に正規化。
+//   title 末尾の " (PDF: 241KB)" は残してよい (種別の手がかり)。カテゴリは IRニュース固定。
+//   cheerio を xmlMode で読むと item/link/pubDate を素直に取れる。本文は取らない。
+function parseMurataRss(xml: string): ListItem[] {
+	const $ = cheerio.load(xml, { xmlMode: true });
+	const out: ListItem[] = [];
+	const seenUrl = new Set<string>();
+	$("item").each((_, item) => {
+		const $item = $(item);
+		const url = $item.find("link").first().text().trim();
+		const title = $item.find("title").first().text().trim();
+		if (!url || !title) return;
+		if (seenUrl.has(url)) return;
+		// pubDate は RFC822 で JST 表記 ("Thu, 11 Jun 2026 00:00:00 +0900")。
+		// new Date() に通すと UTC に寄って暦日が1日ずれる (6/11 00:00 JST → 6/10 UTC) ため、
+		// 文字列から "DD Mon YYYY" を直接拾って JST の暦日を保つ。
+		const pub = $item.find("pubDate").first().text().trim();
+		const date = rfc822ToYmd(pub);
+		if (!date) return;
+		seenUrl.add(url);
+		out.push({ url, title, date, category: "irnews" });
+	});
+	return out;
+}
+
+// site → 一覧パーサ。一覧HTML(/XML) から ListItem[] を返す。
+function parseList(site: string, body: string, baseUrl: string): ListItem[] {
+	switch (site) {
+		case "kioxia":
+			return parseKioxiaList(body, baseUrl);
+		case "advantest":
+			return parseAdvantestList(body, baseUrl);
+		case "lasertec":
+			return parseLasertecList(body, baseUrl);
+		case "murata":
+			return parseMurataRss(body);
+		default:
+			return [];
+	}
 }
 
 function parseKioxiaArticle(html: string): { title: string; body: string } {
@@ -404,10 +558,15 @@ async function collectOne(
 	limit: number,
 ): Promise<{ found: number; written: number; skipped: number }> {
 	const listHtml = await fetchText(src.list_url, env);
-	let items = parseKioxiaList(listHtml, src.list_url);
+	let items = parseList(src.site, listHtml, src.list_url);
 	items.sort((a, b) => b.date.localeCompare(a.date));
 	const total = items.length;
 	items = items.slice(0, limit);
+
+	// kioxia は記事本文HTMLが安定して取れるので本文取得する。他社の記事リンクは
+	// IRカレンダー/PDFラッパーで本文HTMLが取れないため、一覧のタイトルを本文として保存する
+	// (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。
+	const fetchBody = src.site === "kioxia";
 
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	let skipped = 0;
@@ -417,11 +576,16 @@ async function collectOne(
 			skipped++;
 			continue;
 		}
-		await sleep(interval);
 		try {
-			const artHtml = await fetchText(it.url, env);
-			const parsed = parseKioxiaArticle(artHtml);
-			const title = parsed.title || it.title;
+			let title = it.title;
+			let body = it.title; // 本文を取らない site は見出しを本文に充てる
+			if (fetchBody) {
+				await sleep(interval); // 本文取得する site だけ記事ごとに間隔を空ける
+				const artHtml = await fetchText(it.url, env);
+				const parsed = parseKioxiaArticle(artHtml);
+				title = parsed.title || it.title;
+				body = parsed.body;
+			}
 			await saveArticle(env, {
 				url: it.url,
 				ticker: src.code,
@@ -429,7 +593,7 @@ async function collectOne(
 				title,
 				published_at: it.date,
 				ir_category: it.category,
-				body: parsed.body,
+				body,
 			});
 			fresh.push({
 				ticker: src.code,

@@ -1,177 +1,137 @@
 ---
 name: signal-judge
-description: For a single ticker given as argument, read that ticker's standing GitHub Issue body (the living context maintained by context-builder) together with current price/daily/premarket/earnings data from the Worker, form one overall swing buy/sell/hold + confidence call, and post it to Slack. It does NOT modify the Issue — output goes to Slack only. One-shot; fired by context-builder after the context changes.
+description: For a single ticker given as argument, read that ticker's standing GitHub Issue body (the living context maintained by context-builder) together with current price/daily/premarket/earnings data from the Worker, form one overall swing buy-or-sell direction call, and post it to Slack. It does NOT modify the Issue — output goes to Slack only. One-shot; fired by context-builder after the context changes.
 ---
 
 # signal-judge
 
-Reads the ticker's **living context** (the standing Issue body) plus the current market picture and
-emits **one overall swing judgment** to Slack. It is the decision stage; `context-builder` is the
-context stage.
+**Decision stage.** Read the ticker's living context (the standing Issue body, owned by
+context-builder) + the current market picture → emit one **swing** judgment to Slack. Never writes the Issue.
 
-**This skill never writes to the Issue.** It only reads the Issue and posts to Slack. That is the
-hard boundary that keeps the two stages from forming an edit loop: context-builder owns the Issue
-body, signal-judge owns the Slack call.
-
-**The system is built for SWING trading (holding several days to a few weeks).** Not day-trading,
-not buy-and-hold. Frame every judgment on that horizon.
+- **Always `buy` or `sell`. No `hold`, no confidence score.** Thin evidence still picks a side.
+  Position management is the reader's job (you don't know if they hold / their entry / size), so a
+  weak `buy` on a held name just means "no reason to sell".
+- **Direction carries a 水準 qualifier** (step 4b): `buy・押し目` vs `buy・追い`, `sell・利確` vs
+  `sell・逃げ`. The direction (2-value) never changes; the qualifier tells the reader *where in the
+  move* this is — a pullback to buy vs chasing a breakout, taking profit vs cutting risk.
+- **Swing horizon**: days to a few weeks. Not day-trading, not buy-and-hold.
 
 ## Invocation
 
 ```
 /signal-judge 285A
-/signal-judge 285A -- 需給イベント(2026-06-19): 米メジャーSQ週(6月, SQ=2026-06-19/SOX・米指数経由のマクロ要因・SQ清算由来の振れは持続性低い)
+/signal-judge 285A -- 需給イベント(2026-06-19): 米メジャーSQ週(...) @/tmp/numctx.json
 ```
 
-The first argument `<ticker>` is the symbol this run owns. Everything after a `--` separator is the
-**event context** — a one-line 需給イベント string the workflow computed at launch (SQ + nearby
-macro events). It is an *input*, not a fetch target: do **not** read `config/events.yaml` or run any
-calendar script yourself. If no `--` / no event context is passed (e.g. a bare manual run), treat it
-as 需給イベント: 特になし and judge normally.
+`<ticker>` is this run's symbol. After `--` come two inputs the workflow computed at launch — never
+re-fetch them yourself:
+- the **event context** — a one-line 需給イベント string (SQ + nearby macro events). No `--` →
+  treat as 需給イベント: 特になし. Never read `config/events.yaml` or run a calendar script.
+- `@<path>` — the **numeric context** JSON (`scripts/judge-context.sh` output): earnings, premarket,
+  daily, prices, **already fetched and normalized** (`days_to_earnings`, range position, MA position,
+  volume ratio, freshness flags). **Read this file**; do not curl the Worker for these. No `@<path>`
+  (bare manual run) → fetch yourself via `$WORKER_URL/latest?kind=…` with `Authorization: Bearer $SYNC_TOKEN`.
 
-Fired by `context-builder`'s `repository_dispatch` (`signal-judge`, one dispatch per ticker) right
-after the context Issue was updated, or manually.
+Fired by context-builder's `repository_dispatch` (one per ticker) after the Issue updates, or manually.
 
 ## Steps
 
-### 1. Read the ticker's metadata
+**1. Metadata + numeric context.** Read `<ticker>` from `config/watchlist.yaml`; cache
+`name`/`fair_per`/`sector`. Read the `@<path>` JSON — its fields drive steps 3–5:
+- `earnings.days_to_earnings` (null → risk unknown).
+- `daily` (`status` ok/insufficient): `range_pct` (0=安値圏 / 100=高値圏), `ma_position`
+  (above=uptrend / between=chop / below=downtrend), `vol_x_20d` (>2 = unusual), `close`, range hi/lo.
+  `insufficient` (<5 rows) → proceed on context alone.
+- `premarket` (`status` ok/stale/unavailable): `sox_change_pct` etc. `stale`/`unavailable` (row >20h
+  old, predates last NY close) → backdrop unavailable, skip step 5.
+- `prices` (`status` ok/unavailable): `series` `change_pct`/`volume` rising, fading, or choppy? A
+  volume spike with no fresh context = caution ("unusual volume", lean against chasing). **Ignore
+  `pts_price`** — thin after-hours, fades at the open.
 
-Read the `<ticker>` entry from `config/watchlist.yaml` and cache `name` / `fair_per` / `sector`.
-
-Get the **next earnings date from the Worker** (D1 is the source of truth):
-
-```
-curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/latest?kind=earnings&code=<ticker>"
-```
-
-→ `{ rows: [{ ticker, next_date, detail, fetched_at }] }`. Compute `days_to_earnings` from
-`next_date` relative to today. If `next_date` is null/missing, treat earnings risk as unknown.
-
-### 2. Read the context Issue
-
+**2. Context Issue.**
 ```
 gh issue list --label ir-report --label "ticker:<ticker>" --state open --json number,body --limit 1
 ```
+The body is the living context (business shape, product/roadmap, capital & management, the rolling
+**直近の重大トピック** list, **証券会社レーティング**, **決算・ガイダンス**). **Primary fundamental
+input — read it in full.** 直近の重大トピック is freshest and usually the core of the call.
+証券会社レーティング is a **6–12mo** view (corroborates, doesn't dominate): weight by **発行日**
+(discount older), **アップサイド% to 目標株価** (near/over → `sell`), **信頼度**.
+No Issue / empty → `context: unavailable`, call on price/backdrop alone (weaker, still a side).
 
-The body is the **living context** maintained by context-builder: business shape, product /
-roadmap, capital & management decisions, the rolling 直近の重大トピック list, 証券会社レーティング,
-and 決算・ガイダンス. **This is your primary fundamental input** — read it in full. The
-直近の重大トピック section is the freshest material and usually the core of the call.
+**3. Read the price picture** (from the step-1 JSON, no fetch).
+- `daily.ma_position` = trend; `daily.range_pct` = where in the 20-day range (near 100 → buying late
+  is risky; near 0 + bullish context = clean R/R); `vol_x_20d` >2 = unusual.
 
-The **## 証券会社レーティング** section is a **6–12-month** view, not a swing trigger. Weight by
-**発行日** (discount the older it is), **アップサイド% to 目標株価** vs current price (near/over target
-leans `hold`), and **信頼度**. It only corroborates — never originates a call or reaches `high` alone.
+**Fire window** (current JST) — changes what the price data means:
 
-If no Issue exists or the body is empty, note `context: unavailable` and judge on price/backdrop
-alone (low confidence).
+| window | `prices` means | backdrop weight |
+|---|---|---|
+| pre-open (~08:30, <09:00) | last session's close, no today's tape | **most** (step 5) |
+| intraday (09:00–15:00) | today's session | secondary |
+| after-close (~18:30) | today's `daily` row exists | least |
 
-All Worker calls (except `/health`) require auth: pass the token in the `Authorization: Bearer`
-header (never in the URL — it leaks into logs). When `$SYNC_TOKEN` is empty (dev), the header is
-harmless.
+`premarket` = last night's US backdrop. `sox_change_pct` is the primary read for semis (285A/6857/6920);
+6981 (Murata, MLCC) responds loosely. `status` stale/unavailable → skip step 5.
 
-### 3. Pull price/daily context and the market backdrop
+**4. Form one judgment.** Weigh bull vs bear, pick the stronger side *now*.
+- **直近の重大トピック** + 経営判断・資本政策 / 商品ラインナップ are the driver. Recent topics weigh most;
+  older structural context informs continuation vs reversal.
+- **Nothing materially new** (restated known facts) = sell-side hint; easy money's made.
+- **Priced in**: good context after a multi-day *regular*-session run weakens `buy` → `sell`. Judge from
+  `daily.range_pct` (near 100 after a run → `sell`; near 0 + live context → `buy`).
+- Freshest, best-corroborated topics (multiple aligned, or an earnings/guidance release) = strongest
+  call. A single thin line still picks a side — flag it as a weak read.
+- **Earnings ≤5d out** → `sell` (de-risk into the print), unless the freshest context *is* the release.
+  No lean once `days_to_earnings` is negative/unknown.
+- Separate macro from idiosyncratic drivers; tag them distinctly.
+- **Event context** (`--` arg) — SQ 週/明け can co-occur (JP SQ = 2nd Fri, US = 3rd):
 
-```
-curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/latest?kind=prices&code=<ticker>&n=20"
-curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/latest?kind=daily&code=<ticker>&n=20"
-curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/latest?kind=premarket&n=1"
-```
+  | phase | meaning | how to use |
+  |---|---|---|
+  | 日本SQ週 | direct supply/demand; メジャーSQ (3/6/9/12月) unwind distorts open (SQ値 vs 実勢,「幻のSQ」) & tape | such moves = **noise, not signal** → fall back to fundamentals; note it |
+  | 日本SQ明け | unwind done, tape **cleaner** | read the move at face value; a sharp 歪み剥落の戻り (reversal of last week's SQ move) = real signal |
+  | 米メジャーSQ週 | *not* direct; reaches JP names only via SOX/US indices | fold into backdrop (step 5) but **discount** — partly clearing-driven, less persistent |
+  | 米メジャーSQ明け | distortion gone | backdrop at full weight |
+  | FOMC/日銀/CPI `[high]`/`[medium]` + days-until | known binary macro | `[high]` ≤3d out → `sell` |
 
-Both prices/daily are time series (newest first). Read the trajectory:
-- **prices**: is the `change_pct` / `volume` run rising, fading, or choppy? `pts_price` (live outside
-  hours) vs the close. A bullish context with PTS premium already > +3% leans `hold` ("already
-  discounted"). Volume spike with no fresh context → `hold`, note "unusual volume". Outside hours
-  (before 09:00 / after 15:30 JST) the live read is `pts_price`, not stale `price`.
-- **daily**: each row carries `ma5` / `ma25`. Price above both = uptrend, between = chop, below =
-  downtrend. Position in the 20-day range (near high → buying late is risky; near low + bullish
-  context = clean risk/reward). Volume vs the ~20-day average (>2× = unusual).
+**4b. 水準 qualifier.** After the direction, tag *where in the move* it is — from `daily.range_pct` ×
+`ma_position` × context freshness. No new data needed.
 
-When data is thin (<5 daily rows, or missing prices), say so (`unavailable` / `insufficient`) and
-proceed on context alone.
+| dir | qualifier | when |
+|---|---|---|
+| buy | **押し目** (default) | `range_pct` low/mid, or pullback toward ma25, with intact/live context — clean entry |
+| buy | **追い** | `range_pct` near 100 / fresh breakout — context new enough to chase, but flag the late entry |
+| sell | **利確** (default) | `range_pct` near 100 after a multi-day run, 材料出尽くし / priced in — sell strength |
+| sell | **逃げ** | `ma_position` below, or risk-off: earnings ≤5d, hostile backdrop, `[high]` macro ≤3d |
 
-**Determine the fire window** from the current time (JST) — it changes what price data means and how
-much the backdrop matters:
-- **pre-open (~08:30, before 09:00)**: prices is last session's close + `pts_price`; no today's tape.
-  The backdrop (`premarket`: `sox_change_pct`, `nikkei_futures_price`) matters most — see step 5.
-- **intraday (09:00–15:00)**: prices reflects today's session. Backdrop is secondary.
-- **after-close (~18:30)**: today's `daily` row exists. Context + confirmed daily dominate; backdrop
-  least relevant.
+Pick the closer fit; when `daily.status` is insufficient, fall back to `ma_position` (above→押し目/利確,
+below→逃げ) and say the qualifier is a weak read.
 
-The `premarket` row carries last night's US backdrop: `sox_change_pct` is the primary read for the
-semiconductor names (285A/6857/6920); 6981 (Murata, MLCC) responds to SOX only loosely. The row has
-no calendar date — only `fetched_at` (UTC ISO8601, the latest fetch). If the row is missing or its
-`fetched_at` is older than ~20h (i.e. it predates last night's NY close), treat the backdrop as
-`unavailable` and skip the step-5 weighting.
+**5. Pre-open backdrop weighting (pre-open only).** Context drives *direction*; backdrop **tilts** it
+(won't flip a clearly bearish context). With `premarket.status == ok`:
+- Semis (285A/6857/6920): weight `premarket.sox_change_pct`. 6981: loosely, lean on own trend/futures.
+- Hostile (SOX ≲ −2%, or futures sharply down) → `sell`; don't `buy` a red tape unless idiosyncratic
+  context overrides. Supportive (SOX ≳ +2%) → `buy`.
+- 米メジャーSQ週 → discount SOX weight (say so); 米メジャーSQ明け → drop the discount.
 
-### 4. Form one overall judgment
-
-Read the context Issue body (step 2) against the price/earnings picture and form **one overall**
-buy/sell/hold + confidence on a swing basis. Rules:
-- The **直近の重大トピック** list and 経営判断・資本政策 / 商品ラインナップ sections are the
-  fundamental driver. Weight the most recent topics most; older structural context informs
-  continuation vs reversal but never originates a fresh `buy`/`sell` on its own.
-- If the context shows nothing materially new since it last drove a call (a restatement of
-  already-known facts), lean `hold` — don't whipsaw.
-- Material likely already priced in (good context after a multi-day run / PTS premium > +3%) leans
-  `hold`, not `buy`.
-- `high` needs corroboration — multiple aligned topics, or an earnings/guidance release — never a
-  single line.
-- Cap confidence at `low` for earnings ≤5 days out, `medium` for 6-14 days, unless the freshest
-  context *is* the earnings release. No cap once `days_to_earnings` is negative or unknown.
-- Separate macro from idiosyncratic drivers and tag them distinctly.
-- **Apply the event context** (the `--` argument). Two SQ layers, handled differently:
-  - **日本SQ週** — a *direct* supply/demand event on the name itself. During SQ week (esp.
-    メジャーSQ = 3/6/9/12月), futures/option unwind distorts the open (SQ値 vs 実勢, 「幻のSQ」) and
-    intraday tape. Treat such moves as **noise, not signal**: cap confidence one notch (a メジャーSQ
-    week `buy` tops out at `medium`), and don't originate a fresh call off a price move that is
-    plausibly SQ-driven. Note it in the rationale.
-  - **米メジャーSQ週** — *not* a direct event on a Japanese name. It reaches them only via SOX / US
-    indices, i.e. as a **macro/sentiment factor**. Do not cap or move the idiosyncratic call for it;
-    instead fold it into the pre-open backdrop reading (step 5): a SOX swing during 米メジャーSQ週 is
-    partly clearing-driven and **less persistent**, so lean on it less than the same SOX move on an
-    ordinary day. Never let 米SQ alone change a call.
-  - Non-SQ events in the string (FOMC/日銀/CPI, shown with `[high]`/`[medium]` and days-until) follow
-    the existing near-event caps above — a `[high]` event ≤3 days out pulls confidence down a notch.
-
-### 5. Pre-open backdrop weighting (only when the fire window is pre-open)
-
-The context drives the *direction*; the session backdrop tempers it. With `premarket` available:
-- Semiconductor names (285A/6857/6920): weight `sox_change_pct`; 6981 weight it loosely and lean on
-  the name's own trend/futures instead.
-- Hostile backdrop (SOX ≲ −2%, or futures sharply down) against a `buy`: pull toward `hold`, or keep
-  `buy` but **cap confidence at `low`**. Never `buy/high` into a red tape.
-- Supportive backdrop (SOX ≳ +2%) aligned with a `buy` may keep `medium`, but the context alone
-  still never reaches `high` without corroboration.
-- The backdrop only **tempers** a context-driven `buy`; it never turns a `hold`/`sell` into `buy`.
-- **米メジャーSQ週** (from the event context): a big SOX move that week is partly SQ-clearing
-  noise, so discount its weight here — don't let a SQ-week SOX print drive the temper as hard as an
-  ordinary-day print of the same size. Say so in the rationale.
-- Applies **only pre-open**. Intraday/after-close the tape is already in `prices`/`daily` — do not
-  double-count.
-
-### 6. Post to Slack (only output)
-
-POST the gist of the overall judgment as a single message. **Do not touch the Issue.**
-
+**6. Post to Slack (only output). Do not touch the Issue.**
 ```
 curl -s -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' -d '{
-  "text": "🧭 <ticker> <name> signal: <signal>/<confidence>",
-  "blocks": [ ... signal, confidence, 1–3 lines of rationale citing the context topics that drove
-              it, the price/backdrop/earnings tempering, and a link to the context Issue ... ]
+  "text": "🧭 <ticker> <name> signal: <signal>・<qualifier>",
+  "blocks": [ ... signal (buy|sell) + 水準 qualifier (押し目|追い|利確|逃げ), 1–3 lines of rationale
+              citing the driving context topics, the price/backdrop/earnings tilt + why this 水準,
+              link to the context Issue ... ]
 }'
 ```
+`$SLACK_WEBHOOK_URL` unset → skip POST, print stdout only.
 
-If `$SLACK_WEBHOOK_URL` is unset, skip the POST and only print the stdout summary.
+## Output (stdout) — one line, no narration
 
-## Output style (stdout)
-
-A single-line summary, no narration:
 ```
-285A → buy/medium (holdings capex ramp + BiCS8) backdrop SOX+1.2%, slack ok
+285A → buy・押し目 (holdings capex ramp + BiCS8, ma25付近) backdrop SOX+1.2%, slack ok
+285A → sell・利確 (材料出尽くし, レンジ上限) 日本メジャーSQ週=寄り値ノイズはファンダで判断, slack ok
+285A → buy・追い (BiCS8 上放れ) backdrop SOX+2.1% but 米メジャーSQ週=清算由来で割引, slack ok
+285A → sell・逃げ (決算3d前 de-risk) backdrop SOX-2.4%, slack ok
+285A context-unavailable → sell・利確 (弱い読み, 材料なし), slack ok
 ```
-When an SQ week tempered the call, say which layer and how:
-```
-285A → buy/medium (BiCS8) 日本メジャーSQ週=寄り値ノイズで確信度据置, slack ok
-285A → buy/medium (BiCS8) backdrop SOX+2.1% but 米メジャーSQ週=清算由来で割引, slack ok
-```
-On missing context: `285A context-unavailable → hold/low, slack ok`.

@@ -12,7 +12,8 @@ Worker から引いて表を出すだけ — Actions からは呼ばない。
 ## ファイル
 
 **`event-context.sh`** (Actions 用) — SQ (日本=第2金 / 米=第3金 / 3・6・9・12月=メジャー) を日付から
-計算し、`config/events.yaml` の近接イベントを grep で合体して 1 行に整形。`signal-judge.yml` が起動時に
+計算し「SQ週」(当週=歪む) と「SQ明け」(翌週=歪み剥落) の2フェーズで出力。`config/events.yaml` の
+近接イベントを grep で合体して 1 行に整形。`signal-judge.yml` が起動時に
 走らせ prompt へ渡す。GNU date 前提。macOS で試すなら `brew install coreutils` して
 `DATE=gdate bash scripts/event-context.sh 2026-09-14`。
 

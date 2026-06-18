@@ -1,0 +1,57 @@
+# Cloudflare Worker (stock-signals-collector) の自動デプロイ。
+#
+# main へ worker/ 配下が push されたら wrangler deploy を回す。手動実行 (workflow_dispatch) も可。
+# IR取得・prices・eod の cron Trigger は wrangler.toml の [triggers] に定義されており、
+# deploy のたびに Cloudflare 側へ反映される (= cron スケジュールも自動更新される)。
+#
+# 必要な設定 (Settings → Secrets and variables → Actions):
+#   secret CLOUDFLARE_API_TOKEN   … Cloudflare ダッシュボードで発行した Workers デプロイ用トークン (必須)
+#     発行手順: My Profile → API Tokens → Create Token → テンプレ "Edit Cloudflare Workers" を使い、
+#     対象アカウント(admin@omnistove.com / account_id 020120735d111b7d06111196719171c1)と
+#     対象の D1 / R2 へのアクセスを含めて発行する。account_id は wrangler.toml に記載済みなので不要。
+#
+# ※ D1 スキーマ (schema.sql) はここでは流さない。schema は初回のみ手動適用済みの想定で、
+#   破壊的変更を避けるため deploy には含めない。スキーマ変更時は手動で:
+#     cd worker && npm run db:init:remote
+
+name: deploy-worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - ".github/workflows/deploy-worker.yml"
+  workflow_dispatch: {}
+
+# 同一 Worker への deploy が重ならないようにする (新しい push を優先)。
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: worker

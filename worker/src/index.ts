@@ -28,31 +28,94 @@ export interface Env {
   // ローカル連携 /dump の簡易認証トークン (Secret)。未設定なら認証なし (dev用)。
   //   設定: npx wrangler secret put SYNC_TOKEN
   SYNC_TOKEN?: string;
-  // 新規IR取得時に GitHub Actions (ir-report) を repository_dispatch で叩くための
-  // Fine-grained PAT (omni-stove/stock-signals の Contents:read + Actions:write)。Secret。
-  //   設定: npx wrangler secret put GITHUB_DISPATCH_TOKEN
-  //   未設定なら発火しない (取得自体は動く)。
-  GITHUB_DISPATCH_TOKEN?: string;
+  // 新規IR取得時に GitHub Actions (ir-report) を repository_dispatch で起動するための
+  // GitHub App (omnistove-internal-auth) 認証情報。App秘密鍵で JWT を署名し
+  // installation token に交換して叩く。3つ揃っていなければ発火しない (取得自体は動く)。
+  //   GH_APP_ID          … App ID (数値)
+  //   GH_APP_PRIVATE_KEY … App の private key (.pem の中身、PKCS#8 PEM)。Secret。
+  //   GH_APP_INSTALL_ID  … omni-stove org への installation id (数値)
+  //     設定: npx wrangler secret put GH_APP_PRIVATE_KEY  (ID系は vars でも secret でも可)
+  GH_APP_ID?: string;
+  GH_APP_PRIVATE_KEY?: string;
+  GH_APP_INSTALL_ID?: string;
   // 発火先リポジトリ (owner/repo)。未設定なら下記デフォルトを使う。
   GITHUB_REPO?: string;
 }
 
+// ── GitHub App 認証 (repository_dispatch 発火用) ─────────────────────────────
+// Cloudflare Workers の Web Crypto (crypto.subtle) で RS256 JWT を署名し、
+// installation access token に交換する。外部ライブラリ不要。
+
+function b64url(data: ArrayBuffer | string): string {
+  const bytes =
+    typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// PKCS#8 PEM (-----BEGIN PRIVATE KEY-----) を CryptoKey に取り込む。
+async function importPrivateKey(pem: string): Promise<CryptoKey> {
+  const body = pem
+    .replace(/-----BEGIN [^-]+-----/, "")
+    .replace(/-----END [^-]+-----/, "")
+    .replace(/\s+/g, "");
+  const der = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
+  return crypto.subtle.importKey(
+    "pkcs8",
+    der.buffer,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+}
+
+// App JWT を生成 (iat を少し過去に、exp は最大10分以内)。
+async function makeAppJwt(appId: string, pem: string, nowSec: number): Promise<string> {
+  const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const payload = b64url(
+    JSON.stringify({ iat: nowSec - 60, exp: nowSec + 540, iss: appId }),
+  );
+  const key = await importPrivateKey(pem);
+  const sig = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    key,
+    new TextEncoder().encode(`${header}.${payload}`),
+  );
+  return `${header}.${payload}.${b64url(sig)}`;
+}
+
+const GH_HEADERS = {
+  Accept: "application/vnd.github+json",
+  "X-GitHub-Api-Version": "2022-11-28",
+  "User-Agent": "stock-signals-collector",
+};
+
+// App JWT → installation access token に交換する。
+async function getInstallationToken(jwt: string, installId: string): Promise<string> {
+  const res = await fetch(
+    `https://api.github.com/app/installations/${installId}/access_tokens`,
+    { method: "POST", headers: { ...GH_HEADERS, Authorization: `Bearer ${jwt}` } },
+  );
+  if (!res.ok) throw new Error(`installation token: HTTP ${res.status} ${await res.text()}`);
+  return ((await res.json()) as { token: string }).token;
+}
+
 // 新規IRを取得したとき、GitHub Actions の ir-report ワークフローを repository_dispatch で起動する。
 // cron で当てずっぽうに起動して0件を引く構造を避け、「新規があるときだけ」LLMを動かす。
-// PAT 未設定なら no-op (best-effort、発火失敗で収集は止めない)。
+// App 認証情報が揃っていなければ no-op (best-effort、発火失敗で収集は止めない)。
 async function dispatchIrReport(env: Env, tickers: string[]): Promise<void> {
-  if (!env.GITHUB_DISPATCH_TOKEN || tickers.length === 0) return;
+  if (tickers.length === 0) return;
+  if (!env.GH_APP_ID || !env.GH_APP_PRIVATE_KEY || !env.GH_APP_INSTALL_ID) return;
   const repo = env.GITHUB_REPO || "omni-stove/stock-signals";
   try {
+    // Workers 内は Date.now() が使える (collectOne 等でも new Date() を使用済み)。
+    const nowSec = Math.floor(Date.now() / 1000);
+    const jwt = await makeAppJwt(env.GH_APP_ID, env.GH_APP_PRIVATE_KEY, nowSec);
+    const token = await getInstallationToken(jwt, env.GH_APP_INSTALL_ID);
     const res = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "stock-signals-collector",
-        "Content-Type": "application/json",
-      },
+      headers: { ...GH_HEADERS, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       // event_type は workflow の on.repository_dispatch.types と一致させる。
       // client_payload で新規があった銘柄を渡す (ir-report が対象を絞れる)。
       body: JSON.stringify({ event_type: "ir-fetched", client_payload: { tickers } }),

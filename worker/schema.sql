@@ -100,6 +100,12 @@ CREATE INDEX IF NOT EXISTS idx_fundamentals_ticker_date
 -- 持たないことで時差ズレを構造的に排除する。最新の地合いは fetched_at DESC LIMIT 1。
 -- 同じ NY クローズを複数回取ると複数行残るが、最新取得が勝つので実害なし (履歴にもなる)。
 -- ※寄前気配 (kehai) は寄りが読めないため移植せず、地合いのみ。
+--
+-- ── マイグレーション (2026-06-19): PK を date(JST暦日) → fetched_at(UTC) に変更 ──
+-- CREATE IF NOT EXISTS では既存テーブルの PK は変わらないため、旧スキーマを一度落とす。
+-- 地合いは日々取り直す揮発データで履歴保持の必要がないため DROP して問題ない。
+-- ※旧 PK が一掃され全環境が新スキーマになったら、この DROP 行は削除してよい。
+DROP TABLE IF EXISTS premarket_backdrop;
 CREATE TABLE IF NOT EXISTS premarket_backdrop (
   fetched_at           TEXT PRIMARY KEY,  -- 取得時刻 (UTC ISO8601)。これが冪等/順序キー
   sox_change_pct       REAL,              -- SOX 前日比% (半導体銘柄の地合い主指標)

@@ -66,8 +66,9 @@ run.get("/", async (c) => {
 	}
 	if (kind === "margin") {
 		// 信用残 (週次) の収集 → D1 margin に保存。通常は引け後 intake cron で自動取得。
-		const result = await collectMargin(env, code);
-		return c.json({ ok: true, kind, result });
+		const { results, freshTickers } = await collectMargin(env, code);
+		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
+		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
 	}
 	if (kind === "prices" || kind === "daily" || kind === "fundamentals") {
 		const result = await collectTimeseries(env, kind, code);

@@ -44,7 +44,7 @@ jobs:
       run:
         working-directory: worker
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # 直前コミットとの差分で schema.sql 変更を検出するため2コミット分取る。
           fetch-depth: 2
@@ -63,7 +63,7 @@ jobs:
             echo "worker/schema.sql に変更なし。schema 適用をスキップします。"
           fi
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v6
         if: steps.changed.outputs.run == 'true'
         with:
           node-version: 22
@@ -88,9 +88,9 @@ jobs:
       run:
         working-directory: worker
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm

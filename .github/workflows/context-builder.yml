@@ -51,7 +51,7 @@ jobs:
   context-builder:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Action 実行時は CLAUDE.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md

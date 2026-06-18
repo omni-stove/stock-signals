@@ -28,6 +28,41 @@ export interface Env {
   // ローカル連携 /dump の簡易認証トークン (Secret)。未設定なら認証なし (dev用)。
   //   設定: npx wrangler secret put SYNC_TOKEN
   SYNC_TOKEN?: string;
+  // 新規IR取得時に GitHub Actions (ir-report) を repository_dispatch で叩くための
+  // Fine-grained PAT (codyNog/stock-signals の Contents:read + Actions:write)。Secret。
+  //   設定: npx wrangler secret put GITHUB_DISPATCH_TOKEN
+  //   未設定なら発火しない (取得自体は動く)。
+  GITHUB_DISPATCH_TOKEN?: string;
+  // 発火先リポジトリ (owner/repo)。未設定なら下記デフォルトを使う。
+  GITHUB_REPO?: string;
+}
+
+// 新規IRを取得したとき、GitHub Actions の ir-report ワークフローを repository_dispatch で起動する。
+// cron で当てずっぽうに起動して0件を引く構造を避け、「新規があるときだけ」LLMを動かす。
+// PAT 未設定なら no-op (best-effort、発火失敗で収集は止めない)。
+async function dispatchIrReport(env: Env, tickers: string[]): Promise<void> {
+  if (!env.GITHUB_DISPATCH_TOKEN || tickers.length === 0) return;
+  const repo = env.GITHUB_REPO || "codyNog/stock-signals";
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "stock-signals-collector",
+        "Content-Type": "application/json",
+      },
+      // event_type は workflow の on.repository_dispatch.types と一致させる。
+      // client_payload で新規があった銘柄を渡す (ir-report が対象を絞れる)。
+      body: JSON.stringify({ event_type: "ir-fetched", client_payload: { tickers } }),
+    });
+    if (!res.ok) {
+      console.error(`dispatch failed: HTTP ${res.status} ${await res.text()}`);
+    }
+  } catch (e) {
+    console.error(`dispatch error: ${(e as Error).message}`);
+  }
 }
 
 // ir定義 (ローカルの config/sources.yaml の ir 相当。PoC ではコードに直書き)。
@@ -259,17 +294,20 @@ async function collectAll(
   env: Env,
   codeFilter: string | null,
   limit: number,
-): Promise<Record<string, unknown>> {
+): Promise<{ results: Record<string, unknown>; freshTickers: string[] }> {
   const sources = IR_SOURCES.filter((s) => !codeFilter || s.code === codeFilter);
   const results: Record<string, unknown> = {};
+  const freshTickers: string[] = []; // 今回 written > 0 だった銘柄 (= ir-report を起動すべき対象)
   for (const src of sources) {
     try {
-      results[src.code] = await collectOne(env, src, limit);
+      const r = await collectOne(env, src, limit);
+      results[src.code] = r;
+      if (r.written > 0) freshTickers.push(src.code);
     } catch (e) {
       results[src.code] = { error: (e as Error).message };
     }
   }
-  return results;
+  return { results, freshTickers };
 }
 
 // 発火した cron 式 → 取得種別。wrangler.toml の [triggers] crons と対応させること。
@@ -287,8 +325,10 @@ export default {
   async scheduled(event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const kind = CRON_KIND[event.cron] ?? "ir"; // 未知の cron は IR にフォールバック
     if (kind === "ir") {
-      const res = await collectAll(env, null, DEFAULT_LIMIT);
-      console.log("scheduled ir done:", JSON.stringify(res));
+      const { results, freshTickers } = await collectAll(env, null, DEFAULT_LIMIT);
+      console.log("scheduled ir done:", JSON.stringify(results), "fresh:", freshTickers.join(","));
+      // 新規IRがあった銘柄だけ ir-report (GitHub Actions) を起動する。0件なら発火しない。
+      await dispatchIrReport(env, freshTickers);
       return;
     }
     const res = await collectTimeseries(env, kind, null);
@@ -310,8 +350,11 @@ export default {
       const kind = url.searchParams.get("kind") || "ir";
       if (kind === "ir") {
         const limit = parseInt(url.searchParams.get("limit") || String(DEFAULT_LIMIT), 10);
-        const res = await collectAll(env, code, limit);
-        return Response.json({ ok: true, kind, result: res });
+        const { results, freshTickers } = await collectAll(env, code, limit);
+        // 手動 /run では既定で発火しない (検証で叩いても Actions を起動させないため)。
+        // &dispatch=1 を付けたときだけ、新規があれば ir-report を起動する。
+        if (url.searchParams.get("dispatch") === "1") await dispatchIrReport(env, freshTickers);
+        return Response.json({ ok: true, kind, result: results, fresh: freshTickers });
       }
       if (kind === "prices" || kind === "daily" || kind === "fundamentals") {
         const res = await collectTimeseries(env, kind, code);

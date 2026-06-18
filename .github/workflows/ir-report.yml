@@ -1,8 +1,10 @@
 # 新規IR → Claude Code Action で判断 → 銘柄ごとの常設Issue (企業レポート) を更新 → Slack通知。
 #
-# Worker (Cloudflare) が JST 8:30/12:30/18:30 に IR を取得し D1/R2 に積む。その ~10分後に
-# このワークフローが起動し、Worker /pull で「前回カーソル以降の新規IRだけ」を本文込みで引き、
-# .claude/skills/ir-report で判断して Issue本文を上書きする。新規0件なら何もしない。
+# Worker (Cloudflare) が JST 8:30/12:30/18:30 に IR を取得し、新規があった (written>0) ときだけ
+# repository_dispatch (event_type=ir-fetched) でこのワークフローを起動する。新規0件の時刻は
+# そもそも起動しないので、LLM (Claude Code Action) は新規があるときしか動かない。
+# 起動後は Worker /pull で「前回カーソル以降の新規IRだけ」を本文込みで引き、.claude/skills/ir-report
+# で判断して Issue本文を上書きする。
 #
 # 認証は Claude サブスク (OAuth) 方式: ローカルで `claude setup-token` → 生成トークンを
 # リポジトリ Secret CLAUDE_CODE_OAUTH_TOKEN に設定する。
@@ -12,15 +14,14 @@
 #   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
 #   secret   SLACK_WEBHOOK_URL        … 判断付き通知の送り先 (任意、未設定なら通知スキップ)
 #   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+# Worker 側 (発火元) には別途 GITHUB_DISPATCH_TOKEN (Fine-grained PAT) が必要。
 
 name: ir-report
 
 on:
-  schedule:
-    # GitHub cron は UTC。Worker の IR取得 (JST 8:30/12:30/18:30) の ~10分後に発火。
-    - cron: "40 23 * * *" # JST 08:40
-    - cron: "40 3 * * *"  # JST 12:40
-    - cron: "40 9 * * *"  # JST 18:40
+  # Worker が新規IR取得時に叩く。client_payload.tickers に新規があった銘柄が入る。
+  repository_dispatch:
+    types: [ir-fetched]
   workflow_dispatch: {}    # 手動実行 (検証用)
 
 # 同時実行を抑止 (cron と手動が重なってもIssue更新が競合しないように)。
@@ -43,8 +44,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # 現状 IR取得対応は 285A (キオクシア) のみ。他銘柄のIRパーサが増えたら銘柄を足す。
-          prompt: "/ir-report 285A"
+          # Worker発火時は client_payload.tickers に新規があった銘柄が入る。手動実行や
+          # payload 無しのときは 285A (現状 IR取得対応は 285A のみ)。
+          prompt: "/ir-report ${{ join(github.event.client_payload.tickers, ' ') || '285A' }}"
           # Actions の使い捨てサンドボックス内なので Bash を広く許可 (パイプ/heredoc/tmpfile書き込みが
           # 細かい Bash(gh:*) 指定だと弾かれ、リトライでターンを浪費して失敗していたため)。
           claude_args: "--allowedTools Bash,Write,Read,Edit --max-turns 50"

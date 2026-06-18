@@ -1,0 +1,18 @@
+node_modules/
+
+# 生成データ (D1/R2 が source of truth。リポには生データを置かない)
+data/inbox/
+data/queue/*/
+data/archive/
+data/prices/
+data/daily/
+data/fundamentals/
+data/premarket/
+data/seen.txt
+
+logs/
+signals/*.log
+.env
+.env.local
+.dev.vars
+.DS_Store

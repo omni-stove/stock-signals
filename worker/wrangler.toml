@@ -1,0 +1,55 @@
+# Cloudflare Worker: stock-signals 収集 (PoC: fetch-ir のみ)
+#
+# 目的: Mac の cron に依存せず、銘柄の公式IR一次情報をクラウドで定期取得し、
+#       記事を R2 に、取得済みURL(重複排除キー)を D1 に保存する。
+#       analyze-ticker(ローカルのLLM判定)は別途 R2/D1 を読みに行く。
+#
+# ── 初回セットアップ (ユーザー操作が必要なものは README-cloud.md 参照) ──
+#   npx wrangler login                    # ブラウザ認証
+#   npx wrangler d1 create stock-signals  # → database_id を下の d1_databases に記入
+#   npx wrangler r2 bucket create stock-signals-articles
+#   npx wrangler d1 execute stock-signals --file=./schema.sql --remote
+#
+# ── ローカル検証 (ログイン/デプロイ不要、D1=ローカルSQLite/R2=ローカルFSをエミュレート) ──
+#   npx wrangler dev
+#   → 別ターミナルで: curl "http://localhost:8787/run?code=285A&limit=3"
+
+name = "stock-signals-collector"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]   # cheerio 等の Node API 互換のため
+account_id = "020120735d111b7d06111196719171c1"  # admin@omnistove.com
+
+# Cron Triggers。cron は UTC 基準 (JST = UTC+9)。発火した cron 式を
+# scheduled() 内で event.cron により判別し、取得種別を振り分ける。
+# ※Cloudflare Cron は曜日の範囲指定 (0-4 等) を弾く (invalid cron string)。
+#   平日のみにしたい場合は曜日を "*" のまま毎日実行とし、土日は新規が無ければ
+#   skip されるだけ (idempotent) なので実害なし。厳密化したい時は別途検討。
+#
+#   IR (寄り前/昼/引け後):  JST 08:30/12:30/18:30 = UTC 23:30(前日)/03:30/09:30
+#   prices (場中5分毎):     JST 09:00-15:00 = UTC 00:00-06:00 を5分毎
+#   daily/fundamentals:     JST 16:00/16:05 = UTC 07:00/07:05 (引け確定後、1日1回)
+[triggers]
+crons = [
+  "30 23 * * *",    # JST 08:30 寄り前 IR
+  "30 3 * * *",     # JST 12:30 昼   IR
+  "30 9 * * *",     # JST 18:30 引け後 IR
+  "*/5 0-6 * * *",  # JST 09:00-15:00 5分毎  prices
+  "0 7 * * *",      # JST 16:00 引け後  daily
+  "5 7 * * *",      # JST 16:05 引け後  fundamentals
+]
+
+# D1: 取得済みURLハッシュ(重複排除)と記事メタを持つ。
+[[d1_databases]]
+binding = "DB"
+database_name = "stock-signals"
+database_id = "13ca8c54-1dcc-45dc-8168-0a493e74ec46"  # APAC, 2026-06-17 作成
+
+# R2: 記事本文JSON (data/queue 相当) を置く。
+[[r2_buckets]]
+binding = "ARTICLES"
+bucket_name = "stock-signals-articles"
+
+[vars]
+USER_AGENT = "stock-signals-bot/0.1 (personal research; contact: admin@omnistove.com)"
+MIN_INTERVAL_MS = "5000"

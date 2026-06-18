@@ -1,0 +1,41 @@
+# 関連シグナル定義（米国株プロキシ）
+#
+# route-news が日本株 watchlist へのマッチ判定で参照する。
+# 米国株関連のニュース（決算、ガイダンス、規制、新製品など）を、
+# 影響を受ける日本株に波及させる。
+#
+# - symbol: 米国株ティッカーまたは企業識別子
+# - aliases: ニュース本文で検出するための表記ゆれリスト
+# - affects: 波及先の日本株コード（watchlist.yaml の code と一致）
+# - reason_template: matched_reason に書き込む説明（プロキシ名を明記する形）
+
+proxies:
+  - symbol: "NVDA"
+    aliases: ["NVIDIA", "エヌビディア", "Nvidia"]
+    affects: ["6857", "6920", "285A"]
+    reason_template: "NVIDIA経由（AI半導体需要のドライバー）"
+
+  - symbol: "MU"
+    aliases: ["Micron", "マイクロン", "Micron Technology"]
+    affects: ["285A", "6857"]
+    reason_template: "Micron経由（NANDメモリ市況の指標）"
+
+  - symbol: "ASML"
+    aliases: ["ASML"]
+    affects: ["6920"]
+    reason_template: "ASML経由（EUV装置の独占供給元）"
+
+  - symbol: "TSMC"
+    aliases: ["TSMC", "台湾積体電路", "Taiwan Semiconductor"]
+    affects: ["6857", "6920"]
+    reason_template: "TSMC経由（半導体製造の最大顧客）"
+
+  - symbol: "AMAT"
+    aliases: ["Applied Materials", "アプライドマテリアルズ"]
+    affects: ["6857", "6920"]
+    reason_template: "Applied Materials経由（半導体製造装置の市況指標）"
+
+  - symbol: "SNDK"
+    aliases: ["SanDisk", "サンディスク"]
+    affects: ["285A"]
+    reason_template: "SanDisk経由（NANDメモリ直接競合）"

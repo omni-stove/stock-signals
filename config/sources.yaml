@@ -1,0 +1,108 @@
+# ニュースソース定義
+#
+# 2系統に分かれる:
+#  - per_ticker: 銘柄が確定しているソース。watchlist.yaml の news_url を使う。
+#                取得物は data/queue/<ticker>/ に直接入る。route-news 不要。
+#  - macro:     横断ニュース(マクロ・業界全体)。data/inbox/ に入り、
+#                route-news が「どの銘柄に共通配信するか」を判断する。
+#
+# 各サイトの robots.txt と利用規約を確認した上で利用する。
+# User-Agent は明示、間隔は最低 5 秒空ける。
+
+http:
+  user_agent: "stock-signals-bot/0.1 (personal research; contact: admin@omnistove.com)"
+  min_interval_ms: 5000
+  timeout_ms: 15000
+
+# 銘柄別: watchlist.yaml の news_url を順次叩く。
+# parser は site で切り替え(scripts/sources/<site>.ts)。
+per_ticker:
+  - site: "kabutan"
+    encoding: "utf-8"
+    note: "株探 銘柄別ニュース一覧。表 .s_news_list の各 tr から日付・リンク・タイトル"
+
+# 銘柄別 公式IR: 企業/持株会社の公式サイトから一次情報 (適時開示・プレスリリース) を取る。
+# 株探ニュース (per_ticker) は速報だが二次情報。決算・上方修正・提携・自己株買い等の
+# 一次情報は公式IRに最初に出るため、ラグなく拾うのが目的。
+# IRページは企業ごとにHTML構造が違うので、site ごとに専用パーサ (scripts/fetch-ir.ts) を持つ。
+# 取得物は per_ticker と同様 data/queue/<code>/ に入る (route-news 不要、銘柄確定済み)。
+# scripts/fetch-ir.ts が ir ブロックを読み、対象銘柄だけ取得する。
+ir:
+  # 285A キオクシア。
+  #  www.kioxia.com/ja-jp/news.html 1ページに、事業会社(kioxia.com)と
+  #  持株会社(kioxia-holdings.com=上場主体, 投資家向け開示の一次情報)の両方の
+  #  記事リンクが日付付きURL (/news/2026/20260611-1.html) で静的に並ぶ。
+  #  記事リンクは <a class="cmp-button">、タイトルは <span class="cmp-button__text">。
+  #  日付は URL の YYYYMMDD から抽出。種別は URL パスで判別:
+  #    /about/news/      = 企業情報 (decode: corporate)
+  #    /business/news/   = 製品・事業
+  #    /personal/news/   = 個人向け製品
+  #    kioxia-holdings.com/.../news/ = 持株会社 = IR/適時開示 (最重要)
+  - code: "285A"
+    site: "kioxia"
+    list_url: "https://www.kioxia.com/ja-jp/news.html"
+    encoding: "utf-8"
+    note: "持株会社(kioxia-holdings.com)発の記事を IR一次情報として優先扱いする"
+
+# マクロ: 全銘柄横断のニュース。route-news が銘柄判定する。
+# 株探にRSSは存在しないので、こちらもHTML一覧をスクレイプする。
+macro_html:
+  - id: "kabutan-marketnews"
+    url: "https://kabutan.jp/news/marketnews/"
+    site: "kabutan"
+    encoding: "utf-8"
+    note: "株探 市場ニュース一覧 (全銘柄横断、マクロ材料)"
+
+# 旧Yahoo経済RSSはノイズが多く銘柄ヒットゼロだったため除外。
+# ロイターJP は RSS 廃止確認のため一旦外す。
+
+# 株価スナップショット: watchlist.yaml の全銘柄について現値・前日比・出来高を取得。
+# 5分毎の cron で叩かれ、結果は data/prices/<code>.jsonl に append される。
+prices:
+  - site: "kabutan"
+    encoding: "utf-8"
+    url_template: "https://kabutan.jp/stock/?code={code}"
+    note: "株探 銘柄ページ。.si_i1_2 から現値/前日比、th(出来高)+td から出来高"
+
+# 日足: 直近~30営業日のOHLC+出来高。1日1回(引け後 16:00 想定)の cron で叩き、
+# data/daily/<code>.jsonl にその日の確定足を1行追記する(重複日付はスキップ)。
+daily:
+  - site: "kabutan"
+    encoding: "utf-8"
+    url_template: "https://kabutan.jp/stock/kabuka?code={code}"
+    note: "株探 日々株価ページ。table.stock_kabuka0(本日) と table.stock_kabuka_dwm(過去)"
+
+# ファンダ指標: 今期予想PER・予想EPS・直近実績EPS。1日1回(引け後)程度の cron で叩き、
+# data/fundamentals/<code>.jsonl に1行追記する。valuation.ts が逆算に使う。
+# 予想EPS/PER が未開示の銘柄(例: キオクシア)では値は null になる。
+fundamentals:
+  - site: "kabutan"
+    encoding: "utf-8"
+    url_template: "https://kabutan.jp/stock/?code={code}"
+    note: "株探 銘柄ページ。PERテーブル(PER/PBR/利回り)と業績推移テーブル(「予」行=今期予想の1株益)"
+
+# 前夜マーケット(寄り前予測の地合い材料): 米国市場の前日終値と日経先物。
+# 平日朝8時頃の cron で1回叩き、 data/premarket/<date>.jsonl に1行追記する。
+# fetch-premarket.ts が使う。寄り付き前に「今日の地合い」を機械可読で残すのが目的。
+#
+# us.kabutan.jp の米国指数ページは、各ページの .text-3xl 親ブロックに
+#   "<現値> 前日比 <差> (<騰落率%>) NY時間 <日> <時刻> 日本時間 <日> <時刻>"
+# が1行で入る。さらにサイドバー .header_index_price_box に主要3指数が並ぶ。
+# 半導体3銘柄(285A/6857/6920)には SOX が最重要。
+premarket:
+  us_indexes:
+    - { key: "sox", label: "SOX(フィラデルフィア半導体)", url: "https://us.kabutan.jp/indexes/%5ESOX", encoding: "utf-8" }
+    - { key: "ndx", label: "ナスダック総合",             url: "https://us.kabutan.jp/indexes/%5EIXIC", encoding: "utf-8" }
+    - { key: "dji", label: "NYダウ",                     url: "https://us.kabutan.jp/indexes/%5EDJI",  encoding: "utf-8" }
+  # 日経先物(ドル建て)。夜間セッションの水準=寄り付きギャップの予告。
+  nikkei_futures:
+    url: "https://s.kabutan.jp/futures/%E3%82%B7%E3%82%AB%E3%82%B4%E6%97%A5%E7%B5%8C%E5%B9%B3%E5%9D%87%E5%85%88%E7%89%A9%EF%BC%88%E3%83%89%E3%83%AB%E5%BB%BA%E3%81%A6%EF%BC%89"
+    encoding: "utf-8"
+  # 寄前気配(--kehai モード、8:55 cron)。株探が朝8:33/8:53頃に流す
+  # 「寄前【板状況】注文ランキング」記事を marketnews 一覧から見つけて本文パースし、
+  # watchlist 銘柄(±3%以上動いた日のみ載る)の気配値・買売株数を抽出する。
+  # 行例: "レーザーテク <6920> 39,410 +1,280 (+3.4%) 64,200 (253,012) 64,200 (253,012)"
+  kehai:
+    list_url: "https://kabutan.jp/news/marketnews/"
+    encoding: "utf-8"
+  note: "ドル円URLは要調査のため一旦SOX/Nasdaq/Dow/日経先物のみ。SOX騰落率が地合いの主指標。"

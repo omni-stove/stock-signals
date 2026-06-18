@@ -1,0 +1,36 @@
+# stock-signals cron 定義
+# 登録: crontab scripts/crontab.txt
+# 確認: crontab -l
+#
+# 注意:
+#  - cron はインタラクティブシェルではないため mise はフルパスで呼ぶ。
+#    ($PATH に /opt/homebrew/bin が無い前提。mise の場所が変わったら要修正)
+#  - 時刻はサーバのローカルタイム (このMacは JST 前提)。
+#  - 平日 (月-金) のみ。9-15時の場中に price/news、16時に daily/fundamentals、
+#    8:30/12:30/18:30 に公式IRチェック。
+
+# ニュース取得 (平日9-15時、15分毎、LLM不使用)
+*/15 9-15 * * 1-5 cd ~/Documents/stock-signals && /opt/homebrew/bin/mise exec -- node scripts/fetch-news.ts >> logs/fetch.log 2>&1
+
+# 株価スナップショット (平日9-15時、5分毎)
+*/5 9-15 * * 1-5 cd ~/Documents/stock-signals && /opt/homebrew/bin/mise exec -- node scripts/fetch-prices.ts >> logs/prices.log 2>&1
+
+# 日足 (平日16時、引け確定後の1日1回。idempotent なので時刻ずれOK)
+0 16 * * 1-5 cd ~/Documents/stock-signals && /opt/homebrew/bin/mise exec -- node scripts/fetch-daily.ts >> logs/daily.log 2>&1
+
+# ファンダ指標 (平日16時5分。予想PER/予想EPS。決算後に変わるので毎日取る)
+5 16 * * 1-5 cd ~/Documents/stock-signals && /opt/homebrew/bin/mise exec -- node scripts/fetch-fundamentals.ts >> logs/fundamentals.log 2>&1
+
+# 前夜マーケット (平日朝8時、寄り付き前。米国市場の前日終値+日経先物=今日の地合い)
+# 半導体4銘柄には SOX 騰落率が最重要。idempotent なので時刻ずれOK。
+0 8 * * 1-5 cd ~/Documents/stock-signals && /opt/homebrew/bin/mise exec -- node scripts/fetch-premarket.ts >> logs/premarket.log 2>&1
+
+# 寄前気配 (平日8時55分。株探の寄前【板状況】が8:33/8:53に出るのでその直後)
+# watchlist銘柄が±3%以上動いた日だけ気配が埋まる。空=寄り前に大きな需給偏りなし。
+55 8 * * 1-5 cd ~/Documents/stock-signals && /opt/homebrew/bin/mise exec -- node scripts/fetch-premarket.ts --kehai >> logs/premarket.log 2>&1
+
+# 公式IR一次情報 (平日 寄り前8:30 / 昼休み12:30 / 引け後18:30 の3回)。
+# config/sources.yaml の ir 定義 (現状285Aのみ) を新しい順に最大20件チェック。
+# 新規開示があれば data/queue/<code>/ に入り analyze-ticker が拾う。
+# seen.txt で既取得分はskipされるので毎回叩いても重複しない (idempotent)。
+30 8,12,18 * * 1-5 cd ~/Documents/stock-signals && /opt/homebrew/bin/mise exec -- node scripts/fetch-ir.ts >> logs/ir.log 2>&1

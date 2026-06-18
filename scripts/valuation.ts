@@ -30,185 +30,199 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const WORKER_URL = process.env.WORKER_URL;
 if (!WORKER_URL) {
-  console.error("環境変数 WORKER_URL が未設定です (例: WORKER_URL=https://xxx.workers.dev)");
-  process.exit(1);
+	console.error(
+		"環境変数 WORKER_URL が未設定です (例: WORKER_URL=https://xxx.workers.dev)",
+	);
+	process.exit(1);
 }
 const SYNC_TOKEN = process.env.SYNC_TOKEN;
 
 // Worker /latest?kind=... を叩いて rows を返す。失敗時は [] (呼び出し側が握りつぶす)。
-async function fetchLatest<T>(kind: string, code: string, n: number): Promise<T[]> {
-  const url = `${WORKER_URL}/latest?kind=${encodeURIComponent(kind)}&code=${encodeURIComponent(code)}&n=${n}`;
-  const headers: Record<string, string> = {};
-  if (SYNC_TOKEN) headers.Authorization = `Bearer ${SYNC_TOKEN}`;
-  try {
-    const res = await fetch(url, { headers });
-    if (!res.ok) return [];
-    const json = (await res.json()) as { ok?: boolean; rows?: T[] };
-    if (!json.ok || !Array.isArray(json.rows)) return [];
-    return json.rows;
-  } catch {
-    return [];
-  }
+async function fetchLatest<T>(
+	kind: string,
+	code: string,
+	n: number,
+): Promise<T[]> {
+	const url = `${WORKER_URL}/latest?kind=${encodeURIComponent(kind)}&code=${encodeURIComponent(code)}&n=${n}`;
+	const headers: Record<string, string> = {};
+	if (SYNC_TOKEN) headers.Authorization = `Bearer ${SYNC_TOKEN}`;
+	try {
+		const res = await fetch(url, { headers });
+		if (!res.ok) return [];
+		const json = (await res.json()) as { ok?: boolean; rows?: T[] };
+		if (!json.ok || !Array.isArray(json.rows)) return [];
+		return json.rows;
+	} catch {
+		return [];
+	}
 }
 
 type Watchlist = {
-  tickers: { code: string; name: string; fair_per?: number | null }[];
+	tickers: { code: string; name: string; fair_per?: number | null }[];
 };
 
 type PriceSnapshot = {
-  price: number | null;
-  quote_time: string | null;
-  pts_price: number | null;
+	price: number | null;
+	quote_time: string | null;
+	pts_price: number | null;
 };
 
 type Fundamentals = {
-  per: number | null;
-  forecast_eps: number | null;
-  forecast_period: string | null;
-  actual_eps: number | null;
-  fetched_at: string;
+	per: number | null;
+	forecast_eps: number | null;
+	forecast_period: string | null;
+	actual_eps: number | null;
+	fetched_at: string;
 };
 
 type Row = {
-  code: string;
-  name: string;
-  price: number | null;
-  per: number | null;
-  forecast_eps: number | null;
-  forecast_period: string | null;
-  fair_per: number | null;
-  required_eps: number | null;
-  required_revision_pct: number | null;
-  fair_price: number | null;
-  note: string;
+	code: string;
+	name: string;
+	price: number | null;
+	per: number | null;
+	forecast_eps: number | null;
+	forecast_period: string | null;
+	fair_per: number | null;
+	required_eps: number | null;
+	required_revision_pct: number | null;
+	fair_price: number | null;
+	note: string;
 };
 
 async function loadYaml<T>(path: string): Promise<T> {
-  return parseYaml(await readFile(path, "utf8")) as T;
+	return parseYaml(await readFile(path, "utf8")) as T;
 }
 
 function round(n: number | null, digits = 1): number | null {
-  if (n === null || !Number.isFinite(n)) return null;
-  const f = 10 ** digits;
-  return Math.round(n * f) / f;
+	if (n === null || !Number.isFinite(n)) return null;
+	const f = 10 ** digits;
+	return Math.round(n * f) / f;
 }
 
-async function buildRow(t: { code: string; name: string; fair_per?: number | null }): Promise<Row> {
-  // 現値は /latest?kind=prices の rows[0] (fetched_at DESC で最新)。
-  // 予想PER/EPS は /latest?kind=fundamentals の rows[0] (date DESC で最新)。
-  const price = (await fetchLatest<PriceSnapshot>("prices", t.code, 1))[0] ?? null;
-  const fund = (await fetchLatest<Fundamentals>("fundamentals", t.code, 1))[0] ?? null;
+async function buildRow(t: {
+	code: string;
+	name: string;
+	fair_per?: number | null;
+}): Promise<Row> {
+	// 現値は /latest?kind=prices の rows[0] (fetched_at DESC で最新)。
+	// 予想PER/EPS は /latest?kind=fundamentals の rows[0] (date DESC で最新)。
+	const price =
+		(await fetchLatest<PriceSnapshot>("prices", t.code, 1))[0] ?? null;
+	const fund =
+		(await fetchLatest<Fundamentals>("fundamentals", t.code, 1))[0] ?? null;
 
-  const p = price?.price ?? null;
-  const fairPer = t.fair_per ?? null;
-  const fEps = fund?.forecast_eps ?? null;
+	const p = price?.price ?? null;
+	const fairPer = t.fair_per ?? null;
+	const fEps = fund?.forecast_eps ?? null;
 
-  let required_eps: number | null = null;
-  let required_revision_pct: number | null = null;
-  let fair_price: number | null = null;
-  let note = "";
+	let required_eps: number | null = null;
+	let required_revision_pct: number | null = null;
+	let fair_price: number | null = null;
+	let note = "";
 
-  if (p === null) note = "現在株価なし";
-  else if (fairPer === null) note = "fair_per未設定";
-  else {
-    required_eps = round(p / fairPer, 1);
-    if (fEps === null || fEps === 0) {
-      note = fEps === null ? "予想EPS未開示" : "予想EPS=0";
-    } else {
-      required_revision_pct = round(((p / fairPer - fEps) / fEps) * 100, 1);
-      fair_price = round(fEps * fairPer, 0);
-    }
-  }
+	if (p === null) note = "現在株価なし";
+	else if (fairPer === null) note = "fair_per未設定";
+	else {
+		required_eps = round(p / fairPer, 1);
+		if (fEps === null || fEps === 0) {
+			note = fEps === null ? "予想EPS未開示" : "予想EPS=0";
+		} else {
+			required_revision_pct = round(((p / fairPer - fEps) / fEps) * 100, 1);
+			fair_price = round(fEps * fairPer, 0);
+		}
+	}
 
-  return {
-    code: t.code,
-    name: t.name,
-    price: p,
-    per: fund?.per ?? null,
-    forecast_eps: fEps,
-    forecast_period: fund?.forecast_period ?? null,
-    fair_per: fairPer,
-    required_eps,
-    required_revision_pct,
-    fair_price,
-    note,
-  };
+	return {
+		code: t.code,
+		name: t.name,
+		price: p,
+		per: fund?.per ?? null,
+		forecast_eps: fEps,
+		forecast_period: fund?.forecast_period ?? null,
+		fair_per: fairPer,
+		required_eps,
+		required_revision_pct,
+		fair_price,
+		note,
+	};
 }
 
 function fmt(n: number | null, suffix = ""): string {
-  if (n === null) return "－";
-  return n.toLocaleString("ja-JP") + suffix;
+	if (n === null) return "－";
+	return n.toLocaleString("ja-JP") + suffix;
 }
 
 function fmtPct(n: number | null): string {
-  if (n === null) return "－";
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toLocaleString("ja-JP")}%`;
+	if (n === null) return "－";
+	const sign = n > 0 ? "+" : "";
+	return `${sign}${n.toLocaleString("ja-JP")}%`;
 }
 
 function pad(s: string, width: number): string {
-  // 全角を2幅として概算で右パディング
-  let w = 0;
-  for (const ch of s) w += ch.charCodeAt(0) > 0xff ? 2 : 1;
-  return s + " ".repeat(Math.max(0, width - w));
+	// 全角を2幅として概算で右パディング
+	let w = 0;
+	for (const ch of s) w += ch.charCodeAt(0) > 0xff ? 2 : 1;
+	return s + " ".repeat(Math.max(0, width - w));
 }
 
 function printTable(rows: Row[]) {
-  const header = [
-    pad("コード", 8),
-    pad("銘柄", 24),
-    pad("現在株価", 12),
-    pad("予想PER", 10),
-    pad("予想EPS", 12),
-    pad("fairPER", 9),
-    pad("必要EPS", 12),
-    pad("必要修正", 11),
-    pad("適正株価", 12),
-    "備考",
-  ].join(" ");
-  console.log(header);
-  console.log("─".repeat(120));
-  for (const r of rows) {
-    console.log(
-      [
-        pad(r.code, 8),
-        pad(r.name, 24),
-        pad(fmt(r.price, "円"), 12),
-        pad(fmt(r.per, "倍"), 10),
-        pad(fmt(r.forecast_eps, "円"), 12),
-        pad(fmt(r.fair_per, "倍"), 9),
-        pad(fmt(r.required_eps, "円"), 12),
-        pad(fmtPct(r.required_revision_pct), 11),
-        pad(fmt(r.fair_price, "円"), 12),
-        r.note,
-      ].join(" "),
-    );
-  }
-  console.log("─".repeat(120));
-  console.log(
-    "必要EPS = 現在株価 / fairPER。必要修正 = (必要EPS - 予想EPS) / 予想EPS。",
-  );
-  console.log(
-    "  プラス = 株価が fairPER を正当化するのに上方修正を織り込み済み(先行/割高寄り)、マイナス = 会社予想でも上昇余地(割安寄り)。",
-  );
+	const header = [
+		pad("コード", 8),
+		pad("銘柄", 24),
+		pad("現在株価", 12),
+		pad("予想PER", 10),
+		pad("予想EPS", 12),
+		pad("fairPER", 9),
+		pad("必要EPS", 12),
+		pad("必要修正", 11),
+		pad("適正株価", 12),
+		"備考",
+	].join(" ");
+	console.log(header);
+	console.log("─".repeat(120));
+	for (const r of rows) {
+		console.log(
+			[
+				pad(r.code, 8),
+				pad(r.name, 24),
+				pad(fmt(r.price, "円"), 12),
+				pad(fmt(r.per, "倍"), 10),
+				pad(fmt(r.forecast_eps, "円"), 12),
+				pad(fmt(r.fair_per, "倍"), 9),
+				pad(fmt(r.required_eps, "円"), 12),
+				pad(fmtPct(r.required_revision_pct), 11),
+				pad(fmt(r.fair_price, "円"), 12),
+				r.note,
+			].join(" "),
+		);
+	}
+	console.log("─".repeat(120));
+	console.log(
+		"必要EPS = 現在株価 / fairPER。必要修正 = (必要EPS - 予想EPS) / 予想EPS。",
+	);
+	console.log(
+		"  プラス = 株価が fairPER を正当化するのに上方修正を織り込み済み(先行/割高寄り)、マイナス = 会社予想でも上昇余地(割安寄り)。",
+	);
 }
 
 async function main() {
-  const asJson = process.argv.includes("--json");
-  const watchlist = await loadYaml<Watchlist>(join(ROOT, "config/watchlist.yaml"));
-  const rows: Row[] = [];
-  for (const t of watchlist.tickers) {
-    rows.push(await buildRow(t));
-  }
+	const asJson = process.argv.includes("--json");
+	const watchlist = await loadYaml<Watchlist>(
+		join(ROOT, "config/watchlist.yaml"),
+	);
+	const rows: Row[] = [];
+	for (const t of watchlist.tickers) {
+		rows.push(await buildRow(t));
+	}
 
-  if (asJson) {
-    console.log(JSON.stringify(rows, null, 2));
-    return;
-  }
-  printTable(rows);
+	if (asJson) {
+		console.log(JSON.stringify(rows, null, 2));
+		return;
+	}
+	printTable(rows);
 }
 
 main().catch((e) => {
-  console.error(e);
-  process.exit(1);
+	console.error(e);
+	process.exit(1);
 });

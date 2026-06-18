@@ -11,9 +11,9 @@
 import * as cheerio from "cheerio";
 
 export interface TimeseriesEnv {
-  DB: D1Database;
-  USER_AGENT: string;
-  MIN_INTERVAL_MS: string;
+	DB: D1Database;
+	USER_AGENT: string;
+	MIN_INTERVAL_MS: string;
 }
 
 // ローカル config/watchlist.yaml の tickers と対応。
@@ -21,28 +21,30 @@ export const WATCHLIST: string[] = ["285A", "6857", "6920", "6981"];
 
 // ローカル config/sources.yaml の url_template と対応。
 const URL_PRICES = (code: string) => `https://kabutan.jp/stock/?code=${code}`;
-const URL_DAILY = (code: string) => `https://kabutan.jp/stock/kabuka?code=${code}`;
-const URL_FUNDAMENTALS = (code: string) => `https://kabutan.jp/stock/?code=${code}`;
+const URL_DAILY = (code: string) =>
+	`https://kabutan.jp/stock/kabuka?code=${code}`;
+const URL_FUNDAMENTALS = (code: string) =>
+	`https://kabutan.jp/stock/?code=${code}`;
 const SITE = "kabutan";
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+	return new Promise((r) => setTimeout(r, ms));
 }
 
 // 全ソース UTF-8 (調査済) なので TextDecoder で十分。
 async function fetchHtml(url: string, env: TimeseriesEnv): Promise<string> {
-  const res = await fetch(url, { headers: { "User-Agent": env.USER_AGENT } });
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
-  const buf = await res.arrayBuffer();
-  return new TextDecoder("utf-8").decode(buf);
+	const res = await fetch(url, { headers: { "User-Agent": env.USER_AGENT } });
+	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
+	const buf = await res.arrayBuffer();
+	return new TextDecoder("utf-8").decode(buf);
 }
 
 function toNumber(raw: string | undefined | null): number | null {
-  if (!raw) return null;
-  const cleaned = raw.replace(/[,倍円株%％]/g, "").trim();
-  if (!cleaned || cleaned === "－" || cleaned === "-") return null;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
+	if (!raw) return null;
+	const cleaned = raw.replace(/[,倍円株%％]/g, "").trim();
+	if (!cleaned || cleaned === "－" || cleaned === "-") return null;
+	const n = Number(cleaned);
+	return Number.isFinite(n) ? n : null;
 }
 
 // ISO8601 を5分枠に丸めたキー。「5分毎 cron で1枠1行」にするための冪等キー。
@@ -51,285 +53,328 @@ function toNumber(raw: string | undefined | null): number | null {
 //   quote_time はJST(+09:00)、fetched_atはUTC(Z)だが、どちらも「自分の時計の5分枠」を
 //   表せれば冪等には十分 (両者を混ぜて使うことはない)。
 function slot5min(iso: string): string {
-  const m = iso.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
-  if (!m) return iso; // 想定外フォーマットはそのままキーにする (安全側)
-  const floored = Math.floor(parseInt(m[3], 10) / 5) * 5;
-  return `${m[1]}T${m[2]}:${String(floored).padStart(2, "0")}`;
+	const m = iso.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+	if (!m) return iso; // 想定外フォーマットはそのままキーにする (安全側)
+	const floored = Math.floor(parseInt(m[3], 10) / 5) * 5;
+	return `${m[1]}T${m[2]}:${String(floored).padStart(2, "0")}`;
 }
 
 // ── prices ────────────────────────────────────────────────────────────────
 type PriceParsed = {
-  price: number | null;
-  change: number | null;
-  change_pct: number | null;
-  volume: number | null;
-  quote_time: string | null;
-  pts_price: number | null;
-  pts_time: string | null;
+	price: number | null;
+	change: number | null;
+	change_pct: number | null;
+	volume: number | null;
+	quote_time: string | null;
+	pts_price: number | null;
+	pts_time: string | null;
 };
 
 // scripts/fetch-prices.ts の parseKabutanPrice と同じ。
 function parseKabutanPrice(html: string): PriceParsed {
-  const $ = cheerio.load(html);
-  const block = $(".si_i1_2").first();
+	const $ = cheerio.load(html);
+	const block = $(".si_i1_2").first();
 
-  const price = toNumber(block.find(".kabuka").first().text());
+	const price = toNumber(block.find(".kabuka").first().text());
 
-  const dds = block.find(".si_i1_dl1 dd");
-  const change = toNumber(dds.eq(0).find("span").first().text());
-  const change_pct = toNumber(dds.eq(1).find("span").first().text());
+	const dds = block.find(".si_i1_dl1 dd");
+	const change = toNumber(dds.eq(0).find("span").first().text());
+	const change_pct = toNumber(dds.eq(1).find("span").first().text());
 
-  let volume: number | null = null;
-  $("th").each((_, th) => {
-    if (volume !== null) return;
-    if ($(th).text().trim() === "出来高") {
-      volume = toNumber($(th).next("td").text());
-    }
-  });
+	let volume: number | null = null;
+	$("th").each((_, th) => {
+		if (volume !== null) return;
+		if ($(th).text().trim() === "出来高") {
+			volume = toNumber($(th).next("td").text());
+		}
+	});
 
-  const quote_time = $("#stockinfo_i1 time").first().attr("datetime") || null;
+	const quote_time = $("#stockinfo_i1 time").first().attr("datetime") || null;
 
-  const ptsBlock = $(".si_i1_3").first();
-  let pts_price: number | null = null;
-  let pts_time: string | null = null;
-  if (ptsBlock.length > 0 && ptsBlock.find(".kabuka1").text().trim().includes("PTS")) {
-    pts_price = toNumber(ptsBlock.find(".kabuka2").text());
-    pts_time = ptsBlock.find(".kabuka3").text().replace(/\s+/g, " ").trim() || null;
-  }
+	const ptsBlock = $(".si_i1_3").first();
+	let pts_price: number | null = null;
+	let pts_time: string | null = null;
+	if (
+		ptsBlock.length > 0 &&
+		ptsBlock.find(".kabuka1").text().trim().includes("PTS")
+	) {
+		pts_price = toNumber(ptsBlock.find(".kabuka2").text());
+		pts_time =
+			ptsBlock.find(".kabuka3").text().replace(/\s+/g, " ").trim() || null;
+	}
 
-  return { price, change, change_pct, volume, quote_time, pts_price, pts_time };
+	return { price, change, change_pct, volume, quote_time, pts_price, pts_time };
 }
 
 async function collectPricesOne(
-  env: TimeseriesEnv,
-  code: string,
+	env: TimeseriesEnv,
+	code: string,
 ): Promise<{ written: number; skipped: number }> {
-  const html = await fetchHtml(URL_PRICES(code), env);
-  const p = parseKabutanPrice(html);
-  const fetched_at = new Date().toISOString();
-  // 値付き時刻があればそれを、無ければ取得時刻を5分枠に丸めて冪等キーにする。
-  const slot = slot5min(p.quote_time || fetched_at);
-  const r = await env.DB.prepare(
-    `INSERT OR IGNORE INTO prices
+	const html = await fetchHtml(URL_PRICES(code), env);
+	const p = parseKabutanPrice(html);
+	const fetched_at = new Date().toISOString();
+	// 値付き時刻があればそれを、無ければ取得時刻を5分枠に丸めて冪等キーにする。
+	const slot = slot5min(p.quote_time || fetched_at);
+	const r = await env.DB.prepare(
+		`INSERT OR IGNORE INTO prices
        (ticker, slot, source, price, change, change_pct, volume, quote_time, pts_price, pts_time, fetched_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      code,
-      slot,
-      `${SITE}:${code}`,
-      p.price,
-      p.change,
-      p.change_pct,
-      p.volume,
-      p.quote_time,
-      p.pts_price,
-      p.pts_time,
-      fetched_at,
-    )
-    .run();
-  const written = r.meta.changes ?? 0;
-  return { written, skipped: written ? 0 : 1 };
+	)
+		.bind(
+			code,
+			slot,
+			`${SITE}:${code}`,
+			p.price,
+			p.change,
+			p.change_pct,
+			p.volume,
+			p.quote_time,
+			p.pts_price,
+			p.pts_time,
+			fetched_at,
+		)
+		.run();
+	const written = r.meta.changes ?? 0;
+	return { written, skipped: written ? 0 : 1 };
 }
 
 // ── daily ─────────────────────────────────────────────────────────────────
 type DailyBar = {
-  date: string;
-  open: number | null;
-  high: number | null;
-  low: number | null;
-  close: number | null;
-  change: number | null;
-  change_pct: number | null;
-  volume: number | null;
+	date: string;
+	open: number | null;
+	high: number | null;
+	low: number | null;
+	close: number | null;
+	change: number | null;
+	change_pct: number | null;
+	volume: number | null;
 };
 
 // scripts/fetch-daily.ts の parseKabutanDaily と同じ (本日表 + 過去表)。
 function parseKabutanDaily(html: string): DailyBar[] {
-  const $ = cheerio.load(html);
-  const rows: DailyBar[] = [];
+	const $ = cheerio.load(html);
+	const rows: DailyBar[] = [];
 
-  const harvest = (selector: string) => {
-    $(`${selector} tbody tr`).each((_, tr) => {
-      const $tr = $(tr);
-      const date = $tr.find("th time").first().attr("datetime");
-      if (!date) return;
-      const tds = $tr.find("td");
-      if (tds.length < 7) return;
-      rows.push({
-        date,
-        open: toNumber(tds.eq(0).text()),
-        high: toNumber(tds.eq(1).text()),
-        low: toNumber(tds.eq(2).text()),
-        close: toNumber(tds.eq(3).text()),
-        change: toNumber(tds.eq(4).text()),
-        change_pct: toNumber(tds.eq(5).text()),
-        volume: toNumber(tds.eq(6).text()),
-      });
-    });
-  };
+	const harvest = (selector: string) => {
+		$(`${selector} tbody tr`).each((_, tr) => {
+			const $tr = $(tr);
+			const date = $tr.find("th time").first().attr("datetime");
+			if (!date) return;
+			const tds = $tr.find("td");
+			if (tds.length < 7) return;
+			rows.push({
+				date,
+				open: toNumber(tds.eq(0).text()),
+				high: toNumber(tds.eq(1).text()),
+				low: toNumber(tds.eq(2).text()),
+				close: toNumber(tds.eq(3).text()),
+				change: toNumber(tds.eq(4).text()),
+				change_pct: toNumber(tds.eq(5).text()),
+				volume: toNumber(tds.eq(6).text()),
+			});
+		});
+	};
 
-  harvest("table.stock_kabuka0");
-  harvest("table.stock_kabuka_dwm");
-  return rows;
+	harvest("table.stock_kabuka0");
+	harvest("table.stock_kabuka_dwm");
+	return rows;
 }
 
 async function collectDailyOne(
-  env: TimeseriesEnv,
-  code: string,
+	env: TimeseriesEnv,
+	code: string,
 ): Promise<{ written: number; skipped: number }> {
-  const html = await fetchHtml(URL_DAILY(code), env);
-  const bars = parseKabutanDaily(html);
-  if (bars.length === 0) return { written: 0, skipped: 0 };
-  const fetched_at = new Date().toISOString();
-  const source = `${SITE}:${code}`;
+	const html = await fetchHtml(URL_DAILY(code), env);
+	const bars = parseKabutanDaily(html);
+	if (bars.length === 0) return { written: 0, skipped: 0 };
+	const fetched_at = new Date().toISOString();
+	const source = `${SITE}:${code}`;
 
-  // (ticker, date) PK の INSERT OR IGNORE で重複日付を自動スキップ。
-  const stmt = env.DB.prepare(
-    `INSERT OR IGNORE INTO daily
+	// (ticker, date) PK の INSERT OR IGNORE で重複日付を自動スキップ。
+	const stmt = env.DB.prepare(
+		`INSERT OR IGNORE INTO daily
        (ticker, date, source, open, high, low, close, change, change_pct, volume, fetched_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const batch = bars.map((b) =>
-    stmt.bind(code, b.date, source, b.open, b.high, b.low, b.close, b.change, b.change_pct, b.volume, fetched_at),
-  );
-  const results = await env.DB.batch(batch);
-  let written = 0;
-  for (const r of results) written += r.meta.changes ?? 0;
-  return { written, skipped: bars.length - written };
+	);
+	const batch = bars.map((b) =>
+		stmt.bind(
+			code,
+			b.date,
+			source,
+			b.open,
+			b.high,
+			b.low,
+			b.close,
+			b.change,
+			b.change_pct,
+			b.volume,
+			fetched_at,
+		),
+	);
+	const results = await env.DB.batch(batch);
+	let written = 0;
+	for (const r of results) written += r.meta.changes ?? 0;
+	return { written, skipped: bars.length - written };
 }
 
 // ── fundamentals ────────────────────────────────────────────────────────────
 type FundParsed = {
-  per: number | null;
-  pbr: number | null;
-  dividend_yield: number | null;
-  forecast_eps: number | null;
-  forecast_period: string | null;
-  actual_eps: number | null;
-  actual_period: string | null;
+	per: number | null;
+	pbr: number | null;
+	dividend_yield: number | null;
+	forecast_eps: number | null;
+	forecast_period: string | null;
+	actual_eps: number | null;
+	actual_period: string | null;
 };
 
 function normalizePeriod(label: string): string | null {
-  const m = label.match(/(\d{4}\.\d{2})/);
-  return m ? m[1] : null;
+	const m = label.match(/(\d{4}\.\d{2})/);
+	return m ? m[1] : null;
 }
 function isForecastRow(label: string): boolean {
-  return /予/.test(label);
+	return /予/.test(label);
 }
 
 // scripts/fetch-fundamentals.ts の parseKabutanFundamentals と同じ。
 function parseKabutanFundamentals(html: string): FundParsed {
-  const $ = cheerio.load(html);
+	const $ = cheerio.load(html);
 
-  let per: number | null = null;
-  let pbr: number | null = null;
-  let dividend_yield: number | null = null;
+	let per: number | null = null;
+	let pbr: number | null = null;
+	let dividend_yield: number | null = null;
 
-  $("table").each((_, table) => {
-    if (per !== null) return;
-    const $t = $(table);
-    const headers = $t.find("thead th").map((_, th) => $(th).text().trim()).get();
-    if (headers.includes("PER") && headers.includes("PBR")) {
-      const tds = $t.find("tbody tr").first().find("td");
-      per = toNumber(tds.eq(0).text());
-      pbr = toNumber(tds.eq(1).text());
-      dividend_yield = toNumber(tds.eq(2).text());
-    }
-  });
+	$("table").each((_, table) => {
+		if (per !== null) return;
+		const $t = $(table);
+		const headers = $t
+			.find("thead th")
+			.map((_, th) => $(th).text().trim())
+			.get();
+		if (headers.includes("PER") && headers.includes("PBR")) {
+			const tds = $t.find("tbody tr").first().find("td");
+			per = toNumber(tds.eq(0).text());
+			pbr = toNumber(tds.eq(1).text());
+			dividend_yield = toNumber(tds.eq(2).text());
+		}
+	});
 
-  let forecast_eps: number | null = null;
-  let forecast_period: string | null = null;
-  let actual_eps: number | null = null;
-  let actual_period: string | null = null;
+	let forecast_eps: number | null = null;
+	let forecast_period: string | null = null;
+	let actual_eps: number | null = null;
+	let actual_period: string | null = null;
 
-  $("table").each((_, table) => {
-    if (forecast_period !== null || actual_period !== null) return;
-    const $t = $(table);
-    const headers = $t.find("thead th").map((_, th) => $(th).text().trim()).get();
-    const epsCol = headers.findIndex((h) => h.includes("１株益") || h.includes("1株益"));
-    if (!headers.includes("決算期") || epsCol < 0) return;
+	$("table").each((_, table) => {
+		if (forecast_period !== null || actual_period !== null) return;
+		const $t = $(table);
+		const headers = $t
+			.find("thead th")
+			.map((_, th) => $(th).text().trim())
+			.get();
+		const epsCol = headers.findIndex(
+			(h) => h.includes("１株益") || h.includes("1株益"),
+		);
+		if (!headers.includes("決算期") || epsCol < 0) return;
 
-    $t.find("tbody tr").each((_, tr) => {
-      const cells = $(tr).find("th, td");
-      const label = cells.first().text().replace(/ /g, " ").replace(/　/g, " ").trim();
-      const period = normalizePeriod(label);
-      if (!period) return;
-      const eps = toNumber(cells.eq(epsCol).text());
-      if (isForecastRow(label)) {
-        if (forecast_period === null) {
-          forecast_eps = eps;
-          forecast_period = period;
-        }
-      } else {
-        actual_eps = eps;
-        actual_period = period;
-      }
-    });
-  });
+		$t.find("tbody tr").each((_, tr) => {
+			const cells = $(tr).find("th, td");
+			const label = cells
+				.first()
+				.text()
+				.replace(/ /g, " ")
+				.replace(/　/g, " ")
+				.trim();
+			const period = normalizePeriod(label);
+			if (!period) return;
+			const eps = toNumber(cells.eq(epsCol).text());
+			if (isForecastRow(label)) {
+				if (forecast_period === null) {
+					forecast_eps = eps;
+					forecast_period = period;
+				}
+			} else {
+				actual_eps = eps;
+				actual_period = period;
+			}
+		});
+	});
 
-  return { per, pbr, dividend_yield, forecast_eps, forecast_period, actual_eps, actual_period };
+	return {
+		per,
+		pbr,
+		dividend_yield,
+		forecast_eps,
+		forecast_period,
+		actual_eps,
+		actual_period,
+	};
 }
 
 async function collectFundamentalsOne(
-  env: TimeseriesEnv,
-  code: string,
+	env: TimeseriesEnv,
+	code: string,
 ): Promise<{ written: number; skipped: number }> {
-  const html = await fetchHtml(URL_FUNDAMENTALS(code), env);
-  const f = parseKabutanFundamentals(html);
-  const fetched_at = new Date().toISOString();
-  const date = fetched_at.slice(0, 10);
-  // 同日複数回は最新値で上書きしたいので OR REPLACE。
-  await env.DB.prepare(
-    `INSERT OR REPLACE INTO fundamentals
+	const html = await fetchHtml(URL_FUNDAMENTALS(code), env);
+	const f = parseKabutanFundamentals(html);
+	const fetched_at = new Date().toISOString();
+	const date = fetched_at.slice(0, 10);
+	// 同日複数回は最新値で上書きしたいので OR REPLACE。
+	await env.DB.prepare(
+		`INSERT OR REPLACE INTO fundamentals
        (ticker, date, source, per, pbr, dividend_yield, forecast_eps, forecast_period, actual_eps, actual_period, fetched_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      code,
-      date,
-      `${SITE}:${code}`,
-      f.per,
-      f.pbr,
-      f.dividend_yield,
-      f.forecast_eps,
-      f.forecast_period,
-      f.actual_eps,
-      f.actual_period,
-      fetched_at,
-    )
-    .run();
-  return { written: 1, skipped: 0 };
+	)
+		.bind(
+			code,
+			date,
+			`${SITE}:${code}`,
+			f.per,
+			f.pbr,
+			f.dividend_yield,
+			f.forecast_eps,
+			f.forecast_period,
+			f.actual_eps,
+			f.actual_period,
+			fetched_at,
+		)
+		.run();
+	return { written: 1, skipped: 0 };
 }
 
 // ── オーケストレーション ───────────────────────────────────────────────────
 type Kind = "prices" | "daily" | "fundamentals";
 
-const COLLECTORS: Record<Kind, (env: TimeseriesEnv, code: string) => Promise<{ written: number; skipped: number }>> = {
-  prices: collectPricesOne,
-  daily: collectDailyOne,
-  fundamentals: collectFundamentalsOne,
+const COLLECTORS: Record<
+	Kind,
+	(
+		env: TimeseriesEnv,
+		code: string,
+	) => Promise<{ written: number; skipped: number }>
+> = {
+	prices: collectPricesOne,
+	daily: collectDailyOne,
+	fundamentals: collectFundamentalsOne,
 };
 
 // 全 watchlist 銘柄を順次取得 (min_interval を空ける)。1銘柄が落ちても他は続行。
 export async function collectTimeseries(
-  env: TimeseriesEnv,
-  kind: Kind,
-  codeFilter: string | null,
+	env: TimeseriesEnv,
+	kind: Kind,
+	codeFilter: string | null,
 ): Promise<Record<string, unknown>> {
-  const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
-  const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
-  const collect = COLLECTORS[kind];
-  const results: Record<string, unknown> = {};
-  let first = true;
-  for (const code of codes) {
-    if (!first) await sleep(interval);
-    first = false;
-    try {
-      results[code] = await collect(env, code);
-    } catch (e) {
-      results[code] = { error: (e as Error).message };
-    }
-  }
-  return results;
+	const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
+	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
+	const collect = COLLECTORS[kind];
+	const results: Record<string, unknown> = {};
+	let first = true;
+	for (const code of codes) {
+		if (!first) await sleep(interval);
+		first = false;
+		try {
+			results[code] = await collect(env, code);
+		} catch (e) {
+			results[code] = { error: (e as Error).message };
+		}
+	}
+	return results;
 }

@@ -20,11 +20,17 @@ not buy-and-hold. Frame every judgment on that horizon.
 
 ```
 /signal-judge 285A
+/signal-judge 285A -- 需給イベント(2026-06-19): 米メジャーSQ週(6月, SQ=2026-06-19/SOX・米指数経由のマクロ要因・SQ清算由来の振れは持続性低い)
 ```
 
-The argument `<ticker>` is the symbol this run owns. Fired by `context-builder`'s
-`repository_dispatch` (`signal-judge`, one dispatch per ticker) right after the context Issue was
-updated, or manually.
+The first argument `<ticker>` is the symbol this run owns. Everything after a `--` separator is the
+**event context** — a one-line 需給イベント string the workflow computed at launch (SQ + nearby
+macro events). It is an *input*, not a fetch target: do **not** read `config/events.yaml` or run any
+calendar script yourself. If no `--` / no event context is passed (e.g. a bare manual run), treat it
+as 需給イベント: 特になし and judge normally.
+
+Fired by `context-builder`'s `repository_dispatch` (`signal-judge`, one dispatch per ticker) right
+after the context Issue was updated, or manually.
 
 ## Steps
 
@@ -107,6 +113,19 @@ buy/sell/hold + confidence on a swing basis. Rules:
 - Cap confidence at `low` for earnings ≤5 days out, `medium` for 6-14 days, unless the freshest
   context *is* the earnings release. No cap once `days_to_earnings` is negative or unknown.
 - Separate macro from idiosyncratic drivers and tag them distinctly.
+- **Apply the event context** (the `--` argument). Two SQ layers, handled differently:
+  - **日本SQ週** — a *direct* supply/demand event on the name itself. During SQ week (esp.
+    メジャーSQ = 3/6/9/12月), futures/option unwind distorts the open (SQ値 vs 実勢, 「幻のSQ」) and
+    intraday tape. Treat such moves as **noise, not signal**: cap confidence one notch (a メジャーSQ
+    week `buy` tops out at `medium`), and don't originate a fresh call off a price move that is
+    plausibly SQ-driven. Note it in the rationale.
+  - **米メジャーSQ週** — *not* a direct event on a Japanese name. It reaches them only via SOX / US
+    indices, i.e. as a **macro/sentiment factor**. Do not cap or move the idiosyncratic call for it;
+    instead fold it into the pre-open backdrop reading (step 5): a SOX swing during 米メジャーSQ週 is
+    partly clearing-driven and **less persistent**, so lean on it less than the same SOX move on an
+    ordinary day. Never let 米SQ alone change a call.
+  - Non-SQ events in the string (FOMC/日銀/CPI, shown with `[high]`/`[medium]` and days-until) follow
+    the existing near-event caps above — a `[high]` event ≤3 days out pulls confidence down a notch.
 
 ### 5. Pre-open backdrop weighting (only when the fire window is pre-open)
 
@@ -118,6 +137,9 @@ The context drives the *direction*; the session backdrop tempers it. With `prema
 - Supportive backdrop (SOX ≳ +2%) aligned with a `buy` may keep `medium`, but the context alone
   still never reaches `high` without corroboration.
 - The backdrop only **tempers** a context-driven `buy`; it never turns a `hold`/`sell` into `buy`.
+- **米メジャーSQ週** (from the event context): a big SOX move that week is partly SQ-clearing
+  noise, so discount its weight here — don't let a SQ-week SOX print drive the temper as hard as an
+  ordinary-day print of the same size. Say so in the rationale.
 - Applies **only pre-open**. Intraday/after-close the tape is already in `prices`/`daily` — do not
   double-count.
 
@@ -140,5 +162,10 @@ If `$SLACK_WEBHOOK_URL` is unset, skip the POST and only print the stdout summar
 A single-line summary, no narration:
 ```
 285A → buy/medium (holdings capex ramp + BiCS8) backdrop SOX+1.2%, slack ok
+```
+When an SQ week tempered the call, say which layer and how:
+```
+285A → buy/medium (BiCS8) 日本メジャーSQ週=寄り値ノイズで確信度据置, slack ok
+285A → buy/medium (BiCS8) backdrop SOX+2.1% but 米メジャーSQ週=清算由来で割引, slack ok
 ```
 On missing context: `285A context-unavailable → hold/low, slack ok`.

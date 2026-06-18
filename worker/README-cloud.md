@@ -7,14 +7,14 @@ LLM 判定を GitHub Actions に移した。**ローカル常駐プロセスも�
 - 収集: kabutan / kioxia をスクレイプ (IR / per_ticker ニュース / prices / daily / fundamentals / premarket / earnings)
 - 保存: 記事本文JSON → **R2** (`ARTICLES`)、メタ・時系列・重複排除キー → **D1** (`DB`)
 - 発火: Cron Triggers (下記) + 手動 `/run`
-- 判定: 新規 IR/ニュースがあれば `repository_dispatch(signal-update)` で **GitHub Actions の signal-report** を起動 (`.claude/skills/signal-report`)。Actions が `/pull` `/pull-news` `/latest` で材料を引いて判定し、銘柄ごとの Issue を更新。
+- 判定: 新規 IR/ニュースがあれば `repository_dispatch(signal-update)` で **GitHub Actions の context-builder** を起動 (`.claude/skills/context-builder`)。context-builder が `/pull` `/pull-news` で材料を引いて銘柄ごとの Issue 本文(コンテキスト)を更新し、続けて `repository_dispatch(signal-judge)` で signal-judge を起動。signal-judge が `/latest` を引いて buy/sell/hold を判定し Slack へ通知 (Issue は触らない)。
 
 ## エンドポイント
 
 | ルート | 用途 |
 |---|---|
 | `/health` | 疎通確認 (無認証) |
-| `/run?kind=ir\|news\|prices\|daily\|fundamentals\|earnings\|premarket&code=&[dispatch=1]` | 手動収集。`dispatch=1` で新規があれば signal-report 起動 |
+| `/run?kind=ir\|news\|prices\|daily\|fundamentals\|earnings\|premarket&code=&[dispatch=1]` | 手動収集。`dispatch=1` で新規があれば context-builder 起動 |
 | `/pull?code=&since=&limit=` | IR だけ (source LIKE 'ir:%') を本文込み・fetched_at 昇順で返す |
 | `/pull-news?code=&since=&limit=` | per_ticker ニュースだけ (source LIKE 'kabutan:%') を本文込みで返す |
 | `/latest?kind=&code=&n=` | D1 から最新行 (prices/daily/fundamentals は時系列、premarket/earnings/ir も対応) |
@@ -28,14 +28,14 @@ dev/未設定なら認証なし)。
 
 Cloudflare の cron trigger 上限は **5個**。新規 cron は足せないので、ニュース収集と
 決算予定日推定は既存 cron に相乗りさせている。発火した cron 式を `scheduled()` 内で
-`event.cron` により判別し種別を振り分ける (`CRON_KIND`)。
+`event.cron` により判別し種別を振り分ける (`CRON_KIND`)。昼(12:30)の IR intake は
+専用 cron を持たず prices ループに相乗りさせている (`event.scheduledTime` で昼スロットを判定)。
 
 | cron (UTC) | JST | 種別 | 内容 |
 |---|---|---|---|
-| `30 23 * * *` | 08:30 | ir | IR + ニュース収集 → 新規あれば signal-report |
-| `30 3 * * *` | 12:30 | ir | 同上 |
-| `30 9 * * *` | 18:30 | ir | 同上 |
-| `*/5 0-6 * * *` | 09:00-15:00 5分毎 | prices | prices + ニュース速報 → 新規ニュースで signal-report |
+| `30 23 * * *` | 08:30 | intake | IR + ニュース + 地合い(寄り前) → 新規あれば context-builder |
+| `0 11 * * *` | 20:00 | intake | IR + ニュース → 新規あれば context-builder (決算・適時開示を当夜に拾う) |
+| `*/5 0-6 * * *` | 09:00-15:00 5分毎 | prices | prices + ニュース速報 → 新規ニュースで context-builder。12:30 相当スロットでは IR intake も相乗り |
 | `0 7 * * *` | 16:00 | eod | daily + fundamentals + earnings(次回決算予定日推定) |
 
 ## ローカル検証 (ログイン・デプロイ不要、課金なし)
@@ -79,7 +79,7 @@ npx wrangler deploy                                 # ★初回のみ手動。�
 
 - **Slack**: 新規取得時・判定更新時に Webhook へ通知。`npx wrangler secret put SLACK_WEBHOOK_URL`
   (dev は `worker/.dev.vars`)。`curl .../test-slack` で疎通確認。未設定なら通知スキップ。
-- **GitHub App (omnistove-internal-auth)**: 新規 IR/ニュースで signal-report を repository_dispatch
+- **GitHub App (omnistove-internal-auth)**: 新規 IR/ニュースで context-builder を repository_dispatch
   で起動する。`GH_APP_PRIVATE_KEY` を Secret、`GH_APP_ID` / `GH_APP_INSTALL_ID` を wrangler.toml vars に。
   3つ揃っていなければ発火は no-op (収集自体は動く)。`curl .../dispatch-test?code=285A` で E2E 確認。
 

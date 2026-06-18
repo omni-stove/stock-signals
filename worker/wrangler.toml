@@ -26,17 +26,23 @@ account_id = "020120735d111b7d06111196719171c1"  # admin@omnistove.com
 #   平日のみにしたい場合は曜日を "*" のまま毎日実行とし、土日は新規が無ければ
 #   skip されるだけ (idempotent) なので実害なし。厳密化したい時は別途検討。
 #
-#   IR (寄り前/昼/引け後):  JST 08:30/12:30/18:30 = UTC 23:30(前日)/03:30/09:30。IR+ニュース収集
-#   prices (場中5分毎):     JST 09:00-15:00 = UTC 00:00-06:00 を5分毎。prices+ニュース速報
-#   eod (引け後1回):        JST 16:00 = UTC 07:00 で daily + fundamentals + 決算予定日推定
-# ※Cloudflare の cron trigger 上限は5個。新規 cron は足せないので、ニュース収集は ir/prices に、
-#   決算予定日推定は eod に相乗りさせ、scheduled() 内で複数処理を順に実行する。
+#   intake (寄り前/引け後): JST 08:30/20:00 = UTC 23:30(前日)/11:00。IR+ニュース収集
+#                            (寄り前 08:30 のみ地合い=米国指数+日経先物も先に取得)
+#                            引け後は 20:00。決算・適時開示は19時台以降に出ることもあり、その夜のうちに
+#                            (寝る前/翌朝より早く) 拾えるよう遅めに置く。早い適時開示(15:30〜)は
+#                            場中ループ尾の prices + 12:30 相当の IR intake である程度カバーされる。
+#   prices (場中5分毎):      JST 09:00-15:00 = UTC 00:00-06:00 を5分毎。prices+ニュース速報。
+#                            さらに JST 12:30 相当 (UTC 03:30) のスロットでは IR intake も相乗りさせる
+#                            (event.scheduledTime の時刻で判定。下記 scheduled() 参照)。
+#   eod (引け後1回):         JST 16:00 = UTC 07:00 で daily + fundamentals + 決算予定日推定
+# ※Cloudflare の cron trigger 上限は5個。昼(12:30)の IR intake は専用 cron を立てず prices ループに
+#   相乗りさせて4個に収める。ニュース収集は intake/prices に、決算予定日推定は eod に、
+#   地合い取得は寄り前 intake に相乗りさせ、scheduled() 内で順に実行する。
 [triggers]
 crons = [
-  "30 23 * * *",    # JST 08:30 寄り前 IR + ニュース
-  "30 3 * * *",     # JST 12:30 昼   IR + ニュース
-  "30 9 * * *",     # JST 18:30 引け後 IR + ニュース
-  "*/5 0-6 * * *",  # JST 09:00-15:00 5分毎  prices + ニュース速報
+  "30 23 * * *",    # JST 08:30 寄り前 IR + ニュース + 地合い
+  "0 11 * * *",     # JST 20:00 引け後 IR + ニュース
+  "*/5 0-6 * * *",  # JST 09:00-15:00 5分毎  prices + ニュース速報 (12:30 相当スロットで IR intake も)
   "0 7 * * *",      # JST 16:00 引け後  daily + fundamentals + earnings (eod)
 ]
 

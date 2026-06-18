@@ -98,7 +98,9 @@ Issue 本文(コンテキスト)+ 価格/地合い/決算で判定し Slack に�
   - `permissions`: contents/issues は read のみ(本文を読むだけ)。
   - `allowed_bots: "github-actions[bot]"`(context-builder=GITHUB_TOKEN 発火を許可)。
   - prompt を `/signal-judge <ticker>` に。
-- premarket-brief.yml はそのまま(地合いブリーフとして維持)。
+- ~~premarket-brief.yml はそのまま(地合いブリーフとして維持)。~~
+  → 後に廃止。地合い取得は寄り前 intake cron (Worker) に移管し、寄り前判定は
+    地合いを取得してから新着銘柄の signal-judge を発火する形に統合した。
 - deploy-worker.yml はそのまま。
 
 ## 作業 4: ローカル起動資産の削除

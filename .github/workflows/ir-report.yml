@@ -45,6 +45,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Worker(GitHub App=omnistove-internal-auth)発の repository_dispatch を許可する。
+          # 既定では Bot起動のワークフローを Action が弾くため。bot名は [bot] サフィックス付き。
+          allowed_bots: "omnistove-internal-auth[bot]"
           # Worker発火時は client_payload.tickers に新規があった銘柄が入る。手動実行や
           # payload 無しのときは 285A (現状 IR取得対応は 285A のみ)。
           prompt: "/ir-report ${{ join(github.event.client_payload.tickers, ' ') || '285A' }}"

@@ -374,13 +374,14 @@ async function collectAll(
 }
 
 // 発火した cron 式 → 取得種別。wrangler.toml の [triggers] crons と対応させること。
-const CRON_KIND: Record<string, "ir" | "prices" | "daily" | "fundamentals"> = {
+// Cloudflare の cron trigger 上限は5個。daily と fundamentals は引け後1日1回なので、
+// 1本の cron (eod = end of day) にまとめて両方実行し、5個に収める。
+const CRON_KIND: Record<string, "ir" | "prices" | "eod"> = {
   "30 23 * * *": "ir",
   "30 3 * * *": "ir",
   "30 9 * * *": "ir",
   "*/5 0-6 * * *": "prices",
-  "0 7 * * *": "daily",
-  "5 7 * * *": "fundamentals",
+  "0 7 * * *": "eod", // JST 16:00 引け後: daily + fundamentals をまとめて取得
 };
 
 export default {
@@ -392,6 +393,13 @@ export default {
       console.log("scheduled ir done:", JSON.stringify(results), "fresh:", freshTickers.join(","));
       // 新規IRがあった銘柄だけ ir-report (GitHub Actions) を起動する。0件なら発火しない。
       await dispatchIrReport(env, freshTickers);
+      return;
+    }
+    if (kind === "eod") {
+      // 引け後の1日1回。daily と fundamentals を順に取得 (旧 2本の cron を統合)。
+      const d = await collectTimeseries(env, "daily", null);
+      const f = await collectTimeseries(env, "fundamentals", null);
+      console.log("scheduled eod done:", JSON.stringify({ daily: d, fundamentals: f }));
       return;
     }
     const res = await collectTimeseries(env, kind, null);

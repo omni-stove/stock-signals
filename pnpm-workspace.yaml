@@ -1,0 +1,6 @@
+# ルートパッケージ (scripts/*.ts のローカルチェック用) の pnpm 設定。
+# minimumReleaseAge=0: pnpm 10/11 のデフォルト供給チェーン猶予 (publish 直後の新バージョンを
+# 弾く) を無効化し lockfile を信頼する。lockfile は dependabot automerge の verify を通過済み。
+# これがないと依存 bump 直後 (24h 未満) の install が ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION で落ちる。
+# worker 側は worker/pnpm-workspace.yaml に同等の設定 + allowBuilds を持つ。
+minimumReleaseAge: 0

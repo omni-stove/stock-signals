@@ -16,13 +16,12 @@ runs:
         node-version: 22
         cache: pnpm
 
-    # lockfile は dependabot automerge の verify を通った時点で検証済みのため、install では
-    # pnpm の minimumReleaseAge (publish 直後の新バージョンを弾くデフォルトポリシー) を 0 に
-    # 無効化して lockfile を信頼する。これがないと依存 bump 直後 (24h 未満) の install が落ちる。
-    - run: pnpm install --frozen-lockfile --config.minimumReleaseAge=0
+    # minimumReleaseAge=0 は各 pnpm-workspace.yaml (ルート / worker) に永続設定済み。
+    # (lockfile は automerge の verify を通過済みのため信頼してよい。)
+    - run: pnpm install --frozen-lockfile
       shell: bash
 
-    - run: pnpm -C worker install --frozen-lockfile --config.minimumReleaseAge=0
+    - run: pnpm -C worker install --frozen-lockfile
       shell: bash
 
     - run: pnpm run verify

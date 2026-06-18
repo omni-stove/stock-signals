@@ -4,6 +4,12 @@
 #
 # allowBuilds = pnpm 11 のビルド許可 (map: true/false)。onlyBuiltDependencies = pnpm 10 の
 # 同等設定 (list)。CI の pnpm は 11 だが、ローカルの 10 でも効くよう両方記述する。
+#
+# minimumReleaseAge=0: pnpm 10/11 のデフォルト供給チェーン猶予 (publish 直後の新バージョンを
+# 弾く) を無効化し lockfile を信頼する。wrangler deploy は内部で pnpm install を再実行する
+# (依存鮮度チェック) ため、CLI フラグでなく永続設定にしないと deploy が落ちる。
+# lockfile は dependabot automerge の verify を通過済みなので信頼してよい。
+minimumReleaseAge: 0
 allowBuilds:
   esbuild: true
   sharp: true

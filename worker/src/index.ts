@@ -15,6 +15,7 @@
 
 import * as cheerio from "cheerio";
 import { collectTimeseries } from "./timeseries";
+import { collectBackdrop } from "./premarket";
 
 export interface Env {
   DB: D1Database;
@@ -425,11 +426,17 @@ export default {
       return Response.json({ ok: true, dispatched: configured, ticker: code });
     }
 
-    // /run?kind=ir|prices|daily|fundamentals&code=285A[&limit=N]
+    // /run?kind=ir|prices|daily|fundamentals|premarket&code=285A[&limit=N]
     //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
+    //   premarket は地合い (米国指数+日経先物) を1回取得して D1 premarket_backdrop に書く。
+    //   寄り前ブリーフ workflow が起動時に叩き、直後に /latest?kind=premarket で読む。
     if (url.pathname === "/run") {
       const code = url.searchParams.get("code");
       const kind = url.searchParams.get("kind") || "ir";
+      if (kind === "premarket") {
+        const res = await collectBackdrop(env);
+        return Response.json({ ok: true, kind, result: res });
+      }
       if (kind === "ir") {
         const limit = parseInt(url.searchParams.get("limit") || String(DEFAULT_LIMIT), 10);
         const { results, freshTickers } = await collectAll(env, code, limit);
@@ -489,12 +496,36 @@ export default {
       });
     }
 
-    // /latest?kind=ir|prices|daily|fundamentals&code=285A&n=10
+    // /latest?kind=ir|prices|daily|fundamentals|premarket&code=285A&n=10
     //   D1 から最新行を返す (動作確認/ローカル連携用)。kind 省略時は ir。
     if (url.pathname === "/latest") {
       const code = url.searchParams.get("code") || "285A";
       const n = parseInt(url.searchParams.get("n") || "10", 10);
       const kind = url.searchParams.get("kind") || "ir";
+
+      // premarket は銘柄別ではなく日付別 (ticker 列が無い) なので専用に扱う。
+      //   最新 n 日を date DESC で返し、us_indexes_json はパースして展開する。
+      //   寄り前ブリーフは通常 n=1 (当日の地合い1行) で読む。
+      if (kind === "premarket") {
+        const { results } = await env.DB.prepare(
+          `SELECT date, fetched_at, sox_change_pct, nasdaq_change_pct, dow_change_pct,
+                  nikkei_futures_price, nikkei_contract, us_indexes_json
+             FROM premarket_backdrop ORDER BY date DESC LIMIT ?`,
+        )
+          .bind(n)
+          .all();
+        const rows = (results as Record<string, unknown>[]).map((r) => {
+          const { us_indexes_json, ...rest } = r;
+          let us_indexes: unknown = [];
+          try {
+            us_indexes = JSON.parse((us_indexes_json as string) || "[]");
+          } catch {
+            us_indexes = [];
+          }
+          return { ...rest, us_indexes };
+        });
+        return Response.json({ ok: true, kind, rows });
+      }
 
       // 種別 → (テーブル, 並び順カラム, 取得カラム)。SQL 識別子はホワイトリストのみ。
       const LATEST: Record<string, { table: string; order: string; cols: string }> = {
@@ -506,11 +537,29 @@ export default {
       const q = LATEST[kind];
       if (!q) return Response.json({ ok: false, error: `unknown kind: ${kind}` }, { status: 400 });
 
+      // daily は移動平均(5MA/25MA)を各行に同梱して「線」として返す。25MA に必要な分まで
+      // 余分に取得してから計算し、要求された最新 n 件に切り詰める。
+      const fetchN = kind === "daily" ? Math.max(n, 25) : n;
       const { results } = await env.DB.prepare(
         `SELECT ${q.cols} FROM ${q.table} WHERE ticker = ? ORDER BY ${q.order} DESC LIMIT ?`,
       )
-        .bind(code, n)
+        .bind(code, fetchN)
         .all();
+
+      if (kind === "daily") {
+        // results は date DESC(新しい順)。各日について「その日を含む過去 w 日」の終値平均を出す。
+        const asc = (results as Record<string, unknown>[]).slice().reverse(); // 古い順
+        const closes = asc.map((r) => Number(r.close));
+        const ma = (i: number, w: number): number | null => {
+          if (i + 1 < w) return null; // 期間に満たない古い日は null
+          const sum = closes.slice(i + 1 - w, i + 1).reduce((a, b) => a + b, 0);
+          return Math.round((sum / w) * 100) / 100;
+        };
+        const withMa = asc.map((r, i) => ({ ...r, ma5: ma(i, 5), ma25: ma(i, 25) }));
+        const rows = withMa.reverse().slice(0, n); // 新しい順に戻し、要求件数へ
+        return Response.json({ ok: true, kind, rows });
+      }
+
       return Response.json({ ok: true, kind, rows: results });
     }
 

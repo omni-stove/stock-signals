@@ -87,3 +87,21 @@ CREATE TABLE IF NOT EXISTS fundamentals (
 );
 CREATE INDEX IF NOT EXISTS idx_fundamentals_ticker_date
   ON fundamentals (ticker, date DESC);
+
+-- ── 寄り前の地合い ──────────────────────────────────────────────────────
+-- ローカルの scripts/fetch-premarket.ts (前夜マーケットモード) が
+-- data/premarket/<date>.jsonl に残していた「今日の地合い」を D1 に移したもの。
+-- 前夜の米国市場 (とくに SOX) と日経先物が寄り付きの方向をかなり決めるため、
+-- 寄り前ブリーフ (premarket-brief skill) の主入力になる。
+-- 冪等キー = (date)。同日に複数回取っても1行 (INSERT OR REPLACE で最新値に更新)。
+-- ※寄前気配 (kehai) は寄りが読めないため移植せず、地合いのみ。
+CREATE TABLE IF NOT EXISTS premarket_backdrop (
+  date                 TEXT PRIMARY KEY,  -- JST の取得日 YYYY-MM-DD (当日の地合い)
+  fetched_at           TEXT NOT NULL,     -- 取得時刻 (ISO8601)
+  sox_change_pct       REAL,              -- SOX 前日比% (半導体銘柄の地合い主指標)
+  nasdaq_change_pct    REAL,              -- ナスダック総合 前日比%
+  dow_change_pct       REAL,              -- NYダウ 前日比%
+  nikkei_futures_price REAL,              -- CME日経225先物(ドル建て) 現値
+  nikkei_contract      TEXT,              -- 限月 (例 6月限)
+  us_indexes_json      TEXT               -- 指数明細の生配列 (現値/前日比/参照時刻) を JSON 文字列で保持
+);

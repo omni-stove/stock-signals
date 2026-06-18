@@ -31,6 +31,7 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  id-token: write # claude-code-action@v1 が OIDC トークン取得に要求する
 
 jobs:
   ir-report:

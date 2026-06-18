@@ -406,6 +406,17 @@ export default {
       return new Response("ok", { status: 200 });
     }
 
+    // /dispatch-test?code=285A
+    //   App認証→repository_dispatch の疎通確認用。IR取得はせず、指定銘柄で強制発火する。
+    //   新規IRの有無に関係なく ir-report (workflow_dispatch相当) を起動できるので、
+    //   発火経路 (JWT署名→installation token→dispatch) のE2E確認に使う。
+    if (url.pathname === "/dispatch-test") {
+      const code = url.searchParams.get("code") || "285A";
+      const configured = !!(env.GH_APP_ID && env.GH_APP_PRIVATE_KEY && env.GH_APP_INSTALL_ID);
+      await dispatchIrReport(env, [code]);
+      return Response.json({ ok: true, dispatched: configured, ticker: code });
+    }
+
     // /run?kind=ir|prices|daily|fundamentals&code=285A[&limit=N]
     //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
     if (url.pathname === "/run") {

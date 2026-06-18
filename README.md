@@ -43,7 +43,7 @@ flowchart TB
         direction TB
         CRON_CF["Cron Triggers<br/>intake(IR+news+開示+レーティング+寄り前は地合い)/prices/eod(daily+fundamentals+earnings)"]
         WORKER["Worker<br/>src/index.ts + timeseries.ts + premarket.ts<br/>+ news.ts + disclosure.ts + ratings.ts + earnings.ts"]
-        D1[("D1 (SQLite)<br/>prices/daily/fundamentals<br/>articles(IR+news+開示+レーティング)メタ<br/>premarket/earnings")]
+        D1[("D1 (SQLite)<br/>prices/daily/fundamentals<br/>articles(IR+news+開示+レーティング)メタ<br/>premarket/earnings/intraday_dispatch")]
         R2[("R2<br/>記事本文JSON")]
         API((HTTP API<br/>/run /pull /pull-news /latest))
         CRON_CF --> WORKER
@@ -97,7 +97,7 @@ Worker の cron trigger は UTC 基準 (`worker/wrangler.toml`)。JST 換算は�
 | --- | --- | --- | --- |
 | 08:30 | `30 23 * * *` | intake | IR + ニュース + 適時開示(TDnet) + 証券会社レーティング + 地合い(寄り前のみ) |
 | 20:00 | `0 11 * * *` | intake | IR + ニュース + 適時開示 + レーティング(決算・適時開示・レーティング日報を当夜に拾う) |
-| 09:00–15:00 5分毎 | `*/5 0-6 * * *` | prices | 株価スナップショット + ニュース速報。12:30 相当スロットでは IR intake も相乗り |
+| 09:00–15:00 5分毎 | `*/5 0-6 * * *` | prices | 株価スナップショット + ニュース速報。12:30 相当スロットでは IR intake も相乗り。新着ニュースの dispatch は銘柄ごと 15分デバウンス (下記) |
 | 16:00 | `0 7 * * *` | eod | 日足 + ファンダ + 決算日推定 |
 
 ### LLM連鎖 (新規データ検知 → Slack)
@@ -126,6 +126,14 @@ sequenceDiagram
 
 カーソルは Issue 本文に永続化されるため、前段のジョブが途中でキャンセルされても
 カーソルは更新されず、次の発火で取りこぼし分を含めて再取得される (冪等)。
+
+**場中ニュースのデバウンス**。場中 (prices cron, 5分毎) は同じ銘柄に短時間で複数の新着が出ると
+スロットごとに独立して dispatch してしまい、LLM 2段 (context-builder→signal-judge) が数分おきに
+連発する。これを抑えるため、Worker は銘柄ごとの最終 dispatch 時刻を D1 (`intraday_dispatch`) に持ち、
+**15分以内に既に撃っていればその回は見送る**。見送っても新着記事はカーソル未更新のまま残り、窓が
+明けた次スロットで context-builder がまとめて拾うので取りこぼしはない (判定はカーソル以降を全部読む)。
+intake cron (寄り前/引け後) は地合い込みの重要判定なのでデバウンスせず常に dispatch する。
+signal-judge は精度優先で `--effort high` (reasoning effort) で走る。
 
 ## ディレクトリ構成
 

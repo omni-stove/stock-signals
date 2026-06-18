@@ -137,21 +137,52 @@ async function getInstallationToken(
 // 銘柄ごとに別ジョブにして concurrency(cancel-in-progress)を銘柄単位で効かせるため、
 // 1銘柄=1 dispatch で撃つ (client_payload.ticker は単一銘柄)。
 // App 認証情報が揃っていなければ no-op (best-effort、発火失敗で収集は止めない)。
+// 場中 dispatch のデバウンス窓 (ミリ秒)。同一銘柄をこの窓以内に二度撃たない。
+// 5分毎 cron の3スロット相当。短時間に複数の新着ニュースが出ても1サイクルに束ねる。
+const INTRADAY_DEBOUNCE_MS = 15 * 60 * 1000;
+
 async function dispatchSignalUpdate(
 	env: Env,
 	tickers: string[],
+	// 場中 (prices cron) からの呼び出しでは true。intraday_dispatch を参照して
+	// デバウンス窓以内の銘柄を間引き、実際に撃った銘柄だけ last_dispatch_at を更新する。
+	// intake (寄り前/引け後) からは false (常に全銘柄撃つ重要判定)。
+	debounce = false,
 ): Promise<void> {
 	if (tickers.length === 0) return;
 	if (!env.GH_APP_ID || !env.GH_APP_PRIVATE_KEY || !env.GH_APP_INSTALL_ID)
 		return;
 	const repo = env.GITHUB_REPO || "omni-stove/stock-signals";
+	// Workers 内は Date.now() が使える (collectOne 等でも new Date() を使用済み)。
+	const nowMs = Date.now();
+	let targets = tickers;
+	if (debounce) {
+		const placeholders = tickers.map(() => "?").join(",");
+		const { results } = await env.DB.prepare(
+			`SELECT ticker, last_dispatch_at FROM intraday_dispatch WHERE ticker IN (${placeholders})`,
+		)
+			.bind(...tickers)
+			.all<{ ticker: string; last_dispatch_at: string }>();
+		const lastByTicker = new Map(
+			results.map((r) => [r.ticker, Date.parse(r.last_dispatch_at)]),
+		);
+		targets = tickers.filter((t) => {
+			const last = lastByTicker.get(t);
+			return last === undefined || nowMs - last >= INTRADAY_DEBOUNCE_MS;
+		});
+		const skipped = tickers.filter((t) => !targets.includes(t));
+		if (skipped.length > 0) {
+			console.log(`intraday dispatch debounced: ${skipped.join(",")}`);
+		}
+		if (targets.length === 0) return;
+	}
 	try {
-		// Workers 内は Date.now() が使える (collectOne 等でも new Date() を使用済み)。
-		const nowSec = Math.floor(Date.now() / 1000);
+		const nowSec = Math.floor(nowMs / 1000);
 		const jwt = await makeAppJwt(env.GH_APP_ID, env.GH_APP_PRIVATE_KEY, nowSec);
 		const token = await getInstallationToken(jwt, env.GH_APP_INSTALL_ID);
 		// 銘柄ごとに dispatch (concurrency group を銘柄単位にするため)。
-		for (const ticker of tickers) {
+		const nowIso = new Date(nowMs).toISOString();
+		for (const ticker of targets) {
 			const res = await fetch(
 				`https://api.github.com/repos/${repo}/dispatches`,
 				{
@@ -172,6 +203,15 @@ async function dispatchSignalUpdate(
 				console.error(
 					`dispatch failed (${ticker}): HTTP ${res.status} ${await res.text()}`,
 				);
+				continue;
+			}
+			// 場中のみ: 撃てた銘柄だけデバウンス時刻を更新する (失敗分は窓を進めず次スロットで再挑戦)。
+			if (debounce) {
+				await env.DB.prepare(
+					`INSERT OR REPLACE INTO intraday_dispatch (ticker, last_dispatch_at) VALUES (?, ?)`,
+				)
+					.bind(ticker, nowIso)
+					.run();
 			}
 		}
 	} catch (e) {
@@ -738,7 +778,8 @@ export default {
 				"fresh:",
 				fresh.join(","),
 			);
-			await dispatchSignalUpdate(env, fresh);
+			// 場中は同一銘柄の短時間連発を抑える (デバウンス)。intake (上の分岐) は抑えない。
+			await dispatchSignalUpdate(env, fresh, true);
 			return;
 		}
 		if (kind === "eod") {

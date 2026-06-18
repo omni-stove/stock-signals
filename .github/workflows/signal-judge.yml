@@ -89,7 +89,7 @@ jobs:
           # パスを渡す。skill は JSON を Read し、Issue 本文だけ gh で読む。
           prompt: "/signal-judge ${{ github.event.client_payload.ticker || inputs.ticker }} -- ${{ steps.events.outputs.ctx }} @${{ runner.temp }}/numctx.json"
           # Actions の使い捨てサンドボックス内なので Bash を広く許可。numctx.json を read するため Read も許可。
-          claude_args: "--model opus --allowedTools Bash,Read --max-turns 40"
+          claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

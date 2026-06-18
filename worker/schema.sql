@@ -129,3 +129,17 @@ CREATE TABLE IF NOT EXISTS earnings (
   detail          TEXT,                -- 推定根拠 (last/prior 四半期と発表日)
   fetched_at      TEXT NOT NULL        -- 取得時刻 (ISO8601)
 );
+
+-- ── 場中 dispatch のデバウンス ────────────────────────────────────────────
+-- 場中 (prices cron, 5分毎) は同じ銘柄に短時間で複数の新着ニュースが出ると、
+-- スロットごとに独立して signal-update を dispatch してしまい、context-builder→
+-- signal-judge の LLM 2段が数分おきに連発する (サブスク枠の浪費)。
+-- 銘柄ごとに「最後に場中 dispatch した時刻」を持ち、デバウンス窓 (15分) 以内なら
+-- その回の dispatch を見送る。見送っても新着記事はカーソル未更新のまま残り、
+-- 次にデバウンスが明けたスロットで context-builder がまとめて拾うので取りこぼしゼロ。
+-- intake cron (寄り前/引け後) はこのテーブルを参照せず常に dispatch する (1日数回・地合い込みの重要判定)。
+-- 銘柄ごと1行 (INSERT OR REPLACE で最新の dispatch 時刻に上書き)。
+CREATE TABLE IF NOT EXISTS intraday_dispatch (
+  ticker           TEXT PRIMARY KEY,   -- 銘柄コード
+  last_dispatch_at TEXT NOT NULL       -- 最後に場中 dispatch した時刻 (UTC ISO8601)
+);

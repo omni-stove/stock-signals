@@ -58,11 +58,9 @@ roadmap, capital & management decisions, the rolling 直近の重大トピック
 and 決算・ガイダンス. **This is your primary fundamental input** — read it in full. The
 直近の重大トピック section is the freshest material and usually the core of the call.
 
-The **## 証券会社レーティング** section (`- YYYY-MM-DD <機関>: <格付> 目標株価 <値> [信頼度: …]`) is a
-**6–12-month** view, not a swing trigger. Weight by: **発行日** (discount the older it is; this-week
-calls corroborate), **アップサイド% to 目標株価** vs current price (large upside supports `buy`;
-near/over target leans `hold`), and **信頼度** (`信頼度: 低` is a weak corroborator). It only
-corroborates — a single rating line never originates a `buy`/`sell` and never reaches `high` alone.
+The **## 証券会社レーティング** section is a **6–12-month** view, not a swing trigger. Weight by
+**発行日** (discount the older it is), **アップサイド% to 目標株価** vs current price (near/over target
+leans `hold`), and **信頼度**. It only corroborates — never originates a call or reaches `high` alone.
 
 If no Issue exists or the body is empty, note `context: unavailable` and judge on price/backdrop
 alone (low confidence).
@@ -115,8 +113,7 @@ buy/sell/hold + confidence on a swing basis. Rules:
 - If the context shows nothing materially new since it last drove a call (a restatement of
   already-known facts), lean `hold` — don't whipsaw.
 - Material likely already priced in (good context after a multi-day run / PTS premium > +3%) leans
-  `hold`, not `buy`. Likewise if the price already sits at/above a recent 証券会社レーティング 目標株価
-  (no upside left), lean `hold`.
+  `hold`, not `buy`.
 - `high` needs corroboration — multiple aligned topics, or an earnings/guidance release — never a
   single line.
 - Cap confidence at `low` for earnings ≤5 days out, `medium` for 6-14 days, unless the freshest

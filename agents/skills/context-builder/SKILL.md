@@ -62,7 +62,6 @@ curl -s -H "Authorization: Bearer $SYNC_TOKEN" "$WORKER_URL/pull-news?code=<tick
 
 Each response is `{ ok, count, rows: [{ url, title, published_at, ir_category, fetched_at, body }] }`.
 `/pull` returns IR only; `/pull-news` returns per-ticker news only. (`ir_category` is null for news.)
-`/pull` also carries **証券会社レーティング** rows (`ir_category="rating"`) — handled specially (step 4).
 
 If **both** counts are 0, exit without touching the Issue (nothing new to fold in, and the
 existing context still stands — do **not** fire signal-judge). Print `<ticker> ir=0 news=0 (no update)`.
@@ -94,8 +93,7 @@ rolling "直近の重大トピック" list. Items older than ~30 days are backgr
 structural sections if genuinely new to the body, but never into the rolling-topics list.
 
 **証券会社レーティング (`ir_category="rating"`) is the exception to the 30-day rule** — its 目標株価 is
-a 6–12-month view, so record each in the **## 証券会社レーティング** section (step 5), not in the
-rolling-topics list. Only a *fresh* change (格上げ / 目標株価の大幅増減) also earns a 直近の重大トピック line.
+a 6–12-month view, so it goes in the **## 証券会社レーティング** section, not the rolling-topics list.
 
 ### 5. Regenerate and overwrite the Issue body
 
@@ -125,9 +123,8 @@ body and the old cursors stay intact, and the next run re-pulls everything since
  effect has been absorbed into the structural sections above.>
 
 ## 証券会社レーティング
-<newest first. One line per (機関, 発行日): `- YYYY-MM-DD <機関>: <格付> 目標株価 <値> [信頼度: …]`.
- Keep on file while in ~12-month horizon (even past 30 days); drop when the same 機関 issues a newer
- call or the date is clearly past horizon. Empty if none.>
+<newest first: `- YYYY-MM-DD <機関>: <格付> 目標株価 <値> [信頼度: …]`. Keep while in ~12-month
+ horizon; drop when the same 機関 issues a newer call. Empty if none.>
 
 ## 決算・ガイダンス
 <latest results vs expectations, current guidance, known next-earnings considerations — facts only>

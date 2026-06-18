@@ -1,0 +1,57 @@
+# dependabot の PR を自動マージする。
+# このリポジトリは private + free プランで GitHub の auto-merge / branch protection が
+# 使えないため、ここで verify を直接回し、成功したら即マージする。
+#
+# patch / minor のみ自動マージ。major はレビューしたいので除外。
+# マージに必要な write 権限は org/repo の Actions workflow 権限 (write + PR approve可) に依存する。
+name: dependabot-automerge
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Fetch dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # major はここで打ち切り (以降のマージ step を skip)。
+      - uses: actions/checkout@v4
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+
+      - uses: pnpm/action-setup@v4
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+
+      - run: pnpm -C worker install --frozen-lockfile
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+
+      - run: pnpm run verify
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+
+      # verify が通ったら即マージ (auto-merge 機能を使わず直接マージ)。
+      - name: Merge
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --squash --delete-branch "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

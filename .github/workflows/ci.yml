@@ -1,0 +1,33 @@
+# PR の品質ゲート。`pnpm run verify` (lint + typecheck + worker typecheck + knip) を回す。
+# dependabot の PR は dependabot-automerge.yml 側で verify+マージするのでここでは走らせない (二重実行回避)。
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm -C worker install --frozen-lockfile
+
+      - run: pnpm run verify

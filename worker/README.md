@@ -44,9 +44,9 @@ D1=ローカルSQLite、R2=ローカルFS をエミュレートする。
 
 ```sh
 cd worker
-npm install
-npm run db:init:local                 # ローカルD1にスキーマ適用
-npx wrangler dev --port 8799
+pnpm install
+pnpm run db:init:local                # ローカルD1にスキーマ適用
+pnpm exec wrangler dev --port 8799
 # 別ターミナル:
 curl "http://localhost:8799/health"
 curl "http://localhost:8799/run?kind=ir&code=285A&limit=3"
@@ -62,11 +62,11 @@ curl "http://localhost:8799/latest?kind=ir&code=285A&n=5"
 
 ```sh
 cd worker
-npx wrangler login                                  # ★ブラウザ認証
-npx wrangler d1 create stock-signals                # ★ → database_id を wrangler.toml に記入
-npx wrangler r2 bucket create stock-signals-articles # ★
-npm run db:init:remote                              # リモートD1にスキーマ適用 (スキーマ変更時も)
-npx wrangler deploy                                 # ★初回のみ手動。以降は push で自動
+pnpm exec wrangler login                                  # ★ブラウザ認証
+pnpm exec wrangler d1 create stock-signals                # ★ → database_id を wrangler.toml に記入
+pnpm exec wrangler r2 bucket create stock-signals-articles # ★
+pnpm run db:init:remote                                   # リモートD1にスキーマ適用 (スキーマ変更時も)
+pnpm exec wrangler deploy                                 # ★初回のみ手動。以降は push で自動
 ```
 
 ### コストの目安 (個人利用)
@@ -77,7 +77,7 @@ npx wrangler deploy                                 # ★初回のみ手動。�
 
 ## Slack通知 / GitHub App (発火)
 
-- **Slack**: 新規取得時・判定更新時に Webhook へ通知。`npx wrangler secret put SLACK_WEBHOOK_URL`
+- **Slack**: 新規取得時・判定更新時に Webhook へ通知。`pnpm exec wrangler secret put SLACK_WEBHOOK_URL`
   (dev は `worker/.dev.vars`)。`curl .../test-slack` で疎通確認。未設定なら通知スキップ。
 - **GitHub App (omnistove-internal-auth)**: 新規 IR/ニュースで context-builder を repository_dispatch
   で起動する。`GH_APP_PRIVATE_KEY` を Secret、`GH_APP_ID` / `GH_APP_INSTALL_ID` を wrangler.toml vars に。

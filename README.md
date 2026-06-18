@@ -142,7 +142,7 @@ signal-judge は精度優先で `--effort high` (reasoning effort) で走る。
 | パス | 中身 |
 | ---- | ---- |
 | `worker/`            | Cloudflare Worker (収集) |
-| `.github/workflows/` | LLM判定の Actions |
+| `.github/workflows/` | LLM判定の Actions / CI (`ci.yml` で `pnpm run verify`) / dependabot 自動マージ |
 | `agents/skills/`     | Claude Code skill 実体 (`.claude/skills/` は symlink) |
 | `scripts/`           | Actions 前処理 (`*.sh`) と手動ツール (`*.ts`) |
 | `config/`            | watchlist / sources / events |

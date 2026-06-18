@@ -1,0 +1,26 @@
+# PR の品質ゲート。pnpm のセットアップ + 依存インストール (ルート/worker) + `pnpm run verify`
+# (lint + typecheck + worker typecheck + knip) を回す共通アクション。
+# checkout 済みの作業ツリーに対して実行する前提 (checkout はワークフロー側で行う)。
+name: Verify
+description: Install dependencies and run `pnpm run verify`.
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v6
+      with:
+        version: latest
+
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 22
+        cache: pnpm
+
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+
+    - run: pnpm -C worker install --frozen-lockfile
+      shell: bash
+
+    - run: pnpm run verify
+      shell: bash

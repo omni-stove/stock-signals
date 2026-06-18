@@ -125,22 +125,27 @@ async function collectMarginOne(
 
 // watchlist 全銘柄 (codeFilter 指定時はその1銘柄) の信用残を収集し D1 margin に保存。
 // 1銘柄が落ちても他は続行 (timeseries の collectTimeseries と同じ流儀)。
+// freshTickers = 今回「新しい週次行が書けた」銘柄 (written > 0)。週1更新なので新しい集計
+// 基準日が公表された夜だけ乗り、20:00 intake で他の収集と束ねて1回 dispatch される。
 export async function collectMargin(
 	env: MarginEnv,
 	codeFilter: string | null,
-): Promise<Record<string, unknown>> {
+): Promise<{ results: Record<string, unknown>; freshTickers: string[] }> {
 	const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	const results: Record<string, unknown> = {};
+	const freshTickers: string[] = [];
 	let first = true;
 	for (const code of codes) {
 		if (!first) await sleep(interval);
 		first = false;
 		try {
-			results[code] = await collectMarginOne(env, code);
+			const r = await collectMarginOne(env, code);
+			results[code] = r;
+			if (r.written > 0) freshTickers.push(code);
 		} catch (e) {
 			results[code] = { error: (e as Error).message };
 		}
 	}
-	return results;
+	return { results, freshTickers };
 }

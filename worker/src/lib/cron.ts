@@ -55,14 +55,6 @@ export async function runScheduled(
 				console.error("backdrop failed:", e),
 			);
 		}
-		// 信用残 (週次の需給データ) は引け後 (20:00) intake にだけ相乗りさせる。週1更新なので
-		// 毎日取っても (ticker, 集計基準日) PK で1週1行に収束する (margin.ts 参照)。新規行が
-		// 出ても signal-judge は次回の他材料発火時に最新を読むため、ここでは dispatch しない。
-		if (event.cron === "0 11 * * *") {
-			await collectMargin(env, null).catch((e) =>
-				console.error("margin failed:", e),
-			);
-		}
 		// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) のいずれかに新規があった
 		// 銘柄をまとめて signal-report を起動する。適時開示は /pull の ir カーソルに合流する。
 		const ir = await collectAll(env, null, DEFAULT_LIMIT);
@@ -72,21 +64,34 @@ export async function runScheduled(
 		// 出揃うため、引け後 (20:00) intake で拾うと取りこぼしが少ない。新規があれば
 		// 目標株価変更も判定材料なので signal-report 起動対象に含める。
 		const rat = await collectRatings(env, null);
+		// 信用残 (週次の需給データ) は引け後 (20:00) intake にだけ相乗りさせる。週1更新なので
+		// 毎日取っても (ticker, 集計基準日) PK で1週1行に収束する (margin.ts 参照)。新しい週次行が
+		// 公表された夜だけ freshTickers に乗り、上の IR/開示/ニュース/レーティングと束ねて 1 回
+		// だけ dispatch する (信用残だけ更新された夜でも、揃ったタイミングで判定が走る)。
+		const mgn =
+			event.cron === "0 11 * * *"
+				? await collectMargin(env, null).catch((e) => {
+						console.error("margin failed:", e);
+						return { results: null, freshTickers: [] as string[] };
+					})
+				: { results: null, freshTickers: [] as string[] };
 		const fresh = [
 			...new Set([
 				...ir.freshTickers,
 				...disc.freshTickers,
 				...news.freshTickers,
 				...rat.freshTickers,
+				...mgn.freshTickers,
 			]),
 		];
 		console.log(
-			"scheduled ir+disclosure+news+ratings done:",
+			"scheduled ir+disclosure+news+ratings+margin done:",
 			JSON.stringify({
 				ir: ir.results,
 				disclosure: disc.results,
 				news: news.results,
 				ratings: rat.results,
+				...(mgn.results ? { margin: mgn.results } : {}),
 			}),
 			"fresh:",
 			fresh.join(","),

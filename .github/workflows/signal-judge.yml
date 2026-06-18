@@ -45,6 +45,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Action 実行時は CLAUDE.md の指示が判定の邪魔になりうるので退避する。
+      # リポジトリ配下 (直下/サブディレクトリ) とユーザ全体設定 (~/.claude/CLAUDE.md) を
+      # 一時リネームし、Action 起動時に Claude Code が読み込まないようにする。
+      - name: Stash CLAUDE.md files
+        run: |
+          find . -name CLAUDE.md -not -path '*/node_modules/*' \
+            -exec sh -c 'mv "$1" "$1.stashed"' _ {} \;
+          [ -f "$HOME/.claude/CLAUDE.md" ] && mv "$HOME/.claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md.stashed" || true
+
       # SQ (日本/米メジャー) と config/events.yaml の近接イベントを 1 行に整形し、prompt に渡す。
       # skill 本体にはカレンダーを読ませない方針 (決定論的な算出は step 側=GNU date で完結)。
       # 起動経路 (dispatch / 手動) によらずここで毎回算出するので payload には依存しない。

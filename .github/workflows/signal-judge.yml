@@ -43,7 +43,7 @@ jobs:
   signal-judge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # SQ (日本/米メジャー) と config/events.yaml の近接イベントを 1 行に整形し、prompt に渡す。
       # skill 本体にはカレンダーを読ませない方針 (決定論的な算出は step 側=GNU date で完結)。
@@ -56,9 +56,11 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # context-builder (github.token=github-actions[bot]) 発の repository_dispatch を許可する。
-          # 既定では Bot起動のワークフローを Action が弾くため。
-          allowed_bots: "github-actions[bot]"
+          # context-builder 発の repository_dispatch を許可する。context-builder は OAuth
+          # (claude_code_oauth_token) で走るため、その中から叩く dispatch の actor は
+          # github-actions[bot] ではなく claude (type: Bot) になる。手動/github.token 経由の
+          # github-actions[bot] も許すため両方を列挙する。既定では Bot起動を Action が弾く。
+          allowed_bots: "claude,github-actions[bot]"
           # 発火時は client_payload.ticker に対象銘柄が入る。手動実行や payload 無しのときは 285A。
           # 第2引数に需給イベント文脈 (SQ含む) を渡す。skill はこれを入力として解釈する。
           prompt: "/signal-judge ${{ github.event.client_payload.ticker || '285A' }} -- ${{ steps.events.outputs.ctx }}"

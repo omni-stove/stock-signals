@@ -83,13 +83,37 @@ npx wrangler secret put SLACK_WEBHOOK_URL   # プロンプトにURLを貼る
 curl "http://localhost:8799/test-slack"   # ダミー1件を実際にSlackへ送る
 ```
 
-## ローカル連携 (analyze-ticker が R2/D1 を読む)
+## ローカル連携
 
-クラウドが集めた記事をローカルの analyze-ticker skill に渡す方法は2案 (次段で実装):
-- (A) Worker に `/pull?since=...` を生やし、ローカルの watcher が定期 GET → `data/queue/<code>/` に書く
-- (B) `wrangler r2 object get` / `wrangler d1 execute` をローカル cron で叩いて同期
+方針: **判定 (analyze-ticker) はローカルのまま、収集だけクラウド** (本ファイル冒頭の通り)。
+クラウドが D1 に集めた時系列データを、Mac 起動時にローカル jsonl へ引き戻す。読み手
+(`valuation.ts`/`sector.ts`/`analyze-ticker`) のロジックは一切変えない。
 
-PoC段階では未実装。`/latest` で中身は確認できる。
+### 時系列 (prices/daily/fundamentals): D1 → jsonl 同期 ✅
+- Worker の **`/dump?kind=...&code=...`** が「ローカル jsonl と同じ列・古い順」で ndjson を返す。
+- ローカルの **`scripts/sync-from-d1.ts`** がそれを GET し `data/<kind>/<code>.jsonl` を丸ごと置換
+  (D1 が source of truth)。
+```sh
+# dev (ローカルWorker) に対して
+WORKER_URL=http://localhost:8800 node scripts/sync-from-d1.ts
+# 本番。SYNC_TOKEN を設定している場合は環境変数で渡す
+WORKER_URL=https://stock-signals-collector.<sub>.workers.dev SYNC_TOKEN=... node scripts/sync-from-d1.ts
+# cron 例 (Mac 起動時/読む直前): logs/sync.log に追記
+```
+検証済み (2026-06-18): sync で206行復元・errors=0、285A 最終値が D1 の最新 (06-18 12:51) に更新、
+`valuation.ts`/`sector.ts` がそのまま読めることを確認。5分枠重複は D1 正規化済み (6行→4行)。
+
+`/dump` は本番(公開URL)では **`SYNC_TOKEN`** を要求する (`npx wrangler secret put SYNC_TOKEN`、
+dev/未設定なら認証なし)。
+
+### IR記事 (R2/D1 → 判断): `/pull` で本文込み取得 ✅
+Worker の **`/pull?code=285A&since=<ISO8601>&limit=N`** が「`since` (= 前回処理カーソル) より後に
+取得した未処理IRだけ」を **本文(R2)込み・`fetched_at` 昇順** で返す (`/latest` はメタのみ・published_at 順
+なのに対し、こちらは判断に必要な本文を同梱し取りこぼさないカーソル順)。`since` 省略時は直近 limit 件。
+公開URLでは `/dump` と同様 `SYNC_TOKEN` を要求する。
+- 用途: GitHub Actions の **ir-report** (`.github/workflows/ir-report.yml` + `.claude/skills/ir-report`) が
+  これを叩いて新規IRだけを判断し、銘柄ごとの常設Issue (企業レポート) を更新 → Slack通知する。
+- ローカルの analyze-ticker(常駐)に R2本文を流し込む同期は引き続き別途 (必要なら `/pull` を流用可)。
 
 ## 時系列データ (prices / daily / fundamentals) — Worker化済み
 
@@ -143,6 +167,7 @@ daily 180行 / fundamentals 10行 / 再投入で件数不変 (冪等OK)。
         書き戻し先を D1 等に変える設計が別途必要 (Worker は読み取り専用FS)。
 - [ ] ir定義を wrangler.toml の vars かD1に逃がし、複数銘柄対応 (今は src/index.ts に直書き)
 - [ ] Cron の曜日を JST 月-金 に厳密化 (現状 crons は UTC 毎日)
-- [ ] ローカル連携 (上記 A or B) — valuation.ts/sector.ts/analyze-ticker が jsonl ではなく D1 を読む切替
+- [x] ローカル連携 (時系列) — `/dump` + `scripts/sync-from-d1.ts` で D1 → jsonl 同期 (読み手は無改修)
+- [ ] ローカル連携 (IR記事) — R2本文を data/queue へ落とし analyze-ticker に渡す
 - [x] 過去 jsonl → D1 への移行スクリプト (`migrate-jsonl.ts`、ローカルD1へ投入済み)
 - [ ] kioxia 以外の site パーサ (IR)

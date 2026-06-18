@@ -389,6 +389,57 @@ export default {
       return Response.json({ ok: true, kind, rows: results });
     }
 
+    // /pull?code=285A&since=<ISO8601>&limit=N[&token=...]
+    //   「since より後に取得した未処理IRだけ」を本文(R2)込みで、古い順 (fetched_at ASC) に返す。
+    //   GitHub Actions (ir-report) が前回処理カーソル last_fetched_at を since に渡し、
+    //   新規IRだけを判断対象として引くためのエンドポイント。/latest はメタのみ・published_at 順
+    //   なのに対し、こちらは「判断に必要な本文」を同梱し「取りこぼさないカーソル順」で返す。
+    //   since 省略時は直近 limit 件 (= 初回 / カーソル未確立時のフォールバック)。
+    //   公開URLでは /dump と同様 SYNC_TOKEN を要求する (dev/未設定なら認証なし)。
+    if (url.pathname === "/pull") {
+      if (env.SYNC_TOKEN && url.searchParams.get("token") !== env.SYNC_TOKEN) {
+        return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
+      }
+      const code = url.searchParams.get("code") || "285A";
+      const since = url.searchParams.get("since");
+      const limit = parseInt(url.searchParams.get("limit") || "20", 10);
+
+      // since があれば fetched_at > since で絞る。無ければ直近 limit 件を ASC で返す。
+      const stmt = since
+        ? env.DB.prepare(
+            "SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND fetched_at > ? ORDER BY fetched_at ASC LIMIT ?",
+          ).bind(code, since, limit)
+        : env.DB.prepare(
+            "SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? ORDER BY fetched_at ASC LIMIT ?",
+          ).bind(code, limit);
+      const { results } = await stmt.all();
+
+      // 各メタに R2 本文を同梱する。本文は判断 (analyze) に必須。R2 欠損は body=null で返す。
+      const rows = await Promise.all(
+        (results as Record<string, unknown>[]).map(async (r) => {
+          let body: string | null = null;
+          try {
+            const obj = await env.ARTICLES.get(r.r2_key as string);
+            if (obj) {
+              const json = JSON.parse(await obj.text()) as { body?: string };
+              body = json.body ?? null;
+            }
+          } catch {
+            /* R2 欠損/壊れは body=null のまま (取得自体は止めない) */
+          }
+          return {
+            url: r.url,
+            title: r.title,
+            published_at: r.published_at,
+            ir_category: r.ir_category,
+            fetched_at: r.fetched_at,
+            body,
+          };
+        }),
+      );
+      return Response.json({ ok: true, code, since: since ?? null, count: rows.length, rows });
+    }
+
     // /test-slack : Webhook疎通確認。ダミー1件を実際にSlackへ送る。
     if (url.pathname === "/test-slack") {
       if (!env.SLACK_WEBHOOK_URL) {
@@ -407,7 +458,7 @@ export default {
     }
 
     return new Response(
-      "stock-signals collector. routes: /run?kind= /dump?kind= /latest?kind= /health /test-slack",
+      "stock-signals collector. routes: /run?kind= /dump?kind= /latest?kind= /pull?code= /health /test-slack",
       { status: 404 },
     );
   },

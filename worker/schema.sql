@@ -96,11 +96,12 @@ CREATE INDEX IF NOT EXISTS idx_fundamentals_ticker_date
 -- data/premarket/<date>.jsonl に残していた「今日の地合い」を D1 に移したもの。
 -- 前夜の米国市場 (とくに SOX) と日経先物が寄り付きの方向をかなり決めるため、
 -- 寄り前ブリーフ (premarket-brief skill) の主入力になる。
--- 冪等キー = (date)。同日に複数回取っても1行 (INSERT OR REPLACE で最新値に更新)。
+-- PK = fetched_at (UTC ISO8601) の append-only ログ。暦日 (JST/ET の「日」) を一切
+-- 持たないことで時差ズレを構造的に排除する。最新の地合いは fetched_at DESC LIMIT 1。
+-- 同じ NY クローズを複数回取ると複数行残るが、最新取得が勝つので実害なし (履歴にもなる)。
 -- ※寄前気配 (kehai) は寄りが読めないため移植せず、地合いのみ。
 CREATE TABLE IF NOT EXISTS premarket_backdrop (
-  date                 TEXT PRIMARY KEY,  -- JST の取得日 YYYY-MM-DD (当日の地合い)
-  fetched_at           TEXT NOT NULL,     -- 取得時刻 (ISO8601)
+  fetched_at           TEXT PRIMARY KEY,  -- 取得時刻 (UTC ISO8601)。これが冪等/順序キー
   sox_change_pct       REAL,              -- SOX 前日比% (半導体銘柄の地合い主指標)
   nasdaq_change_pct    REAL,              -- ナスダック総合 前日比%
   dow_change_pct       REAL,              -- NYダウ 前日比%

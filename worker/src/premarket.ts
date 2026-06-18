@@ -114,14 +114,10 @@ function parseNikkeiFutures(html: string): {
 	return { price, contract: contractMatch ? contractMatch[1] : null };
 }
 
-// JST(UTC+9)の暦日。cron が JST 環境とは限らないので明示的に +9h して算出。
-function jstDate(): string {
-	const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
-	return now.toISOString().slice(0, 10);
-}
-
-// 米国指数3本+日経先物を取得し、premarket_backdrop に INSERT OR REPLACE で1行書く。
-// 1指数が落ちても他は続行 (price=null で残す)。当日複数回叩いても (date) PK で1行に収束。
+// 米国指数3本+日経先物を取得し、premarket_backdrop に1行 INSERT する (append-only)。
+// 1指数が落ちても他は続行 (price=null で残す)。PK は取得時刻 (UTC ISO8601) なので
+// 暦日変換は一切しない — 時差ズレを構造的に避けるため。同じ NY クローズを複数回取っても
+// 取得ごとに別行が積まれるだけで、最新は fetched_at DESC LIMIT 1 で取れる。
 export async function collectBackdrop(
 	env: PremarketEnv,
 ): Promise<Record<string, unknown>> {
@@ -161,17 +157,15 @@ export async function collectBackdrop(
 
 	const pick = (key: string) =>
 		us_indexes.find((q) => q.key === key)?.change_pct ?? null;
-	const date = jstDate();
 	const fetched_at = new Date().toISOString();
 
 	await env.DB.prepare(
 		`INSERT OR REPLACE INTO premarket_backdrop
-       (date, fetched_at, sox_change_pct, nasdaq_change_pct, dow_change_pct,
+       (fetched_at, sox_change_pct, nasdaq_change_pct, dow_change_pct,
         nikkei_futures_price, nikkei_contract, us_indexes_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	)
 		.bind(
-			date,
 			fetched_at,
 			pick("sox"),
 			pick("ndx"),
@@ -183,7 +177,7 @@ export async function collectBackdrop(
 		.run();
 
 	return {
-		date,
+		fetched_at,
 		sox_change_pct: pick("sox"),
 		nasdaq_change_pct: pick("ndx"),
 		dow_change_pct: pick("dji"),

@@ -94,8 +94,10 @@ much the backdrop matters:
   least relevant.
 
 The `premarket` row carries last night's US backdrop: `sox_change_pct` is the primary read for the
-semiconductor names (285A/6857/6920); 6981 (Murata, MLCC) responds to SOX only loosely. If the row is
-missing or `date` is not today, treat the backdrop as `unavailable` and skip the step-5 weighting.
+semiconductor names (285A/6857/6920); 6981 (Murata, MLCC) responds to SOX only loosely. The row has
+no calendar date — only `fetched_at` (UTC ISO8601, the latest fetch). If the row is missing or its
+`fetched_at` is older than ~20h (i.e. it predates last night's NY close), treat the backdrop as
+`unavailable` and skip the step-5 weighting.
 
 ### 4. Form one overall judgment
 

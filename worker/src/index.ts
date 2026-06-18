@@ -14,6 +14,7 @@
 //   事業会社(kioxia.com)と持株会社(kioxia-holdings.com=上場主体)の両方が並ぶ。
 
 import * as cheerio from "cheerio";
+import { collectDisclosures } from "./disclosure";
 import { collectEarnings } from "./earnings";
 import { collectNews } from "./news";
 import { collectBackdrop } from "./premarket";
@@ -511,13 +512,25 @@ export default {
 					console.error("backdrop failed:", e),
 				);
 			}
-			// どちらかに新規があった銘柄をまとめて signal-report を起動する (IR+ニュース統合判定)。
+			// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) のいずれかに新規があった
+			// 銘柄をまとめて signal-report を起動する。適時開示は /pull の ir カーソルに合流する。
 			const ir = await collectAll(env, null, DEFAULT_LIMIT);
+			const disc = await collectDisclosures(env, null);
 			const news = await collectNews(env, null);
-			const fresh = [...new Set([...ir.freshTickers, ...news.freshTickers])];
+			const fresh = [
+				...new Set([
+					...ir.freshTickers,
+					...disc.freshTickers,
+					...news.freshTickers,
+				]),
+			];
 			console.log(
-				"scheduled ir+news done:",
-				JSON.stringify({ ir: ir.results, news: news.results }),
+				"scheduled ir+disclosure+news done:",
+				JSON.stringify({
+					ir: ir.results,
+					disclosure: disc.results,
+					news: news.results,
+				}),
 				"fresh:",
 				fresh.join(","),
 			);
@@ -528,14 +541,20 @@ export default {
 			// 場中 5分毎。価格スナップショットに加え、銘柄ニュース速報も拾う (新着で即判定するため)。
 			const p = await collectTimeseries(env, "prices", null);
 			const news = await collectNews(env, null);
-			// JST 12:30 相当スロットでは IR intake も相乗りさせる (昼の専用 cron を持たないため)。
-			// IR・ニュースどちらの新着でも signal-report を起動するので fresh を統合して dispatch する。
+			// JST 12:30 相当スロットでは IR + 適時開示 intake も相乗りさせる (昼の専用 cron を持たないため)。
+			// IR・適時開示・ニュースどの新着でも signal-report を起動するので fresh を統合して dispatch する。
 			let ir: { freshTickers: string[] } | null = null;
+			let disc: { freshTickers: string[] } | null = null;
 			if (isNoonIntakeSlot(event.scheduledTime)) {
 				ir = await collectAll(env, null, DEFAULT_LIMIT);
+				disc = await collectDisclosures(env, null);
 			}
 			const fresh = [
-				...new Set([...news.freshTickers, ...(ir?.freshTickers ?? [])]),
+				...new Set([
+					...news.freshTickers,
+					...(ir?.freshTickers ?? []),
+					...(disc?.freshTickers ?? []),
+				]),
 			];
 			console.log(
 				"scheduled prices+news done:",
@@ -543,6 +562,7 @@ export default {
 					prices: p,
 					news: news.results,
 					...(ir ? { irNoonIntake: ir } : {}),
+					...(disc ? { disclosureNoonIntake: disc } : {}),
 				}),
 				"fresh:",
 				fresh.join(","),
@@ -644,6 +664,19 @@ export default {
 					fresh: freshTickers,
 				});
 			}
+			if (kind === "disclosure") {
+				// 全 watchlist 銘柄の TDnet 適時開示 (kabutan nmode=3) を収集。
+				// 手動では既定で発火しない (&dispatch=1 で起動)。/pull の ir カーソルに合流する。
+				const { results, freshTickers } = await collectDisclosures(env, code);
+				if (url.searchParams.get("dispatch") === "1")
+					await dispatchSignalUpdate(env, freshTickers);
+				return Response.json({
+					ok: true,
+					kind,
+					result: results,
+					fresh: freshTickers,
+				});
+			}
 			if (kind === "earnings") {
 				// 次回決算予定日の推定 → D1 earnings に保存。
 				const res = await collectEarnings(env, code);
@@ -666,14 +699,14 @@ export default {
 			const n = parseInt(url.searchParams.get("n") || "10", 10);
 			const kind = url.searchParams.get("kind") || "ir";
 
-			// premarket は銘柄別ではなく日付別 (ticker 列が無い) なので専用に扱う。
-			//   最新 n 日を date DESC で返し、us_indexes_json はパースして展開する。
-			//   寄り前ブリーフは通常 n=1 (当日の地合い1行) で読む。
+			// premarket は銘柄別ではなく時刻別 (ticker 列が無い) なので専用に扱う。
+			//   最新 n 件を fetched_at (UTC) DESC で返し、us_indexes_json はパースして展開する。
+			//   寄り前ブリーフは通常 n=1 (最新の地合い1件) で読む。暦日は持たない。
 			if (kind === "premarket") {
 				const { results } = await env.DB.prepare(
-					`SELECT date, fetched_at, sox_change_pct, nasdaq_change_pct, dow_change_pct,
+					`SELECT fetched_at, sox_change_pct, nasdaq_change_pct, dow_change_pct,
                   nikkei_futures_price, nikkei_contract, us_indexes_json
-             FROM premarket_backdrop ORDER BY date DESC LIMIT ?`,
+             FROM premarket_backdrop ORDER BY fetched_at DESC LIMIT ?`,
 				)
 					.bind(n)
 					.all();
@@ -779,7 +812,15 @@ export default {
 			const code = url.searchParams.get("code") || "285A";
 			const since = url.searchParams.get("since");
 			const limit = parseInt(url.searchParams.get("limit") || "20", 10);
-			const sourceLike = url.pathname === "/pull-news" ? "kabutan:%" : "ir:%";
+			// /pull-news はニュース (kabutan:%) のみ。/pull は「IR一次情報」として
+			// 公式IR (ir:%) と TDnet 適時開示 (tdnet:%) の両方を1本のカーソルで返す
+			// (どちらも銘柄の材料で、context-builder は同じ ir カーソルで読むため)。
+			const sourceClause =
+				url.pathname === "/pull-news"
+					? "source LIKE ?"
+					: "(source LIKE ? OR source LIKE ?)";
+			const sourceBinds =
+				url.pathname === "/pull-news" ? ["kabutan:%"] : ["ir:%", "tdnet:%"];
 
 			// スイング判断に古い記事は不要。published_at が30日より古いものは保管はするが返さない
 			// (取得時に一覧の下まで遡れず back-dated 記事が新しい fetched_at で入ることがあるため、
@@ -791,11 +832,11 @@ export default {
 			// since があれば fetched_at > since で絞る。無ければ直近 limit 件を ASC で返す。
 			const stmt = since
 				? env.DB.prepare(
-						"SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND source LIKE ? AND published_at >= ? AND fetched_at > ? ORDER BY fetched_at ASC LIMIT ?",
-					).bind(code, sourceLike, cutoff, since, limit)
+						`SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND ${sourceClause} AND published_at >= ? AND fetched_at > ? ORDER BY fetched_at ASC LIMIT ?`,
+					).bind(code, ...sourceBinds, cutoff, since, limit)
 				: env.DB.prepare(
-						"SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND source LIKE ? AND published_at >= ? ORDER BY fetched_at ASC LIMIT ?",
-					).bind(code, sourceLike, cutoff, limit);
+						`SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND ${sourceClause} AND published_at >= ? ORDER BY fetched_at ASC LIMIT ?`,
+					).bind(code, ...sourceBinds, cutoff, limit);
 			const { results } = await stmt.all();
 
 			// 各メタに R2 本文を同梱する。本文は判断に必須。R2 欠損は body=null で返す。
@@ -851,7 +892,7 @@ export default {
 		}
 
 		return new Response(
-			"stock-signals collector. routes: /run?kind=ir|news|prices|daily|fundamentals|earnings|premarket /latest?kind= /pull?code= /pull-news?code= /health /test-slack",
+			"stock-signals collector. routes: /run?kind=ir|news|disclosure|prices|daily|fundamentals|earnings|premarket /latest?kind= /pull?code= /pull-news?code= /health /test-slack",
 			{ status: 404 },
 		);
 	},

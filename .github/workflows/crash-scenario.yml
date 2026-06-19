@@ -44,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Action 実行時は CLAUDE.md の指示が判断の邪魔になりうるので退避する (共通アクション)。
+      # Action 実行時は CLAUDE.md / AGENTS.md の指示が判断の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
       # SQ (日本/米メジャー) と config/events.yaml の近接イベントを 1 行に整形し、prompt に渡す。
@@ -68,8 +68,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Worker (GitHub App) 発の repository_dispatch の actor は Bot になるため許可する。
-          allowed_bots: "claude,github-actions[bot]"
+          # Worker (GitHub App "omnistove-internal-auth") 発の repository_dispatch の actor は
+          # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
+          allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
           # 第2引数に需給イベント文脈 (SQ含む)、@ で始まる第3引数に数値コンテキスト JSON の
           # パスを渡す。skill は JSON を Read し、Issue 本文だけ gh で読む。
           prompt: "/crash-scenario ${{ github.event.client_payload.ticker }} -- ${{ steps.events.outputs.ctx }} @${{ runner.temp }}/numctx.json"

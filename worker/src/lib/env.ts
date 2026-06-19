@@ -15,6 +15,22 @@ export interface Env {
 	// 未設定なら SLACK_WEBHOOK_URL にフォールバック (= 従来どおり同一チャンネル)。
 	//   設定: npx wrangler secret put SLACK_IR_WEBHOOK_URL
 	SLACK_IR_WEBHOOK_URL?: string;
+	// Slack スラッシュコマンド /crash の署名検証シークレット (Secret)。Slack App の
+	// Basic Information → Signing Secret。/slack/* ルートはこの値で受信を検証する
+	// (Bearer 認証は通さないので、なりすまし防止はこの署名検証が担う)。未設定なら
+	// /slack/* は 503 を返す (検証なしで dispatch を撃てる口を開けないため)。
+	//   設定: npx wrangler secret put SLACK_SIGNING_SECRET
+	SLACK_SIGNING_SECRET?: string;
+	// Slack Bot トークン (xoxb-, Secret)。解析結果を chat.postMessage で投稿し、返ってくる ts を
+	// D1 (slack_threads) に控える→スレッド返信から銘柄を復元する、ための対話機能で使う。
+	// 必要スコープ: chat:write (投稿), channels:history (返信受信/スレッド履歴取得)。
+	// 未設定なら /slack/post は 503、/slack/events は no-op (返信対話が無効になるだけ)。
+	//   設定: npx wrangler secret put SLACK_BOT_TOKEN
+	SLACK_BOT_TOKEN?: string;
+	// 解析結果/返答の投稿先 Slack チャンネルID (例 C0123ABCD)。/slack/post で channel 省略時に使う。
+	// signal-judge/crash-scenario の投稿先 = 返信を受けるチャンネル。Secret でも Var でも可。
+	//   設定: npx wrangler secret put SLACK_REPLY_CHANNEL  (または wrangler.toml の [vars])
+	SLACK_REPLY_CHANNEL?: string;
 	// 全エンドポイント (/health を除く) の簡易認証トークン (Secret)。未設定なら認証なし (dev用)。
 	//   設定: npx wrangler secret put SYNC_TOKEN
 	//   送り方は Authorization: Bearer <token> ヘッダ、または ?token=<token> クエリのどちらでも可。

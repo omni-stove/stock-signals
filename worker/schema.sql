@@ -153,6 +153,31 @@ CREATE TABLE IF NOT EXISTS intraday_dispatch (
 -- が毎日走っても同じ週は同一 date となり INSERT OR IGNORE で1週1行に収束する (daily と同じ流儀)。
 -- 過去5週が返るので数日 Worker が落ちても次回でまとめて拾える。kabutan の "06/12" (年なし) は
 -- collectMargin が「未来日付なら前年」で YYYY-MM-DD に補完する。
+-- ── Slack スレッド対話 (解析結果 ts ⇄ 銘柄) ──────────────────────────────
+-- 解析結果 (signal-judge / crash-scenario) を Bot トークンで chat.postMessage したとき
+-- 返ってくる ts を銘柄とともに控える。ユーザーがその投稿にスレッド返信すると Slack は
+-- thread_ts=親の ts を載せて送ってくるので、ここを引けば「どの銘柄の解析への返信か」を
+-- 復元できる (返信本文からの銘柄パースに依存しない)。返信を受けた /slack/events は
+-- thread_ts でこの表を引き、ヒットした時だけ slack-reply ワークフローを dispatch する
+-- (= watchlist 外の雑談スレッドには反応しない誤発火防止も兼ねる)。
+-- 銘柄ごとに投稿は何度も出るので thread_ts (= 各投稿の ts) を PK にして1投稿1行。
+CREATE TABLE IF NOT EXISTS slack_threads (
+  thread_ts   TEXT PRIMARY KEY,       -- 親メッセージの ts (スレッドキー)
+  ticker      TEXT NOT NULL,          -- 銘柄コード (例 285A)
+  kind        TEXT NOT NULL,          -- 解析の種類 (signal-judge / crash-scenario)
+  channel     TEXT NOT NULL,          -- 投稿先チャンネルID (返信投稿/履歴取得に要る)
+  created_at  TEXT NOT NULL           -- 投稿時刻 (ISO8601)
+);
+
+-- ── 信用取引残高 (信用残) ────────────────────────────────────────────────
+-- 東証/日証金が毎週金曜時点の信用建玉を集計し翌週公表する週次の需給データ。kabutan の個別
+-- 銘柄ページ内の信用残テーブルから取得する (1回で過去5週分が返る)。判断 (買い長で上値重い等)
+-- は signal-judge に委ねる。
+--
+-- 冪等キー = (ticker, date)。date は取得日ではなく kabutan の集計基準日 (毎週金曜)。intake cron
+-- が毎日走っても同じ週は同一 date となり INSERT OR IGNORE で1週1行に収束する (daily と同じ流儀)。
+-- 過去5週が返るので数日 Worker が落ちても次回でまとめて拾える。kabutan の "06/12" (年なし) は
+-- collectMargin が「未来日付なら前年」で YYYY-MM-DD に補完する。
 CREATE TABLE IF NOT EXISTS margin (
   ticker      TEXT NOT NULL,          -- 銘柄コード
   date        TEXT NOT NULL,          -- 集計基準日 YYYY-MM-DD (毎週金曜)。冪等キー

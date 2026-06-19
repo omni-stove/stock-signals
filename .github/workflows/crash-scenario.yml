@@ -1,0 +1,81 @@
+# 銘柄コンテキスト(Issue本文)+ 価格/地合い → Claude Code Action で暴落プリモーテム → Slack通知。
+#
+# signal-judge とは独立した補助ワークフロー。Slack の /crash スラッシュコマンドを受けた Worker が
+# repository_dispatch (event_type=crash-scenario、client_payload.ticker に単一銘柄) で起動する。
+# buy/sell 判定ではなく「その銘柄が崩れる道筋」を銘柄固有/マクロの両面で列挙して Slack に流す
+# (.claude/skills/crash-scenario)。**Issue は一切書き換えない**(出力は Slack のみ)。
+#
+# 起動は Slack 専用。GitHub 画面からの手動実行 (workflow_dispatch) は持たない
+# (= config/watchlist.yaml の写経先を増やさない。Slack の銘柄ピッカーは Worker が WATCHLIST から
+#  動的生成するので写経不要)。
+#
+# 認証は Claude サブスク (OAuth): signal-judge.yml と同じ CLAUDE_CODE_OAUTH_TOKEN。
+#
+# 必要な設定 (Settings → Secrets and variables → Actions):
+#   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
+#   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
+#   secret   SLACK_WEBHOOK_URL        … 暴落プリモーテムの送り先 (任意、未設定なら通知スキップ)
+#   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+# Worker 側の追加設定 (スラッシュコマンド受け口):
+#   secret   SLACK_SIGNING_SECRET     … Slack App の Signing Secret (/slack/* の署名検証に必須)
+#   GitHub App 認証 (GH_APP_*) は signal-judge の dispatch と共用。
+
+name: crash-scenario
+
+on:
+  # Slack /crash → Worker が repository_dispatch で起動する。
+  repository_dispatch:
+    types: [crash-scenario]
+
+# 銘柄ごとに同時実行を1本に抑え、走行中に同じ銘柄の新しい要求が来たら古いジョブをキャンセルする。
+# crash-scenario は Slack に出すだけで状態を持たない (Issueを書かない) ので、キャンセルしても整合は崩れない。
+concurrency:
+  group: crash-scenario-${{ github.event.client_payload.ticker }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: read     # Issue本文(コンテキスト)を読むだけ。書き込みはしない。
+  id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
+
+jobs:
+  crash-scenario:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Action 実行時は CLAUDE.md の指示が判断の邪魔になりうるので退避する (共通アクション)。
+      - uses: ./.github/actions/stash-claude-md
+
+      # SQ (日本/米メジャー) と config/events.yaml の近接イベントを 1 行に整形し、prompt に渡す。
+      # メジャーSQ unwind や near macro print は暴落シナリオの trigger になりうる。
+      - name: Build event context
+        id: events
+        run: echo "ctx=$(bash scripts/event-context.sh)" >> "$GITHUB_OUTPUT"
+
+      # Worker の数値データ (earnings/prices/daily/premarket/margin) を fetch + 正規化し、1 つの
+      # JSON にまとめて prompt に渡す。signal-judge と同じ judge-context.sh をそのまま使う
+      # (暴落プリモーテムも同じ数値=レンジ位置/MA乖離/信用残/days_to_earnings から fragility を読む)。
+      - name: Build numeric context
+        run: |
+          ticker="${{ github.event.client_payload.ticker }}"
+          bash scripts/judge-context.sh "$ticker" > "$RUNNER_TEMP/numctx.json"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Run crash-scenario skill
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Worker (GitHub App) 発の repository_dispatch の actor は Bot になるため許可する。
+          allowed_bots: "claude,github-actions[bot]"
+          # 第2引数に需給イベント文脈 (SQ含む)、@ で始まる第3引数に数値コンテキスト JSON の
+          # パスを渡す。skill は JSON を Read し、Issue 本文だけ gh で読む。
+          prompt: "/crash-scenario ${{ github.event.client_payload.ticker }} -- ${{ steps.events.outputs.ctx }} @${{ runner.temp }}/numctx.json"
+          claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}

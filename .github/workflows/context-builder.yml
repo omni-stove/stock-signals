@@ -31,9 +31,15 @@ on:
   workflow_dispatch:       # 手動実行 (検証用)。対象銘柄を選んで実行する。
     inputs:
       ticker:
-        description: 対象銘柄コード (例 285A)
+        description: 対象銘柄コード
         required: true
-        type: string
+        type: choice
+        # config/watchlist.yaml の tickers と同期させる。
+        options:
+          - "285A"  # キオクシアホールディングス
+          - "6857"  # アドバンテスト
+          - "6920"  # レーザーテック
+          - "6981"  # 村田製作所
 
 # 銘柄ごとに同時実行を1本に抑え、走行中に同じ銘柄の新着が来たら古いジョブをキャンセルして
 # 新しい材料を含むジョブだけ走らせる。skill は最後に Issue を一括上書きするので、

@@ -13,6 +13,7 @@
 - **判定は必ず buy か sell の2値**。薄い材料でも片側に倒す。方向に「水準」修飾子 (押し目/追い/利確/逃げ) を添えて、トレンド内のどこにいるかを示す。
 - **出力の住み分け**。Issue 本文 = 銘柄を読み解く生きたナレッジ(context-builder が書く)。判定 (buy/sell) = Slack に流れる(signal-judge が書く)。source of truth は時系列が D1、銘柄コンテキストが Issue 本文。
 - **記事系は1テーブルに合流**。公式IR・銘柄ニュース・適時開示(TDnet)・証券会社レーティングはすべて `articles` テーブルに `source`/`ir_category` プレフィクス付きで保存する。`/pull` の IR カーソルが `ir:% tdnet:% rating:%` を、`/pull-news` がニュースをまとめて返すので、収集元が増えても context-builder は無改修で読む。レーティングは目標株価が中期(6〜12ヶ月)ビューなので、context-builder が Issue 本文の専用セクションに畳み込む(直近トピックの30日ルールの例外)。
+- **補助: 暴落プリモーテム**。`crash-scenario` skill は signal-judge と同じインプット (Issue 本文 + `judge-context.sh` の数値) を読み、その銘柄が崩れる道筋を銘柄固有/マクロの両面で3〜5本列挙して Slack に流す。buy/sell 判定とは別物 (リスクの事前棚卸し)。起動は **Slack スラッシュコマンド `/crash` 専用**: Slack → Worker `/slack/command` (署名検証) → `/crash 285A` なら即発火 / 引数なしなら WATCHLIST から銘柄ピッカー (ephemeral + static_select、選択で `/slack/interact`) → `repository_dispatch (crash-scenario)` で `crash-scenario.yml` を起動。GitHub 画面からの手動実行は持たない (watchlist 写経先を増やさないため。銘柄ピッカーは Worker が `WATCHLIST` から動的生成する)。
 
 ## 対象銘柄 (watchlist)
 
@@ -23,7 +24,7 @@
 | 6920 | レーザーテック | 半導体検査装置             |
 | 6981 | 村田製作所     | 電子部品(MLCC)             |
 
-詳細とキーワード/IRソースは `config/watchlist.yaml` 参照。
+詳細とキーワード/IRソースは `config/watchlist.yaml` 参照。これが銘柄一覧の唯一の真のソースで、Worker の `WATCHLIST` (`worker/src/lib/timeseries.ts`) と両ワークフロー (`context-builder.yml` / `signal-judge.yml`) の手動実行セレクト (`workflow_dispatch` の `options`) に同じコードを写経する。GitHub の仕様で `options` は動的生成できないため写経が必要で、`pnpm run check:watchlist` (verify に含む) がズレを検出する。
 
 ## 全体構成
 
@@ -43,7 +44,7 @@ flowchart TB
         direction TB
         CRON_CF["Cron Triggers<br/>intake(IR+news+開示+レーティング+寄り前は地合い)/prices/eod(daily+fundamentals+earnings)"]
         WORKER["Worker<br/>routes/(HTTP層) + lib/(Cron配線/スクレイプ/IR収集/dispatch発火)"]
-        D1[("D1 (SQLite)<br/>prices/daily/fundamentals/margin(信用残)<br/>articles(IR+news+開示+レーティング)メタ<br/>premarket/earnings/intraday_dispatch")]
+        D1[("D1 (SQLite)<br/>prices/daily/fundamentals/margin(信用残)<br/>articles(IR+news+開示+レーティング)メタ<br/>premarket/earnings/intraday_dispatch/slack_threads")]
         R2[("R2<br/>記事本文JSON")]
         API((HTTP API<br/>/run /pull /pull-news /latest))
         CRON_CF --> WORKER
@@ -156,11 +157,31 @@ signal-judge は精度優先で `--effort high` (reasoning effort) で走る。
 - **Slack (判定)**: signal-judge が出す buy/sell + 水準修飾子 + 根拠が1行流れる。
   根拠には判定の核になった「直近の重大トピック」が引用される。寄り前 (intake cron) は地合いを
   取得してから新着のある銘柄の signal-judge を発火するので、寄り前判定も地合い込みで Slack に届く。
-  送り先は `SLACK_WEBHOOK_URL`。
+  投稿は Worker の `/slack/post` (Bot トークン `chat.postMessage`) 経由で行い、返ってきた `ts` を
+  銘柄とともに D1 (`slack_threads`) に控える (後述のスレッド対話の起点になる)。送り先チャンネルは
+  `SLACK_REPLY_CHANNEL`。
 - **Slack (新規IR)**: Worker が新着IRを通知する。送り先は IR専用の `SLACK_IR_WEBHOOK_URL`
-  (未設定なら `SLACK_WEBHOOK_URL` にフォールバックし判定と同一チャンネルに出る)。
+  (未設定なら `SLACK_WEBHOOK_URL` にフォールバックし判定と同一チャンネルに出る)。新規IR通知は
+  返信対話の対象外なので従来どおり Incoming Webhook を使う。
   IR とレポート(判定)を別チャンネルに分けたい場合は同一 Slack App から2本目の Incoming Webhook を
   IR用チャンネル向けに発行し、`npx wrangler secret put SLACK_IR_WEBHOOK_URL` で設定する。
+- **Slack (暴落プリモーテム)**: スラッシュコマンド `/crash` を Slack App に登録し、Request URL を
+  Worker の `https://<your-worker>/slack/command`、Interactivity の Request URL を `.../slack/interact`
+  に向ける。`/crash 285A` で即起動、`/crash` 単独なら銘柄ピッカーが出る。署名検証に
+  `npx wrangler secret put SLACK_SIGNING_SECRET` (Slack App の Signing Secret) が必須。
+  結果は判定と同じく `/slack/post` 経由で `SLACK_REPLY_CHANNEL` に届く (`crash-scenario.yml` 経由)。
+- **Slack (スレッド返信で対話)**: 判定/プリモーテムの投稿に**スレッド返信すると Claude が同じ
+  スレッドへ返事を返す**。経路は Slack → Worker `/slack/events` (Events API `message.channels`、
+  署名検証) → 親 `ts` で `slack_threads` を引いて銘柄を復元 → `repository_dispatch (slack-reply)`
+  → `slack-reply.yml`。skill `slack-reply` が Issue 本文 (生きたコンテキスト) + `judge-context.sh`
+  の数値 + `conversations.replies` で取ったスレッド履歴を読み、`/slack/post` (`thread_ts` 指定) で
+  同スレッドへ返答する。ユーザーがさらに返信すれば再発火し会話が続く。
+  必要設定: Slack App の Event Subscriptions を有効化し Request URL を `.../slack/events` に向け、
+  `message.channels` を購読。Bot に `chat:write` / `channels:history` スコープを付与。
+  Worker に `npx wrangler secret put SLACK_BOT_TOKEN` (`xoxb-`) と `SLACK_REPLY_CHANNEL` (投稿先
+  チャンネルID)、Actions にも secret `SLACK_BOT_TOKEN` (スレッド履歴取得用) を設定する。
+  Bot 自身の投稿・スレッド外の発言・`slack_threads` に親が無いスレッドには反応しない (誤発火/無限
+  ループ防止)。
 
 確認用スクリプトを手元で叩くこともできる (要 `WORKER_URL` 環境変数):
 

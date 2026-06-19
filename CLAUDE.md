@@ -5,7 +5,7 @@ Rules for implementation. See `README.md` for structure and rationale.
 - Run `pnpm run verify` when done.
 - When you change the implementation, update `README.md` to match.
 - Imports use `.ts` extensions; don't reorder them.
-- D1 schema changes: update `worker/schema.sql` + run `db:init:*`. When adding to the watchlist, edit `config/watchlist.yaml` and the single `WATCHLIST` source in `worker/src/lib/timeseries.ts` (all other Worker modules import it from there).
+- D1 schema changes: update `worker/schema.sql` + run `db:init:*`. The watchlist's single source of truth is `config/watchlist.yaml`; the codes are copied (GitHub `workflow_dispatch` choice options can't be generated dynamically) into 3 places that must stay in sync: `WATCHLIST` in `worker/src/lib/timeseries.ts` (all other Worker modules import it from there) and the `options:` of `context-builder.yml` / `signal-judge.yml`. `pnpm run check:watchlist` (part of `verify`) fails if they drift.
 - No LLM in collection (Worker). Judgment runs only in the GitHub Actions `claude-code-action`.
 - Edit skills at `agents/skills/<name>/SKILL.md` (`.claude/skills/` is a symlink).
 - Preprocessing called from Actions goes in `scripts/*.sh`; `*.ts` is for local checks only.

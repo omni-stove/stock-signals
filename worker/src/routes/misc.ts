@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Env } from "../lib/env";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
-import { notifySlack } from "../lib/slack";
+import { notifySlack, postMessage } from "../lib/slack";
 
 export const misc = new Hono<{ Bindings: Env }>();
 
@@ -49,4 +49,76 @@ misc.get("/test-slack", async (c) => {
 		},
 	]);
 	return c.json({ ok: true, sent: true });
+});
+
+// POST /slack/post : Bot トークンで Slack に投稿する (要 SYNC_TOKEN 認証)。GitHub Actions の
+// signal-judge / crash-scenario / slack-reply skill が webhook 直叩きの代わりにこれを叩く。
+// webhook と違い ts が取れるので、解析結果の投稿 (thread_ts 無し) は slack_threads に控え、
+// その ts へのスレッド返信から銘柄を復元できるようにする (返信対話の起点)。
+//   body(JSON): { channel, ticker, kind, text, blocks?, thread_ts? }
+//     - thread_ts 無し = 新規スレッドの親 (解析結果)。投稿後 ts を slack_threads に INSERT。
+//     - thread_ts 有り = 返答 (slack-reply)。同スレッドにぶら下げるだけ (記録しない)。
+//   channel 省略時は SLACK_REPLY_CHANNEL を使う。SLACK_BOT_TOKEN 未設定なら 503。
+misc.post("/slack/post", async (c) => {
+	const env = c.env;
+	if (!env.SLACK_BOT_TOKEN) {
+		throw new HTTPException(503, {
+			res: Response.json(
+				{ ok: false, error: "SLACK_BOT_TOKEN unset" },
+				{ status: 503 },
+			),
+		});
+	}
+	const b = (await c.req.json().catch(() => ({}))) as {
+		channel?: string;
+		ticker?: string;
+		kind?: string;
+		text?: string;
+		blocks?: unknown[];
+		thread_ts?: string;
+	};
+	const channel = b.channel || env.SLACK_REPLY_CHANNEL;
+	if (!channel || !b.text) {
+		throw new HTTPException(400, {
+			res: Response.json(
+				{
+					ok: false,
+					error: "channel (or SLACK_REPLY_CHANNEL) and text required",
+				},
+				{ status: 400 },
+			),
+		});
+	}
+
+	const posted = await postMessage(env, {
+		channel,
+		text: b.text,
+		blocks: b.blocks,
+		thread_ts: b.thread_ts,
+	});
+	if (!posted) {
+		throw new HTTPException(502, {
+			res: Response.json(
+				{ ok: false, error: "chat.postMessage failed" },
+				{ status: 502 },
+			),
+		});
+	}
+
+	// 解析結果 (親投稿) のみ slack_threads に控える。返答 (thread_ts 有り) は記録しない。
+	if (!b.thread_ts && b.ticker) {
+		await env.DB.prepare(
+			`INSERT OR REPLACE INTO slack_threads (thread_ts, ticker, kind, channel, created_at)
+			 VALUES (?, ?, ?, ?, ?)`,
+		)
+			.bind(
+				posted.ts,
+				b.ticker,
+				b.kind || "signal-judge",
+				posted.channel,
+				new Date().toISOString(),
+			)
+			.run();
+	}
+	return c.json({ ok: true, ts: posted.ts, channel: posted.channel });
 });

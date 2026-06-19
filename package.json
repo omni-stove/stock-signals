@@ -11,7 +11,8 @@
     "format": "biome check --write",
     "lint": "biome check",
     "knip": "knip",
-    "verify": "pnpm run lint && pnpm run typecheck && pnpm -C worker run typecheck && pnpm run knip"
+    "check:watchlist": "node scripts/check-watchlist-sync.ts",
+    "verify": "pnpm run lint && pnpm run typecheck && pnpm -C worker run typecheck && pnpm run check:watchlist && pnpm run knip"
   },
   "dependencies": {
     "yaml": "^2.5.0"

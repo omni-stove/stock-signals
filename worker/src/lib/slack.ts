@@ -3,6 +3,53 @@
 
 import type { Env } from "./env";
 
+// Bot トークンで chat.postMessage する。返信対話の起点になる解析結果投稿 (signal-judge /
+// crash-scenario) と、その返信への返答投稿の両方に使う。webhook と違い ts を取得できるので、
+// 親投稿の ts を D1 (slack_threads) に控えてスレッド返信から銘柄を復元できる。
+// thread_ts を渡すとスレッド返信として投稿する (返答はこれで同スレッドにぶら下げる)。
+// 成功時は { ts, channel } を、失敗/未設定時は null を返す。
+export async function postMessage(
+	env: Env,
+	args: {
+		channel: string;
+		text: string;
+		blocks?: unknown[];
+		thread_ts?: string;
+	},
+): Promise<{ ts: string; channel: string } | null> {
+	if (!env.SLACK_BOT_TOKEN) return null;
+	try {
+		const res = await fetch("https://slack.com/api/chat.postMessage", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json; charset=utf-8",
+				Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+			},
+			body: JSON.stringify({
+				channel: args.channel,
+				text: args.text,
+				...(args.blocks ? { blocks: args.blocks } : {}),
+				...(args.thread_ts ? { thread_ts: args.thread_ts } : {}),
+			}),
+		});
+		// Slack API は HTTP 200 でも body.ok=false でエラーを返す (invalid_auth など)。
+		const body = (await res.json()) as {
+			ok: boolean;
+			ts?: string;
+			channel?: string;
+			error?: string;
+		};
+		if (!body.ok) {
+			console.error(`chat.postMessage failed: ${body.error}`);
+			return null;
+		}
+		return { ts: body.ts ?? "", channel: body.channel ?? args.channel };
+	} catch (e) {
+		console.error(`chat.postMessage error: ${(e as Error).message}`);
+		return null;
+	}
+}
+
 export type NotifyItem = {
 	ticker: string;
 	title: string;

@@ -78,6 +78,62 @@ async function getInstallationToken(
 	return ((await res.json()) as { token: string }).token;
 }
 
+// 任意の event_type を単一銘柄で repository_dispatch する汎用版。
+// dispatchSignalUpdate (signal-update 固定 + デバウンス) と JWT/installation token の
+// 取得経路を共有しつつ、Slack スラッシュコマンド経由の crash-scenario など
+// デバウンス不要な単発発火に使う。App 認証情報が揃っていなければ false (no-op)。
+// 成否を返すので、呼び出し側 (Slack ルート) は失敗時にユーザーへ通知できる。
+export async function dispatchEvent(
+	env: Env,
+	eventType: string,
+	ticker: string,
+	nowMs: number,
+): Promise<boolean> {
+	return dispatchEventPayload(env, eventType, { ticker }, nowMs);
+}
+
+// dispatchEvent の汎用版。client_payload を丸ごと渡せる。Slack スレッド返信 (slack-reply) は
+// ticker だけでなく channel / thread_ts / 返信本文も Action に渡す必要があるため、これを使う。
+// App 認証情報が揃っていなければ false (no-op)。成否を返すので呼び出し側で通知できる。
+export async function dispatchEventPayload(
+	env: Env,
+	eventType: string,
+	clientPayload: Record<string, unknown>,
+	nowMs: number,
+): Promise<boolean> {
+	if (!env.GH_APP_ID || !env.GH_APP_PRIVATE_KEY || !env.GH_APP_INSTALL_ID)
+		return false;
+	const repo = env.GITHUB_REPO || "omni-stove/stock-signals";
+	try {
+		const nowSec = Math.floor(nowMs / 1000);
+		const jwt = await makeAppJwt(env.GH_APP_ID, env.GH_APP_PRIVATE_KEY, nowSec);
+		const token = await getInstallationToken(jwt, env.GH_APP_INSTALL_ID);
+		const res = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
+			method: "POST",
+			headers: {
+				...GH_HEADERS,
+				Authorization: `Bearer ${token}`,
+				"Content-Type": "application/json",
+			},
+			// event_type は workflow の on.repository_dispatch.types と一致させる。
+			body: JSON.stringify({
+				event_type: eventType,
+				client_payload: clientPayload,
+			}),
+		});
+		if (!res.ok) {
+			console.error(
+				`dispatchEvent failed (${eventType}): HTTP ${res.status} ${await res.text()}`,
+			);
+			return false;
+		}
+		return true;
+	} catch (e) {
+		console.error(`dispatchEvent error: ${(e as Error).message}`);
+		return false;
+	}
+}
+
 // 場中 dispatch のデバウンス窓 (ミリ秒)。同一銘柄をこの窓以内に二度撃たない。
 // 5分毎 cron の3スロット相当。短時間に複数の新着ニュースが出ても1サイクルに束ねる。
 const INTRADAY_DEBOUNCE_MS = 15 * 60 * 1000;

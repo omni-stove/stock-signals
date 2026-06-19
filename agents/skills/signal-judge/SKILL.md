@@ -82,13 +82,23 @@ weight `sox_change_pct` (6981 tracks it loosely), hostile tape pushes `sell`, su
 
 ## Post to Slack (only output)
 
+Post via the Worker's `/slack/post` (Bot token), **not** a raw webhook. The Worker records the
+returned `ts` against this `<ticker>` in D1, so a user replying in-thread gets routed back here
+(slack-reply). Pass `ticker` and `kind:"signal-judge"` so the thread is attributed correctly.
+
 ```
-curl -s -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' -d '{
+curl -s -X POST "$WORKER_URL/slack/post" \
+  -H "Authorization: Bearer $SYNC_TOKEN" -H 'Content-Type: application/json' -d '{
+  "ticker": "<ticker>",
+  "kind": "signal-judge",
   "text": "🧭 <ticker> <name> signal: <signal>・<qualifier>",
   "blocks": [ ... signal + 水準, then 1–3 lines: driving topics, the price/backdrop/earnings
               tilt, why this 水準 (a 需給 line if 信用残 mattered), confidence, Issue link ... ]
 }'
 ```
+
+`channel` is omitted — the Worker fills it from `SLACK_REPLY_CHANNEL`. If `/slack/post` returns
+503 (`SLACK_BOT_TOKEN` unset), the thread feature is off; skip the post and print to stdout.
 
 ## stdout — one line, no narration
 

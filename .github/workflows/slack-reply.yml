@@ -1,0 +1,104 @@
+# Slack スレッド返信 → 銘柄コンテキスト(Issue本文)+価格/地合い+スレッド履歴 → Claude Code Action で
+# 返答生成 → 同じ Slack スレッドへ投稿。
+#
+# signal-judge / crash-scenario が Bot トークン (Worker /slack/post) で投稿した解析結果に、
+# ユーザーがスレッド返信すると、Worker の /slack/events が thread_ts→銘柄を D1 で復元して
+# repository_dispatch (event_type=slack-reply) で起動する。client_payload に
+# ticker / kind(元の解析種別) / channel / thread_ts / text(ユーザーの返信本文) が入る。
+# このワークフローは Issue を一切書き換えない (出力は Slack スレッドのみ)。
+#
+# 起動は Slack 専用 (GitHub 画面からの手動実行は持たない = watchlist.yaml の写経先を増やさない)。
+#
+# 認証は Claude サブスク (OAuth): signal-judge.yml と同じ CLAUDE_CODE_OAUTH_TOKEN。
+#
+# 必要な設定 (Settings → Secrets and variables → Actions):
+#   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
+#   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
+#   secret   SLACK_BOT_TOKEN          … xoxb- トークン。スレッド履歴取得 (conversations.replies) に必須
+#   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+# Worker 側の追加設定: SLACK_BOT_TOKEN / SLACK_REPLY_CHANNEL / SLACK_SIGNING_SECRET。
+#   GitHub App 認証 (GH_APP_*) は signal-judge の dispatch と共用。
+
+name: slack-reply
+
+on:
+  # Slack スレッド返信 → Worker /slack/events が repository_dispatch で起動する。
+  repository_dispatch:
+    types: [slack-reply]
+
+# スレッドごとに同時実行を1本に抑え、走行中に同じスレッドへ続けて返信が来たら古いジョブを
+# キャンセルする (最新の返信に答えればよい)。Slack に出すだけで状態を持たないので整合は崩れない。
+concurrency:
+  group: slack-reply-${{ github.event.client_payload.thread_ts }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: read     # Issue本文(コンテキスト)を読むだけ。書き込みはしない。
+  id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
+
+jobs:
+  slack-reply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Action 実行時は CLAUDE.md の指示が判断の邪魔になりうるので退避する (共通アクション)。
+      - uses: ./.github/actions/stash-claude-md
+
+      # Worker の数値データ (earnings/prices/daily/premarket/margin) を fetch + 正規化し、1 つの
+      # JSON にまとめて prompt に渡す。signal-judge と同じ judge-context.sh をそのまま使う。
+      - name: Build numeric context
+        run: |
+          ticker="${{ github.event.client_payload.ticker }}"
+          bash scripts/judge-context.sh "$ticker" > "$RUNNER_TEMP/numctx.json"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      # Slack スレッドの会話履歴を conversations.replies で丸ごと取得し、skill に渡す JSON に整形する。
+      # 返信本文 (client_payload.text) は履歴の末尾としても来るが、payload からも明示で渡す
+      # (Slack のイベント反映が遅延しても確実に最新の問いを skill が持てるように)。
+      - name: Build thread context
+        id: thread
+        run: |
+          channel='${{ github.event.client_payload.channel }}'
+          thread_ts='${{ github.event.client_payload.thread_ts }}'
+          # conversations.replies: 親 + 全返信を ts 昇順で返す。channels:history スコープが要る。
+          curl -s "https://slack.com/api/conversations.replies?channel=${channel}&ts=${thread_ts}&limit=100" \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" > "$RUNNER_TEMP/replies.json"
+          # skill に渡す形に整形: { channel, thread_ts, kind, replies: [{user,text,ts}, ...] }。
+          # conversations.replies が失敗 (ok:false) した場合も channel/thread_ts/kind は payload から
+          # 必ず埋め、replies は空配列でフォールバック (skill は payload の text を末尾とみなして答える)。
+          jq -n \
+            --arg channel "$channel" \
+            --arg thread_ts "$thread_ts" \
+            --arg kind '${{ github.event.client_payload.kind }}' \
+            --arg text '${{ github.event.client_payload.text }}' \
+            --slurpfile r "$RUNNER_TEMP/replies.json" '
+            ($r[0].messages // []) as $msgs
+            | {
+                channel: $channel,
+                thread_ts: $thread_ts,
+                kind: $kind,
+                replies: ( [ $msgs[] | { user: (.user // .bot_id // "?"), text: (.text // ""), ts: .ts } ]
+                           + ( if ($msgs | map(.text) | index($text)) == null
+                               then [ { user: "user", text: $text, ts: $thread_ts } ] else [] end ) )
+              }' > "$RUNNER_TEMP/thread.json"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      - name: Run slack-reply skill
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Worker (GitHub App) 発の repository_dispatch の actor は Bot になるため許可する。
+          allowed_bots: "claude,github-actions[bot]"
+          # @ で始まる第2引数にスレッドJSON、第3引数に数値コンテキスト JSON のパスを渡す。
+          # skill は両 JSON を Read し、Issue 本文だけ gh で読む。返答は /slack/post で同スレッドへ。
+          prompt: "/slack-reply ${{ github.event.client_payload.ticker }} -- @${{ runner.temp }}/thread.json @${{ runner.temp }}/numctx.json"
+          claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}

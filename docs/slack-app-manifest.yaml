@@ -1,0 +1,37 @@
+# Slack App マニフェスト — /crash (暴落プリモーテム起動)
+#
+# 使い方:
+#   1. <WORKER_URL> を実際の Worker URL に全置換する
+#        (例: https://stock-signals-collector.xxxx.workers.dev)。3 箇所ある。
+#   2. https://api.slack.com/apps → Create New App → From an app manifest
+#      → omnistove ワークスペースを選択 → この YAML を貼り付け。
+#   3. 作成後 Basic Information → App Credentials の Signing Secret をコピーし、
+#        cd worker && npx wrangler secret put SLACK_SIGNING_SECRET
+#   4. Install App でワークスペースにインストール。
+#   5. Slack で `/crash 285A` (即起動) または `/crash` (銘柄ピッカー) を実行。
+#
+# このマニフェストは「外部 Request URL に向ける従来型 (classic) App」用。bot token は
+# 使わない (起動は repository_dispatch、結果は Incoming Webhook=SLACK_WEBHOOK_URL で届く)
+# ので、scopes は最小。Interactivity だけ有効化する (ephemeral の銘柄ピッカーに必要)。
+
+display_information:
+  name: stock-signals crash
+  description: 銘柄の暴落プリモーテムを起動する (/crash)
+  background_color: "#b30000"
+
+features:
+  slash_commands:
+    - command: /crash
+      url: <WORKER_URL>/slack/command
+      description: 銘柄の暴落シナリオ (プリモーテム) を起動
+      usage_hint: "[銘柄コード] 例: /crash 285A (省略すると選択)"
+      should_escape: false
+
+settings:
+  interactivity:
+    is_enabled: true
+    # 銘柄ピッカー (ephemeral の static_select) の選択を受ける口。
+    request_url: <WORKER_URL>/slack/interact
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

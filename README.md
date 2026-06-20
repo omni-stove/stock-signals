@@ -47,12 +47,15 @@ flowchart TB
         D1[("D1 (SQLite)<br/>prices/daily/fundamentals/margin(信用残)<br/>articles(IR+news+開示+レーティング)メタ<br/>premarket/earnings/intraday_dispatch/slack_threads")]
         R2[("R2<br/>記事本文JSON")]
         API((HTTP API<br/>/run /pull /pull-news /latest))
+        SLACKAPI((Slack HTTP<br/>/slack/command /slack/interact<br/>/slack/events /slack/post))
         CRON_CF --> WORKER
         WORKER -->|時系列/メタINSERT| D1
         WORKER -->|本文保存| R2
         D1 -->|時系列/メタ/カーソル照会| API
         R2 -->|本文取得| API
-        WORKER -.->|新規あれば<br/>repository_dispatch| DISPATCH{{"signal-update<br/>イベント"}}
+        SLACKAPI --> WORKER
+        D1 -.->|親tsで銘柄復元<br/>slack_threads| SLACKAPI
+        WORKER -.->|新規IR/news等あれば<br/>repository_dispatch| DISPATCH{{"signal-update<br/>イベント"}}
     end
 
     subgraph GHA["⚙️ GitHub Actions (LLM判定)"]
@@ -64,12 +67,22 @@ flowchart TB
         JUDGEWF["signal-judge.yml<br/>(concurrency: 銘柄ごと cancel-in-progress)"]
         JUDGECTX["step: judge-context.sh + event-context.sh<br/>(数値コンテキストを正規化 + 需給イベント1行)"]
         JUDGESKILL["skill: signal-judge<br/>(Claude Code / LLM)<br/>@path+Issue を読み buy/sell を判定"]
+        CRASHWF["crash-scenario.yml<br/>(/crash 起動)"]
+        CRASHSKILL["skill: crash-scenario<br/>(Claude Code / LLM)<br/>暴落シナリオを列挙 (Issue は更新しない)"]
+        REPLYWF["slack-reply.yml<br/>(スレッド返信に応答)"]
+        REPLYSKILL["skill: slack-reply<br/>(Claude Code / LLM)<br/>Issue+数値+スレッド履歴を読み同スレッドへ返答"]
         ISSUE["銘柄ごとの常設Issue<br/>(銘柄コンテキスト + 2カーソル)"]
         SLACK["Slack"]
         CTXWF --> CTXIN --> CTXSKILL -->|本文を更新| ISSUE
         CTXSKILL -->|本文更新後 dispatch| JUDGEDISP --> JUDGEWF --> JUDGECTX --> JUDGESKILL
         ISSUE -.->|本文を読む| JUDGESKILL
         JUDGESKILL -->|判定 buy/sell| SLACK
+        CRASHWF --> CRASHSKILL
+        ISSUE -.->|本文を読む| CRASHSKILL
+        CRASHSKILL -->|暴落プリモーテム| SLACK
+        REPLYWF --> REPLYSKILL
+        ISSUE -.->|本文を読む| REPLYSKILL
+        REPLYSKILL -->|同スレッドへ返答| SLACK
     end
 
     %% 外部 → 収集
@@ -83,16 +96,25 @@ flowchart TB
 
     %% Worker → Actions
     DISPATCH --> CTXWF
+    WORKER -.->|repository_dispatch<br/>crash-scenario| CRASHWF
+    WORKER -.->|repository_dispatch<br/>slack-reply| REPLYWF
 
     %% Actions → Worker (材料引きは workflow step が代行し skill へ @path で渡す)
     %% 縦積みを崩さぬよう横断する戻り参照は破線 (重み低)
     API -.->|/pull（IR/開示/レーティング本文） /pull-news（ニュース本文）| CTXIN
     API -.->|/latest（prices/daily/premarket/earnings/margin）| JUDGECTX
 
+    %% Slack 連携 (双方向)
+    SLACK -.->|/crash・スレッド返信| SLACKAPI
+    JUDGESKILL -.->|/slack/post Bot| SLACKAPI
+    CRASHSKILL -.->|/slack/post Bot| SLACKAPI
+    REPLYSKILL -.->|/slack/post thread_ts| SLACKAPI
+    WORKER -.->|新規IR通知<br/>Incoming Webhook| SLACK
+
     classDef cloud stroke:#4285f4,stroke-width:2px
     classDef gha stroke:#8e44ad,stroke-width:2px
-    class CLOUD,CRON_CF,WORKER,D1,R2,API,DISPATCH cloud
-    class GHA,CTXWF,CTXIN,CTXSKILL,JUDGEDISP,JUDGEWF,JUDGECTX,JUDGESKILL,ISSUE,SLACK gha
+    class CLOUD,CRON_CF,WORKER,D1,R2,API,SLACKAPI,DISPATCH cloud
+    class GHA,CTXWF,CTXIN,CTXSKILL,JUDGEDISP,JUDGEWF,JUDGECTX,JUDGESKILL,CRASHWF,CRASHSKILL,REPLYWF,REPLYSKILL,ISSUE,SLACK gha
 ```
 
 ### Cron スケジュール
@@ -104,7 +126,13 @@ Worker の cron trigger は UTC 基準 (`worker/wrangler.toml`)。JST 換算は�
 | 08:30 | `30 23 * * *` | intake | IR + ニュース + 適時開示(TDnet) + 証券会社レーティング + 地合い(寄り前のみ) |
 | 20:00 | `0 11 * * *` | intake | IR + ニュース + 適時開示 + レーティング + 信用残(週次の需給。引け後にだけ相乗り) |
 | 09:00–15:00 5分毎 | `*/5 0-6 * * *` | prices | 株価スナップショット + ニュース速報。12:30 相当スロットでは IR intake も相乗り。新着ニュースの dispatch は銘柄ごと 15分デバウンス (下記) |
-| 16:00 | `0 7 * * *` | eod | 日足 + ファンダ + 決算日推定 |
+| 16:00 | `0 7 * * *` | eod | 日足 + ファンダ + 決算日推定。**月初 (JST 1〜3日)** はマクロイベント(FOMC/日銀)も相乗り収集 |
+
+**JST 土日はスキップ**。対象は東証の日本株なので、東証が開かない JST 土日は cron が鳴っても
+新規がほぼ無く無駄。Cloudflare Cron は曜日範囲指定 (`0-4` 等) を弾くため cron 式は毎日発火のままとし、
+`scheduled()` 内で `isJstWeekend()` (`worker/src/lib/cron.ts`) が発火予定時刻を JST に直して土日なら
+全種別をスキップする。例外として寄り前 intake `30 23 * * *` は UTC 日曜 23:30 = JST 月曜 08:30 に
+発火するので JST 曜日では月曜扱いとなり残る (日本の日曜夜=米国の月曜朝の寄りを反映する地合い取得を保つ)。
 
 ### LLM連鎖 (新規データ検知 → Slack)
 
@@ -118,6 +146,9 @@ sequenceDiagram
 
     W->>W: スクレイプ → D1/R2 保存
     alt 新規 IR/ニュース/開示/レーティングあり
+        opt 場中 (prices cron) は銘柄ごと 15分デバウンス
+            W->>W: intraday_dispatch を確認<br/>15分以内に撃っていれば見送り (次スロットが冪等に拾う)
+        end
         W->>GH: dispatch(signal-update)
         GH->>CB: カーソル以降の新着 IR/news を渡して起動
         CB->>GH: Issue本文を更新 (コンテキスト畳み込み + カーソル更新)
@@ -130,6 +161,63 @@ sequenceDiagram
 
 カーソルは Issue 本文に永続化されるため、前段のジョブが途中でキャンセルされても
 カーソルは更新されず、次の発火で取りこぼし分を含めて再取得される (冪等)。判定はカーソル以降を全部読む。
+
+### スレッド返信で対話 (Slack → Worker → slack-reply)
+
+判定/プリモーテムの投稿にスレッド返信すると、同じスレッドへ Claude が返答する。
+
+```mermaid
+sequenceDiagram
+    participant U as ユーザー
+    participant SL as Slack
+    participant W as Worker (/slack/events)
+    participant D1 as D1 (slack_threads)
+    participant GH as GitHub
+    participant SR as slack-reply (LLM)
+
+    U->>SL: 解析投稿にスレッド返信
+    SL->>W: event_callback (message.channels, 署名付き)
+    W->>W: bot投稿/subtype/親自身を除外
+    W->>D1: 親 thread_ts で銘柄を復元
+    alt slack_threads に親あり
+        W-->>SL: ユーザー返信に 👀 (受付可視化)
+        W->>GH: dispatch(slack-reply) {ticker, thread_ts, text}
+        Note over W,SL: 3秒制約 → dispatch は waitUntil、即 200 を返す
+        GH->>SR: 起動
+        SR->>GH: Issue本文 + 数値 + スレッド履歴 (replies) を読む
+        SR->>SL: /slack/post (thread_ts 指定) で同スレッドへ返答
+        Note over U,SL: さらに返信すれば再発火し会話が続く
+    else 親なし (watchlist 外の雑談)
+        W-->>SL: 無視 (200 のみ)
+    end
+```
+
+### 暴落プリモーテム起動 (/crash スラッシュコマンド)
+
+```mermaid
+sequenceDiagram
+    participant U as ユーザー
+    participant SL as Slack
+    participant W as Worker (/slack/command)
+    participant GH as GitHub
+    participant CS as crash-scenario (LLM)
+
+    U->>SL: /crash [銘柄]
+    SL->>W: slash command (署名付き)
+    alt 引数が有効な銘柄コード
+        W->>GH: dispatch(crash-scenario) で即発火
+        W-->>SL: ephemeral「起動しました」
+    else 引数なし / 未知コード
+        W-->>SL: ephemeral 銘柄ピッカー (static_select)
+        U->>SL: 銘柄を選択
+        SL->>W: block_actions (/slack/interact)
+        W->>GH: dispatch(crash-scenario)
+        W-->>SL: ephemeral を結果メッセージに差し替え
+    end
+    GH->>CS: 起動
+    CS->>GH: Issue本文 + 数値 (judge-context.sh) を読む
+    CS->>SL: /slack/post で暴落シナリオ3〜5本を投稿
+```
 
 **場中ニュースのデバウンス**。場中 (prices cron, 5分毎) は同じ銘柄に短時間で複数の新着が出ると
 スロットごとに独立して dispatch してしまい、LLM 2段 (context-builder→signal-judge) が数分おきに
@@ -188,38 +276,11 @@ signal-judge は精度優先で `--effort high` (reasoning effort) で走る。
 ```sh
 WORKER_URL=https://<your-worker> node scripts/valuation.ts
 WORKER_URL=https://<your-worker> node scripts/sector.ts semiconductor
-node scripts/events.ts --days 45
+WORKER_URL=https://<your-worker> bash scripts/event-context.sh   # 近接イベント (SQ/指数/FOMC/日銀) を1行で
 ```
 
-## 決算日メンテナンス
+## データ収集はすべて自動
 
-各銘柄の次回決算発表予定日は **Worker が eod cron (引け後1日1回) で自動推定**し D1 に保持する。
-kabutan finance ページの四半期業績テーブルから「直近実績の次四半期 = 前年同期の発表日 +1年」で算出。
-signal-judge はこれを読み、決算が間近なら `sell・逃げ` 方向に倒す(de-risk into the print。最新コンテキスト
-そのものが決算リリースの場合を除く。スイング前提で持ち越しガラを避けるため)。決算発表後は翌営業日の cron で
-自動的に次の予定日へ繰り上がる。
-
-`config/watchlist.yaml` の `next_earnings_date` は初期値/参考用。source of truth は D1。
-
-## 証券会社レーティングメンテナンス
-
-証券会社レーティング(個社別 目標株価)は **Worker が intake cron で kabutan のレーティング日報から自動収集**する。
-日報は当日夕方〜夜に出揃うため、引け後 (20:00) intake で拾うと取りこぼしが少ない。新規が出るのは
-watchlist 銘柄にレーティング変更があった日だけ。
-
-- `articles` への保存形式 (`source="rating:<firm>"` / `ir_category="rating"`) と Issue 本文への畳み込みは
-  構成思想の「記事系は1テーブルに合流」を参照。
-- 信頼する証券会社は `worker/src/lib/ratings.ts` の `TRUSTED_FIRMS` で定義する。**ここに無い機関も捨てず保存し**、
-  本文に「信頼度: 低」を付けて judge 側で割り引けるようにする (後でリストを変えても再取得不要)。
-
-## イベントカレンダーメンテナンス
-
-`config/events.yaml` に FOMC・SQ・日銀会合などのマクロ/需給イベントを手動で並べる
-(個別決算とは別系統)。`scripts/events.ts` が「直近N日以内の未来イベント」を表示する。
-
-- **四半期ごとに先の日程を追記**する。
-  - FOMC / 日銀会合: 公式サイトの年間スケジュールから。米国イベントは結果が日本の
-    翌営業日に効くので `jst_effect_date` を入れる。
-  - SQ: 各月の第2金曜。3/6/9/12月はメジャーSQ (impact: high)、他月はオプションのみ
-    (impact: medium)。祝日でズレる場合は実日付で上書き。
-- 過去日になったイベントは消さなくてよい (`events.ts` は未来分のみ表示)。溜まったら整理。
+決算日推定・証券会社レーティング・マクロイベント(FOMC/日銀)・SQ/指数リバランスは、人間の手作業なしで
+Worker cron か日付計算により供給される (このリポは「材料を非同期で並べ続ける装置」)。設計の詳細は各
+ソースのコメント (`worker/src/lib/{earnings,ratings,macro-events}.ts`, `scripts/event-context.sh`) を参照。

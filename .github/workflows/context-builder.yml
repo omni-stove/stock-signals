@@ -59,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Action 実行時は CLAUDE.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
+      # Action 実行時は CLAUDE.md / AGENTS.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
       # 既存 Issue + カーソル以降の新規 IR/ニュースを fetch + 正規化し、1 つの JSON に

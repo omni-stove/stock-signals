@@ -7,6 +7,7 @@ import type { Env } from "./env";
 import { dispatchSignalUpdate } from "./github-dispatch";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
+import { collectMacroEvents } from "./macro-events";
 import { collectMargin } from "./margin";
 import { collectNews } from "./news";
 import { collectBackdrop } from "./premarket";
@@ -40,12 +41,45 @@ function isNoonIntakeSlot(scheduledTime: number): boolean {
 	);
 }
 
+// JST 曜日 (0=日, 6=土) で土日かを判定する。対象は東証の日本株なので、東証が開かない
+// JST 土日は cron を動かしても新規はほぼ無く無駄なため全スキップする。
+// Cloudflare Cron は曜日範囲指定 (0-4 等) を弾くので、cron 式ではなく scheduled() 内でガードする。
+//
+// ※注意: 寄り前 intake `30 23 * * *` は UTC 23:30 発火 → JST 08:30 (翌日)。よって
+//   UTC 土曜 23:30 = JST 日曜 08:30 (→スキップ)、UTC 日曜 23:30 = JST 月曜 08:30 (→稼働)。
+//   「日本の日曜夜=米国の月曜朝の寄り」に当たる JST 月曜朝の地合い取得は JST 曜日判定で
+//   自動的に月曜扱いになり残る。発火予定時刻 (scheduledTime) を JST に直して曜日を見ること。
+function isJstWeekend(scheduledTime: number): boolean {
+	const jst = new Date(scheduledTime + 9 * 60 * 60 * 1000);
+	const day = jst.getUTCDay(); // JST に +9h した値の UTC 曜日 = JST 曜日
+	return day === 0 || day === 6;
+}
+
+// 発火予定時刻 (JST) が月の最初の稼働日 (1〜3日のいずれか初回) かを判定する。マクロイベント
+// (FOMC/日銀) を eod cron に月1回だけ相乗りさせるための「月初スロット」。JST 1日が土日だと
+// その日の eod は isJstWeekend で全スキップされるため、1〜3日を窓にして月内で確実に1回拾う。
+// 同月内で複数回走っても macro_events は (date,kind) PK の INSERT OR REPLACE で冪等。
+function isJstMonthStart(scheduledTime: number): boolean {
+	const jst = new Date(scheduledTime + 9 * 60 * 60 * 1000);
+	const d = jst.getUTCDate();
+	return d >= 1 && d <= 3;
+}
+
 // Cron Trigger 発火時。event.cron でどの cron が鳴ったか判別して種別を振り分ける。
 export async function runScheduled(
 	event: ScheduledController,
 	env: Env,
 ): Promise<void> {
 	const kind = CRON_KIND[event.cron] ?? "intake"; // 未知の cron は intake にフォールバック
+	// JST 土日は東証が開かないため、どの種別もスキップする (新規がほぼ無く無駄なため)。
+	// 寄り前 intake は UTC 日曜 23:30 = JST 月曜 08:30 に発火し、JST 曜日では月曜扱いに
+	// なるのでこのガードを通過する (= 米国月曜朝の寄りを反映する地合い取得は残る)。
+	if (isJstWeekend(event.scheduledTime)) {
+		console.log(
+			`scheduled skipped (JST weekend): cron=${event.cron} kind=${kind}`,
+		);
+		return;
+	}
 	if (kind === "intake") {
 		// intake cron (8:30/12:30/18:30) では IR とニュースを両方収集する。
 		// 寄り前(8:30)のときだけ先に当日の地合いを D1 に取る。直後に発火する signal-judge が
@@ -138,9 +172,23 @@ export async function runScheduled(
 		const d = await collectTimeseries(env, "daily", null);
 		const f = await collectTimeseries(env, "fundamentals", null);
 		const e = await collectEarnings(env, null);
+		// マクロイベント (FOMC/日銀) は月初スロットでだけ相乗り収集する。会合は年8回・先の日程が
+		// 確定公表されており月1で十分。失敗しても eod の主収集は壊さない (catch でログのみ)。
+		let macro: Record<string, unknown> | null = null;
+		if (isJstMonthStart(event.scheduledTime)) {
+			macro = await collectMacroEvents(env).catch((err) => {
+				console.error("macro-events failed:", err);
+				return null;
+			});
+		}
 		console.log(
 			"scheduled eod done:",
-			JSON.stringify({ daily: d, fundamentals: f, earnings: e }),
+			JSON.stringify({
+				daily: d,
+				fundamentals: f,
+				earnings: e,
+				...(macro ? { macroEvents: macro } : {}),
+			}),
 		);
 		return;
 	}

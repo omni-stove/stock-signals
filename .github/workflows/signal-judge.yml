@@ -56,15 +56,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Action 実行時は CLAUDE.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
+      # Action 実行時は CLAUDE.md / AGENTS.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
-      # SQ (日本/米メジャー) と config/events.yaml の近接イベントを 1 行に整形し、prompt に渡す。
-      # skill 本体にはカレンダーを読ませない方針 (決定論的な算出は step 側=GNU date で完結)。
+      # SQ (日本/米メジャー)・指数リバランスは GNU date で計算し、FOMC/日銀は Worker
+      # /latest?kind=macro-events (D1) から取得して近接イベントを 1 行に整形し prompt に渡す。
+      # skill 本体にはカレンダーを読ませない方針 (決定論的な算出は step 側で完結)。
       # 起動経路 (dispatch / 手動) によらずここで毎回算出するので payload には依存しない。
       - name: Build event context
         id: events
         run: echo "ctx=$(bash scripts/event-context.sh)" >> "$GITHUB_OUTPUT"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
       # Worker の数値データ (earnings/prices/daily/premarket) を fetch + 正規化し、1 つの JSON に
       # まとめて prompt に渡す。鮮度判定・20日レンジ位置・MA位置・出来高倍率・days_to_earnings は

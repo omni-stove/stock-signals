@@ -1,15 +1,16 @@
-# Action 実行時は CLAUDE.md の指示が判定の邪魔になりうるので退避する共通アクション。
-# リポジトリ配下 (直下/サブディレクトリ) とユーザ全体設定 (~/.claude/CLAUDE.md) を
+# Action 実行時は CLAUDE.md / AGENTS.md の指示が判定の邪魔になりうるので退避する共通アクション。
+# リポジトリ配下 (直下/サブディレクトリ) とユーザ全体設定 (~/.claude/) を
 # 一時リネームし、claude-code-action 起動時に Claude Code が読み込まないようにする。
 # ジョブは使い捨てサンドボックスなので元に戻す処理は不要。
-name: Stash CLAUDE.md
-description: Rename all CLAUDE.md files so claude-code-action does not load them.
+name: Stash CLAUDE.md / AGENTS.md
+description: Rename all CLAUDE.md and AGENTS.md files so claude-code-action does not load them.
 
 runs:
   using: composite
   steps:
     - shell: bash
       run: |
-        find . -name CLAUDE.md -not -path '*/node_modules/*' \
+        find . \( -name CLAUDE.md -o -name AGENTS.md \) -not -path '*/node_modules/*' \
           -exec sh -c 'mv "$1" "$1.stashed"' _ {} \;
         [ -f "$HOME/.claude/CLAUDE.md" ] && mv "$HOME/.claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md.stashed" || true
+        [ -f "$HOME/.claude/AGENTS.md" ] && mv "$HOME/.claude/AGENTS.md" "$HOME/.claude/AGENTS.md.stashed" || true

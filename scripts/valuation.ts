@@ -29,7 +29,8 @@ import { parse as parseYaml } from "yaml";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const WORKER_URL = process.env.WORKER_URL;
-if (!WORKER_URL) {
+// vitest (in-source test) は CLI ではないので環境変数ガードを通さない。
+if (!WORKER_URL && !import.meta.vitest) {
 	console.error(
 		"環境変数 WORKER_URL が未設定です (例: WORKER_URL=https://xxx.workers.dev)",
 	);
@@ -222,7 +223,37 @@ async function main() {
 	printTable(rows);
 }
 
-main().catch((e) => {
-	console.error(e);
-	process.exit(1);
-});
+// vitest 実行中 (in-source test) は CLI 本体を起動しない。
+if (!import.meta.vitest) {
+	main().catch((e) => {
+		console.error(e);
+		process.exit(1);
+	});
+}
+
+// in-source tests (vitest.config.ts 参照)
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("round", () => {
+		it("既定 1 桁で丸め、null/非有限は null", () => {
+			expect(round(1.26)).toBe(1.3);
+			expect(round(1.2345, 2)).toBe(1.23);
+			expect(round(null)).toBeNull();
+			expect(round(Number.NaN)).toBeNull();
+		});
+	});
+
+	describe("fmt / fmtPct", () => {
+		it("数値を千区切りで整形し、null は －", () => {
+			expect(fmt(1234)).toBe("1,234");
+			expect(fmt(1234, "円")).toBe("1,234円");
+			expect(fmt(null)).toBe("－");
+		});
+		it("% は符号付き、null は －", () => {
+			expect(fmtPct(2.5)).toBe("+2.5%");
+			expect(fmtPct(-1)).toBe("-1%");
+			expect(fmtPct(null)).toBe("－");
+		});
+	});
+}

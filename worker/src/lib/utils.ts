@@ -27,3 +27,24 @@ export async function fetchHtml(
 	const buf = await res.arrayBuffer();
 	return new TextDecoder("utf-8").decode(buf);
 }
+
+// in-source tests (本番ビルドでは tree-shake される。vitest.config.ts 参照)
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("hash", () => {
+		it("常に 8 桁の 16 進文字列を返す", () => {
+			for (const s of ["", "a", "https://kabutan.jp/stock/?code=6857"]) {
+				expect(hash(s)).toMatch(/^[0-9a-f]{8}$/);
+			}
+		});
+
+		it("同じ入力には同じ値 (決定的)", () => {
+			expect(hash("6857")).toBe(hash("6857"));
+		});
+
+		it("異なる入力には異なる値を返す (代表ケース)", () => {
+			expect(hash("6857")).not.toBe(hash("6858"));
+		});
+	});
+}

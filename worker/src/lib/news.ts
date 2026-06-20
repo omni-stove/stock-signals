@@ -2,7 +2,7 @@
 //
 // ローカルの scripts/fetch-news.ts の per_ticker 系統を Worker に移植したもの。
 // macro 系統 (marketnews 横断ニュース) は廃止した。地合いは premarket(SOX/日経先物)
-// と config/events.yaml で足り、銘柄に紐付かない macro ニュースは判定に使わないため。
+// とマクロイベント(macro_events: FOMC/日銀)で足り、銘柄に紐付かない macro ニュースは判定に使わないため。
 //
 // watchlist の各銘柄ニュース一覧 (https://kabutan.jp/stock/news?code=<code>) を取り、
 // 銘柄が確定しているので IR と同じ articles テーブル + R2 に保存する。

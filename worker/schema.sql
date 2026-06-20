@@ -190,3 +190,26 @@ CREATE TABLE IF NOT EXISTS margin (
 );
 CREATE INDEX IF NOT EXISTS idx_margin_ticker_date
   ON margin (ticker, date DESC);
+
+-- ── マクロイベント (FOMC / 日銀金融政策決定会合) ──────────────────────────
+-- SQ や指数リバランスのように規則計算できない「会合系」イベントの日程。従来は config/events.yaml に
+-- 人間が年1回手動転記していたが (README「イベントカレンダーメンテナンス」)、公式が年単位で先の全日程を
+-- 出すので Worker が定期スクレープ (worker/src/lib/macro-events.ts) して保持し手動メンテを無くす。
+-- eod cron に月初相乗りで更新 (会合は年8回・先の日程が確定公表されており月1で十分)。
+-- SQ / 指数リバランスは scripts/event-context.sh が日付計算で出すのでここには入れない。
+--
+-- 冪等キー = (date, kind)。同じ会合を再スクレープしても1行に収束し、label/note は最新に上書きされる。
+-- event-context.sh が /latest?kind=macro-events で読み、近接 (直近5日) イベントを prompt に乗せる。
+-- jst_effect_date は「日本市場に効く営業日」: 米国(FOMC)は翌営業日なので翌日, 日銀は当日なので NULL。
+CREATE TABLE IF NOT EXISTS macro_events (
+  date            TEXT NOT NULL,       -- イベント日 / 結果発表日 YYYY-MM-DD
+  kind            TEXT NOT NULL,       -- fomc / boj
+  label           TEXT NOT NULL,       -- 表示名
+  impact          TEXT NOT NULL,       -- high (会合は全て high 想定)
+  jst_effect_date TEXT,                -- 日本市場に効く日 (米国=翌日, 日銀=NULL=当日)
+  note            TEXT,                -- 補足
+  fetched_at      TEXT NOT NULL,       -- 取得時刻 (ISO8601)
+  PRIMARY KEY (date, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_macro_events_date
+  ON macro_events (date);

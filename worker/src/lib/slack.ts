@@ -50,6 +50,40 @@ export async function postMessage(
 	}
 }
 
+// 指定メッセージに絵文字リアクションを付ける (reactions.add)。スレッド返信を受け付けた
+// 直後に「処理中」を可視化する用途。要 reactions:write スコープ。channel + ts (返信メッセージ
+// の ts) で対象を指定する。best-effort: 失敗/未設定でも呼び出し側を止めない。
+// already_reacted (再送で二重に付くケース) は成功扱いにする。
+export async function addReaction(
+	env: Env,
+	args: { channel: string; timestamp: string; name: string },
+): Promise<boolean> {
+	if (!env.SLACK_BOT_TOKEN) return false;
+	try {
+		const res = await fetch("https://slack.com/api/reactions.add", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json; charset=utf-8",
+				Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+			},
+			body: JSON.stringify({
+				channel: args.channel,
+				timestamp: args.timestamp,
+				name: args.name,
+			}),
+		});
+		const body = (await res.json()) as { ok: boolean; error?: string };
+		if (!body.ok && body.error !== "already_reacted") {
+			console.error(`reactions.add failed: ${body.error}`);
+			return false;
+		}
+		return true;
+	} catch (e) {
+		console.error(`reactions.add error: ${(e as Error).message}`);
+		return false;
+	}
+}
+
 export type NotifyItem = {
 	ticker: string;
 	title: string;

@@ -22,9 +22,11 @@ account_id = "020120735d111b7d06111196719171c1"  # admin@omnistove.com
 
 # Cron Triggers。cron は UTC 基準 (JST = UTC+9)。発火した cron 式を
 # scheduled() 内で event.cron により判別し、取得種別を振り分ける。
-# ※Cloudflare Cron は曜日の範囲指定 (0-4 等) を弾く (invalid cron string)。
-#   平日のみにしたい場合は曜日を "*" のまま毎日実行とし、土日は新規が無ければ
-#   skip されるだけ (idempotent) なので実害なし。厳密化したい時は別途検討。
+# ※Cloudflare Cron は曜日の範囲指定 (0-4 等) を弾く (invalid cron string)。よって
+#   cron 式は毎日発火のままとし、JST 土日のスキップは scheduled() 内で isJstWeekend()
+#   ガードして行う (cron.ts 参照)。東証が開かない JST 土日は全種別をスキップする。
+#   例外: 寄り前 intake `30 23 * * *` は UTC 日曜 23:30 = JST 月曜 08:30 に発火するため
+#   JST 曜日では月曜扱いとなり残る (日本の日曜夜=米国の月曜朝の地合いを反映する)。
 #
 #   intake (寄り前/引け後): JST 08:30/20:00 = UTC 23:30(前日)/11:00。IR+ニュース収集
 #                            (寄り前 08:30 のみ地合い=米国指数+日経先物も先に取得)

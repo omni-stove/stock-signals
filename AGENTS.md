@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Rules for implementation. See `README.md` for structure and rationale.
 

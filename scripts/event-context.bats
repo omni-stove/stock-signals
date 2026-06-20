@@ -1,0 +1,142 @@
+#!/usr/bin/env bats
+# scripts/event-context.bats
+# event-context.sh の日付計算ロジックと出力整形を検証する。
+#
+# 実行: pnpm run test:sh   (ローカルは gdate が要る → setup() で自動的に DATE=gdate を差す)
+#       CI (ubuntu) は GNU date が素の `date` なので DATE 不要。
+#
+# 設計:
+#   - 出力は引数 (基準日) から決定論的に決まるので、固定日付を渡して期待文字列を突き合わせる。
+#   - module-private なヘルパー関数 (nth_friday 等) は本体を `source` して直接呼ぶ。
+#     event-context.sh は `BASH_SOURCE == $0` のときだけ本体を実行するので、source では
+#     関数定義だけが読み込まれる。
+#   - @test の説明は ASCII のみ (bats 1.13 は非ASCIIのテスト名を実行できない)。
+#     日本語の意図はコメントに残す。
+
+setup() {
+  ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
+  SCRIPT="$ROOT/scripts/event-context.sh"
+  # macOS では gdate を使う。CI(ubuntu) では date がそのまま GNU date。
+  if [[ -z "${DATE:-}" ]] && command -v gdate >/dev/null 2>&1; then
+    export DATE=gdate
+  fi
+}
+
+# 直接実行して 1 行出力を得るヘルパー。
+# マクロイベント (FOMC/日銀) は Worker から取得するが、テストでは MACRO_EVENTS_JSON で固定の
+# JSON を注入する (event-context.sh の fetch_macro_events_json はこの環境変数を最優先で使う)。
+# 既定では空 (= マクロイベント無し)。WORKER_URL は未設定なので curl も走らない。
+run_ctx() {
+  run env MACRO_EVENTS_JSON="${MACRO_EVENTS_JSON:-}" WORKER_URL="" bash "$SCRIPT" "$1"
+  [ "$status" -eq 0 ]
+}
+
+# FOMC を 2026-07-30 (jst_effect_date) に効くものとして注入する JSON。Worker の応答形と同じ。
+fomc_json() {
+  cat <<'JSON'
+{"ok":true,"kind":"macro-events","rows":[
+  {"date":"2026-07-29","kind":"fomc","label":"FOMC 政策金利発表 (7月会合)","impact":"high","jst_effect_date":"2026-07-30","note":"x"}
+]}
+JSON
+}
+
+# --- ヘルパー関数の単体テスト (source して直接呼ぶ) --------------------------
+
+# 2026-06 の第2金曜 = 日本SQ (6/12)
+@test "nth_friday: 2nd friday of 2026-06 is 06-12" {
+  source "$SCRIPT"
+  [ "$(nth_friday 2026-06 2)" = "2026-06-12" ]
+}
+
+# 2026-06 の第3金曜 = 米SQ (6/19)
+@test "nth_friday: 3rd friday of 2026-06 is 06-19" {
+  source "$SCRIPT"
+  [ "$(nth_friday 2026-06 3)" = "2026-06-19" ]
+}
+
+# 月初が金曜の月でも第1金曜を正しく返す (2026-05-01 は金)
+@test "nth_friday: handles month starting on friday (2026-05 1st = 05-01)" {
+  source "$SCRIPT"
+  [ "$(nth_friday 2026-05 1)" = "2026-05-01" ]
+}
+
+# 月末が金曜ならそのまま (2026-02-27 は金)
+@test "last_business_day: month ending on friday stays (2026-02 = 02-27)" {
+  source "$SCRIPT"
+  [ "$(last_business_day 2026-02)" = "2026-02-27" ]
+}
+
+# 月末が日曜なら金曜へ寄せる (2026-05-31 は日 → 5/29 金)
+@test "last_business_day: sunday end shifts back to friday (2026-05 = 05-29)" {
+  source "$SCRIPT"
+  [ "$(last_business_day 2026-05)" = "2026-05-29" ]
+}
+
+# 2026-04 の第1営業日 = 4/1 (水)
+@test "nth_business_day: 1st business day of 2026-04 is 04-01" {
+  source "$SCRIPT"
+  [ "$(nth_business_day 2026-04 1)" = "2026-04-01" ]
+}
+
+# 月初が日曜でも最初の平日を返す (2026-02-01 は日 → 2/2 月)
+@test "nth_business_day: skips weekend at month start (2026-02 = 02-02)" {
+  source "$SCRIPT"
+  [ "$(nth_business_day 2026-02 1)" = "2026-02-02" ]
+}
+
+# 暦日差 (6/12 → 6/19 = 7)
+@test "days_diff: 06-12 to 06-19 is 7" {
+  source "$SCRIPT"
+  [ "$(days_diff 2026-06-12 2026-06-19)" = "7" ]
+}
+
+# --- 出力整形のシナリオテスト (基準日 → 1 行) -------------------------------
+
+# 日本メジャーSQ当日 (2026-06-12) はメジャーSQ週を出す
+@test "output: major SQ day shows SQ week note" {
+  run_ctx 2026-06-12
+  [[ "$output" == *"日本メジャーSQ週(6月限"* ]]
+  [[ "$output" == *"SQ=2026-06-12"* ]]
+}
+
+# SQ明け週 (2026-06-19) は日本メジャーSQ明け・米メジャーSQ週・FTSEを出す
+@test "output: post-SQ week shows JP post / US week / FTSE" {
+  run_ctx 2026-06-19
+  [[ "$output" == *"日本メジャーSQ明け(6月限"* ]]
+  [[ "$output" == *"米メジャーSQ週(6月"* ]]
+  [[ "$output" == *"FTSE/Russellリバランス"* ]]
+}
+
+# FOMC は jst_effect_date 基準で当日表示される (2026-07-30)。Worker 応答を注入する。
+@test "output: FOMC shown on jst_effect_date as today" {
+  MACRO_EVENTS_JSON="$(fomc_json)" run_ctx 2026-07-30
+  [[ "$output" == *"FOMC 政策金利発表 (7月会合)"* ]]
+  [[ "$output" == *"本日"* ]]
+  [[ "$output" == *"[high]"* ]]
+}
+
+# FOMC は近接 (1日後) でも拾われる (2026-07-29)
+@test "output: FOMC picked up 1 day before" {
+  MACRO_EVENTS_JSON="$(fomc_json)" run_ctx 2026-07-29
+  [[ "$output" == *"2026-07-30/1日後"* ]]
+}
+
+# マクロイベント取得不能 (空応答) でも SQ 計算は出る (2026-06-12 はメジャーSQ当日)
+@test "output: works without macro events (empty worker response)" {
+  MACRO_EVENTS_JSON="" run_ctx 2026-06-12
+  [[ "$output" == *"日本メジャーSQ週(6月限"* ]]
+}
+
+# 該当イベントが無い日は '特になし' を出す (2026-04-20)。マクロイベントも無し。
+@test "output: quiet day shows nothing special" {
+  MACRO_EVENTS_JSON="" run_ctx 2026-04-20
+  [[ "$output" == *"特になし"* ]]
+}
+
+# 出力は常に '需給イベント(基準日):' で始まる単一行
+@test "output: single line starting with the standard prefix" {
+  run_ctx 2026-06-12
+  [[ "$output" == "需給イベント(2026-06-12):"* ]]
+  # 改行を含まない (1 行)。
+  [ "$(printf '%s' "$output" | wc -l | tr -d ' ')" = "0" ]
+}

@@ -10,7 +10,7 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "rewriteRelativeImportExtensions": true,
-    "types": ["node"]
+    "types": ["node", "vitest/importMeta"]
   },
   "include": ["scripts/**/*.ts"]
 }

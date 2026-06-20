@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "db:init:local": "wrangler d1 execute stock-signals --file=./schema.sql --local",
     "db:init:remote": "wrangler d1 execute stock-signals --file=./schema.sql --remote"
@@ -17,6 +18,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240000.0",
     "typescript": "^6.0.3",
+    "vitest": "^4.1.9",
     "wrangler": "^4.0.0"
   }
 }

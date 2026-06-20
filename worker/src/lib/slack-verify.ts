@@ -54,3 +54,84 @@ export async function verifySlackSignature(
 	);
 	return timingSafeEqual(`v0=${hex(mac)}`, signature);
 }
+
+// in-source tests (本番ビルドでは tree-shake される。vitest.config.ts 参照)
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("timingSafeEqual", () => {
+		it("一致する文字列は true", () => {
+			expect(timingSafeEqual("v0=abc", "v0=abc")).toBe(true);
+		});
+		it("1 文字違いは false", () => {
+			expect(timingSafeEqual("v0=abc", "v0=abd")).toBe(false);
+		});
+		it("長さ違いは false", () => {
+			expect(timingSafeEqual("v0=abc", "v0=abcd")).toBe(false);
+		});
+	});
+
+	describe("verifySlackSignature", () => {
+		const secret = "8f742231b10e8888abcd99yyyzzz85a5"; // Slack 公式ドキュメントの例
+		const env = { SLACK_SIGNING_SECRET: secret } as Env;
+		const rawBody = "token=xyzz0WbapA4vBCDEFasx0q6G&team_id=T1DC2JH3B";
+		const timestamp = "1531420618";
+		const now = 1531420618;
+
+		// 正しい署名を上記入力から動的に算出する (テストの自己整合性確保)。
+		async function correctSignature(): Promise<string> {
+			const key = await crypto.subtle.importKey(
+				"raw",
+				new TextEncoder().encode(secret),
+				{ name: "HMAC", hash: "SHA-256" },
+				false,
+				["sign"],
+			);
+			const mac = await crypto.subtle.sign(
+				"HMAC",
+				key,
+				new TextEncoder().encode(`v0:${timestamp}:${rawBody}`),
+			);
+			return `v0=${hex(mac)}`;
+		}
+
+		it("正しい署名・新しい timestamp なら true", async () => {
+			const sig = await correctSignature();
+			expect(
+				await verifySlackSignature(env, rawBody, timestamp, sig, now),
+			).toBe(true);
+		});
+
+		it("署名が改竄されていれば false", async () => {
+			const sig = await correctSignature();
+			const tampered = `${sig.slice(0, -1)}${sig.endsWith("0") ? "1" : "0"}`;
+			expect(
+				await verifySlackSignature(env, rawBody, timestamp, tampered, now),
+			).toBe(false);
+		});
+
+		it("5 分より古い timestamp はリプレイとして拒否", async () => {
+			const sig = await correctSignature();
+			expect(
+				await verifySlackSignature(env, rawBody, timestamp, sig, now + 301),
+			).toBe(false);
+		});
+
+		it("SLACK_SIGNING_SECRET 未設定なら false", async () => {
+			const sig = await correctSignature();
+			const noSecret = { SLACK_SIGNING_SECRET: "" } as Env;
+			expect(
+				await verifySlackSignature(noSecret, rawBody, timestamp, sig, now),
+			).toBe(false);
+		});
+
+		it("timestamp / signature が null なら false", async () => {
+			expect(await verifySlackSignature(env, rawBody, null, "v0=x", now)).toBe(
+				false,
+			);
+			expect(
+				await verifySlackSignature(env, rawBody, timestamp, null, now),
+			).toBe(false);
+		});
+	});
+}

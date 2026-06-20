@@ -368,3 +368,123 @@ export async function collectTimeseries(
 	}
 	return results;
 }
+
+// in-source tests (本番ビルドでは tree-shake される。vitest.config.ts 参照)
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("toNumber", () => {
+		it("通貨・単位記号を除いてパースする", () => {
+			expect(toNumber("1,234")).toBe(1234);
+			expect(toNumber("12.5倍")).toBe(12.5);
+			expect(toNumber("3.2%")).toBe(3.2);
+			expect(toNumber("1,000円")).toBe(1000);
+		});
+		it("欠損値 (空 / 全角ダッシュ / ハイフン) は null", () => {
+			expect(toNumber("")).toBeNull();
+			expect(toNumber("－")).toBeNull();
+			expect(toNumber("-")).toBeNull();
+			expect(toNumber(null)).toBeNull();
+			expect(toNumber(undefined)).toBeNull();
+		});
+		it("数値でない文字列は null", () => {
+			expect(toNumber("N/A")).toBeNull();
+		});
+	});
+
+	describe("slot5min", () => {
+		it("分を 5 分枠に切り下げ、秒・TZ を捨てる", () => {
+			expect(slot5min("2026-06-18T12:51:30+09:00")).toBe("2026-06-18T12:50");
+			expect(slot5min("2026-06-18T12:55:00Z")).toBe("2026-06-18T12:55");
+			expect(slot5min("2026-06-18T00:04:59.999Z")).toBe("2026-06-18T00:00");
+		});
+		it("想定外フォーマットはそのまま返す (安全側)", () => {
+			expect(slot5min("not-a-date")).toBe("not-a-date");
+		});
+	});
+
+	describe("parseKabutanPrice", () => {
+		const html = `
+			<div id="stockinfo_i1">
+				<div class="si_i1_2">
+					<span class="kabuka">1,234.5</span>
+					<dl class="si_i1_dl1">
+						<dd><span>+12.5</span></dd>
+						<dd><span>+1.02%</span></dd>
+					</dl>
+				</div>
+				<div class="si_i1_3">
+					<span class="kabuka1">PTS</span>
+					<span class="kabuka2">1,240</span>
+					<span class="kabuka3">  18:30 </span>
+				</div>
+				<time datetime="2026-06-18T15:00:00+09:00"></time>
+			</div>
+			<table><tr><th>出来高</th><td>1,000,000</td></tr></table>`;
+
+		it("価格・前日比・出来高・時刻を抽出する", () => {
+			const p = parseKabutanPrice(html);
+			expect(p.price).toBe(1234.5);
+			expect(p.change).toBe(12.5);
+			expect(p.change_pct).toBe(1.02);
+			expect(p.volume).toBe(1000000);
+			expect(p.quote_time).toBe("2026-06-18T15:00:00+09:00");
+		});
+
+		it("PTS ブロックがあれば pts_price / pts_time を抽出する", () => {
+			const p = parseKabutanPrice(html);
+			expect(p.pts_price).toBe(1240);
+			expect(p.pts_time).toBe("18:30");
+		});
+
+		it("空 HTML では全フィールド null", () => {
+			const p = parseKabutanPrice("<html></html>");
+			expect(p.price).toBeNull();
+			expect(p.volume).toBeNull();
+			expect(p.pts_price).toBeNull();
+		});
+	});
+
+	describe("parseKabutanDaily", () => {
+		const html = `
+			<table class="stock_kabuka0"><tbody>
+				<tr>
+					<th><time datetime="2026-06-18">06/18</time></th>
+					<td>100</td><td>110</td><td>95</td><td>105</td>
+					<td>+5</td><td>+5.0%</td><td>1,000</td>
+				</tr>
+			</tbody></table>
+			<table class="stock_kabuka_dwm"><tbody>
+				<tr>
+					<th><time datetime="2026-06-17">06/17</time></th>
+					<td>90</td><td>101</td><td>88</td><td>100</td>
+					<td>-2</td><td>-1.9%</td><td>2,000</td>
+				</tr>
+			</tbody></table>`;
+
+		it("本日表と過去表の両方から OHLCV 行を拾う", () => {
+			const bars = parseKabutanDaily(html);
+			expect(bars).toHaveLength(2);
+			expect(bars[0]).toMatchObject({
+				date: "2026-06-18",
+				open: 100,
+				high: 110,
+				low: 95,
+				close: 105,
+				volume: 1000,
+			});
+			expect(bars[1].date).toBe("2026-06-17");
+		});
+
+		it("datetime や td 不足の行はスキップする", () => {
+			const broken = `<table class="stock_kabuka0"><tbody>
+				<tr><th>日付なし</th><td>1</td></tr>
+			</tbody></table>`;
+			expect(parseKabutanDaily(broken)).toHaveLength(0);
+		});
+
+		it("該当テーブルが無ければ空配列", () => {
+			expect(parseKabutanDaily("<html></html>")).toHaveLength(0);
+		});
+	});
+}

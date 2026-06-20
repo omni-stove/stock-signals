@@ -6,13 +6,14 @@
   "scripts": {
     "valuation": "node scripts/valuation.ts",
     "sector": "node scripts/sector.ts",
-    "events": "node scripts/events.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "format": "biome check --write",
     "lint": "biome check",
     "knip": "knip",
     "check:watchlist": "node scripts/check-watchlist-sync.ts",
-    "verify": "pnpm run lint && pnpm run typecheck && pnpm -C worker run typecheck && pnpm run check:watchlist && pnpm run knip"
+    "test": "vitest run",
+    "test:sh": "bats scripts/event-context.bats",
+    "verify": "pnpm run lint && pnpm run typecheck && pnpm -C worker run typecheck && pnpm run check:watchlist && pnpm run test && pnpm -C worker run test && pnpm run test:sh && pnpm run knip"
   },
   "dependencies": {
     "yaml": "^2.5.0"
@@ -20,7 +21,9 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
     "@types/node": "^25.9.3",
+    "bats": "^1.13.0",
     "knip": "^6.17.1",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   }
 }

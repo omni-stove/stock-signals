@@ -17,6 +17,7 @@
 import { type Context, Hono } from "hono";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
+import { addReaction } from "../lib/slack";
 import { verifySlackSignature } from "../lib/slack-verify";
 import { WATCHLIST } from "../lib/timeseries";
 
@@ -39,6 +40,43 @@ function tickerOptions() {
 		text: { type: "plain_text", text: code },
 		value: code,
 	}));
+}
+
+// Slack Events API (message.channels) の受信エンベロープ。
+type SlackMessageEvent = {
+	type?: string;
+	subtype?: string;
+	bot_id?: string;
+	text?: string;
+	user?: string;
+	channel?: string;
+	ts?: string;
+	thread_ts?: string;
+};
+type SlackEventEnvelope = {
+	type?: string;
+	challenge?: string;
+	event?: SlackMessageEvent;
+};
+
+// message イベントに「スレッド返信として反応すべきか」を判定する純粋関数。
+// 反応する条件: event_callback の message で、subtype/bot_id が無く (= 人間の新規投稿)、
+// thread_ts を持ち (= スレッド内)、それが ts と異なる (= 親自身ではなく返信)。
+// これに当てはまらないものは全て無視する (bot 自身の投稿による無限ループや雑談スレを弾く)。
+// 型ガードにして、通過後は ev が thread_ts: string を持つ message として扱えるようにする。
+function shouldHandleReply(body: SlackEventEnvelope): body is {
+	type: "event_callback";
+	event: SlackMessageEvent & { thread_ts: string };
+} {
+	const ev = body.event;
+	return Boolean(
+		body.type === "event_callback" &&
+			ev?.type === "message" &&
+			!ev.subtype &&
+			!ev.bot_id &&
+			ev.thread_ts &&
+			ev.thread_ts !== ev.ts,
+	);
 }
 
 // dispatch を撃ち、結果メッセージを返す (command/interact 双方から使う)。
@@ -124,38 +162,16 @@ slack.post("/slack/events", async (c) => {
 	const v = await verified(c);
 	if ("err" in v) return v.err;
 
-	const body = JSON.parse(v.raw) as {
-		type?: string;
-		challenge?: string;
-		event?: {
-			type?: string;
-			subtype?: string;
-			bot_id?: string;
-			text?: string;
-			user?: string;
-			channel?: string;
-			ts?: string;
-			thread_ts?: string;
-		};
-	};
+	const body = JSON.parse(v.raw) as SlackEventEnvelope;
 
 	// Event Subscriptions の URL 検証 (初回登録時の challenge 応答)。
 	if (body.type === "url_verification")
 		return c.json({ challenge: body.challenge });
 
+	// スレッド返信のみ対象。判定ロジックは shouldHandleReply に集約 (in-source test 対象)。
+	// 型ガード通過後は ev.thread_ts が string として確定する。
+	if (!shouldHandleReply(body)) return c.body(null, 200);
 	const ev = body.event;
-	// スレッド返信のみ対象 (thread_ts 必須)。bot の投稿・編集/削除等の subtype・自分の投稿は無視。
-	// thread_ts === ts は親メッセージ自身 (返信ではない) なので除外する。
-	if (
-		body.type !== "event_callback" ||
-		ev?.type !== "message" ||
-		ev.subtype ||
-		ev.bot_id ||
-		!ev.thread_ts ||
-		ev.thread_ts === ev.ts
-	) {
-		return c.body(null, 200);
-	}
 
 	// 親 ts (thread_ts) で銘柄を復元。slack_threads に無ければ対象外スレッド → 無視。
 	const row = await c.env.DB.prepare(
@@ -167,6 +183,15 @@ slack.post("/slack/events", async (c) => {
 
 	const text = (ev.text ?? "").trim();
 	if (!text) return c.body(null, 200);
+
+	// 受付の可視化: ユーザーの返信メッセージ自体 (ev.ts) に 👀 を付け「受け付けた/処理中」を即返す。
+	// 返答生成は数分かかるので、無反応だと届いたか分からない。best-effort で 200 応答は止めない。
+	if (ev.ts) {
+		const channel = ev.channel ?? row.channel;
+		c.executionCtx.waitUntil(
+			addReaction(c.env, { channel, timestamp: ev.ts, name: "eyes" }),
+		);
+	}
 
 	// 3秒制約: dispatch は投げっぱなしにして即 200 を返す。Action が返答を同スレッドに投稿する。
 	c.executionCtx.waitUntil(
@@ -213,3 +238,83 @@ slack.post("/slack/interact", async (c) => {
 		text: await fire(c.env, ticker, Date.now()),
 	});
 });
+
+// in-source tests (本番ビルドでは tree-shake される。vitest.config.ts 参照)。
+// D1/R2/dispatch を伴うハンドラ本体ではなく、そこから切り出した純粋ロジックだけを検証する。
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("ephemeral", () => {
+		it("response_type=ephemeral の JSON Response を返す", async () => {
+			const res = ephemeral("hello");
+			expect(await res.json()).toEqual({
+				response_type: "ephemeral",
+				text: "hello",
+			});
+		});
+	});
+
+	describe("tickerOptions", () => {
+		it("WATCHLIST 各コードを static_select option 形式にする", () => {
+			const opts = tickerOptions();
+			expect(opts).toHaveLength(WATCHLIST.length);
+			expect(opts[0]).toEqual({
+				text: { type: "plain_text", text: WATCHLIST[0] },
+				value: WATCHLIST[0],
+			});
+		});
+	});
+
+	describe("shouldHandleReply", () => {
+		const base = {
+			type: "event_callback",
+			event: { type: "message", ts: "200", thread_ts: "100" },
+		} as const;
+
+		it("人間によるスレッド返信なら true", () => {
+			expect(shouldHandleReply(base)).toBe(true);
+		});
+		it("bot 自身の投稿は無視 (無限ループ防止)", () => {
+			expect(
+				shouldHandleReply({ ...base, event: { ...base.event, bot_id: "B1" } }),
+			).toBe(false);
+		});
+		it("subtype 付き (編集/削除等) は無視", () => {
+			expect(
+				shouldHandleReply({
+					...base,
+					event: { ...base.event, subtype: "message_changed" },
+				}),
+			).toBe(false);
+		});
+		it("thread_ts が無い (スレッド外の新規投稿) は無視", () => {
+			expect(
+				shouldHandleReply({
+					type: "event_callback",
+					event: { type: "message", ts: "200" },
+				}),
+			).toBe(false);
+		});
+		it("thread_ts === ts (親メッセージ自身) は無視", () => {
+			expect(
+				shouldHandleReply({
+					...base,
+					event: { type: "message", ts: "100", thread_ts: "100" },
+				}),
+			).toBe(false);
+		});
+		it("event_callback 以外 (url_verification 等) は無視", () => {
+			expect(shouldHandleReply({ ...base, type: "url_verification" })).toBe(
+				false,
+			);
+		});
+		it("message 以外のイベント種別は無視", () => {
+			expect(
+				shouldHandleReply({
+					...base,
+					event: { ...base.event, type: "reaction_added" },
+				}),
+			).toBe(false);
+		});
+	});
+}

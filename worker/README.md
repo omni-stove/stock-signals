@@ -101,4 +101,5 @@ watchlist (4銘柄) と URL テンプレートは各 src (`timeseries.ts` / `new
 ## 確認用スクリプト (ローカル、読み取り専用)
 
 `scripts/valuation.ts` / `sector.ts` は Worker の `/latest` を叩いて表示する
-(要 `WORKER_URL` 環境変数)。`scripts/events.ts` は `config/events.yaml` を読む。常駐ではなく手動実行。
+(要 `WORKER_URL` 環境変数)。`scripts/event-context.sh` は SQ/指数リバランスを計算し、FOMC/日銀は
+Worker `/latest?kind=macro-events` から読んで近接イベントを1行に整形する。常駐ではなく手動実行。

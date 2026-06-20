@@ -31,7 +31,8 @@ import { parse as parseYaml } from "yaml";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const WORKER_URL = process.env.WORKER_URL;
-if (!WORKER_URL) {
+// vitest (in-source test) は CLI ではないので環境変数ガードを通さない。
+if (!WORKER_URL && !import.meta.vitest) {
 	console.error(
 		"環境変数 WORKER_URL が未設定です (例: WORKER_URL=https://xxx.workers.dev)",
 	);
@@ -378,7 +379,52 @@ async function main() {
 	for (const rep of reports) printReport(rep);
 }
 
-main().catch((e) => {
-	console.error(e);
-	process.exit(1);
-});
+// vitest 実行中 (in-source test) は CLI 本体を起動しない。
+if (!import.meta.vitest) {
+	main().catch((e) => {
+		console.error(e);
+		process.exit(1);
+	});
+}
+
+// in-source tests (vitest.config.ts 参照)
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("round", () => {
+		it("指定桁に丸め、null/非有限は null", () => {
+			expect(round(1.23456, 2)).toBe(1.23);
+			expect(round(1.005, 2)).toBe(1.0); // 浮動小数の現実 (1.00)
+			expect(round(null)).toBeNull();
+			expect(round(Number.POSITIVE_INFINITY)).toBeNull();
+		});
+	});
+
+	describe("avg", () => {
+		it("null/非有限を除いて平均する", () => {
+			expect(avg([1, 2, 3])).toBe(2);
+			expect(avg([1, null, 3])).toBe(2);
+			expect(avg([])).toBeNull();
+			expect(avg([null, null])).toBeNull();
+		});
+	});
+
+	describe("fmtPct / fmtRatio", () => {
+		it("符号付き % と倍率を整形し、null は －", () => {
+			expect(fmtPct(1.5)).toBe("+1.50%");
+			expect(fmtPct(-2)).toBe("-2.00%");
+			expect(fmtPct(null)).toBe("－");
+			expect(fmtRatio(12.3)).toBe("12.30x");
+			expect(fmtRatio(null)).toBe("－");
+		});
+	});
+
+	describe("toneLabel", () => {
+		it("地合い tone を日本語ラベルにする", () => {
+			expect(toneLabel("risk-on")).toContain("リスクオン");
+			expect(toneLabel("risk-off")).toContain("リスクオフ");
+			expect(toneLabel("neutral")).toContain("中立");
+			expect(toneLabel("unknown")).toContain("不明");
+		});
+	});
+}

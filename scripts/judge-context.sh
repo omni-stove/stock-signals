@@ -6,9 +6,10 @@
 #   - skill 本体に curl/gh を叩かせない。決定論的な fetch + 正規化 (鮮度判定・レンジ位置・
 #     MA 位置・出来高倍率・days_to_earnings) は workflow step (= このスクリプト) が担い、
 #     結果を 1 つの JSON として prompt 引数に埋める。skill は数値解釈と判断だけに集中する。
-#   - Issue 本文 (コンテキスト) はここでは扱わない。巨大かつ ticker ラベルで gh が引くだけで
-#     正規化不要なので、skill が直接 `gh issue list` で読む (step 2 のまま)。このスクリプトは
-#     Worker の数値データ (earnings/prices/daily/premarket) だけを担当する。
+#   - 銘柄コンテキスト (living document) も Worker /context (D1) から引いて context_body として
+#     同梱する。従来は skill が直接 `gh issue list` で Issue 本文を読んでいたが、context は D1 に
+#     移したため、この決定論的 read もこのスクリプトに集約する (skill の curl/gh 依存を外す)。
+#     正規化は不要なので本文は文字列のまま渡す。行が無い銘柄は context_body=null。
 #
 # 前提: GNU coreutils date + jq (GitHub Actions ubuntu-latest)。ローカル検証は
 #       `DATE=gdate bash scripts/judge-context.sh 285A`。
@@ -58,6 +59,18 @@ fetch() {
     echo "$out"
   fi
 }
+
+# --- 銘柄コンテキスト (living document) を /context から引く ------------------
+# 本文は正規化不要なので文字列のまま context_body に載せる。行が無い (初回未生成) 銘柄や
+# fetch 失敗は context_body=null とし、skill 側で "context: unavailable" に倒す。
+# テスト/オフライン用の注入口: CONTEXT_JSON があれば curl を叩かずそれを使う。
+if [[ -n "${CONTEXT_JSON:-}" ]]; then
+  CTX="$CONTEXT_JSON"
+else
+  CTX="$(curl -sf "${AUTH[@]}" "$WORKER_URL/context?code=$TICKER" 2>/dev/null || true)"
+fi
+echo "$CTX" | jq -e . >/dev/null 2>&1 || CTX='{}'
+CONTEXT_BODY="$(echo "$CTX" | jq -r '.body // empty')"
 
 EARNINGS="$(fetch "kind=earnings&code=$TICKER")"
 PRICES="$(fetch "kind=prices&code=$TICKER&n=20")"
@@ -219,9 +232,10 @@ fi
 jq -n \
   --arg ticker "$TICKER" \
   --arg today "$TODAY" \
+  --arg context_body "${CONTEXT_BODY:-}" \
   --argjson earnings "$EARNINGS_JSON" \
   --argjson premarket "$PREMARKET_JSON" \
   --argjson daily "$DAILY_JSON" \
   --argjson prices "$PRICES_JSON" \
   --argjson margin "$MARGIN_JSON" \
-  '{ticker:$ticker, today:$today, earnings:$earnings, premarket:$premarket, daily:$daily, prices:$prices, margin:$margin}'
+  '{ticker:$ticker, today:$today, context_body:(if $context_body=="" then null else $context_body end), earnings:$earnings, premarket:$premarket, daily:$daily, prices:$prices, margin:$margin}'

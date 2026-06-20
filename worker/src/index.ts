@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { runScheduled } from "./lib/cron";
 import type { Env } from "./lib/env";
 import { auth } from "./routes/auth";
+import { context } from "./routes/context";
 import { latest } from "./routes/latest";
 import { misc } from "./routes/misc";
 import { pull } from "./routes/pull";
@@ -32,11 +33,12 @@ app.use("*", auth);
 app.route("/run", run);
 app.route("/latest", latest);
 app.route("/", pull); // /pull, /pull-news
+app.route("/", context); // /context (GET=read, POST=upsert)
 app.route("/", misc); // /dispatch-test, /test-slack
 
 app.notFound((c) =>
 	c.text(
-		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
+		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /context?code= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
 		404,
 	),
 );

@@ -1,4 +1,4 @@
-# 銘柄コンテキスト(Issue本文)+ 価格/地合い → Claude Code Action で暴落プリモーテム → Slack通知。
+# 銘柄コンテキスト + 価格/地合い → Claude Code Action で暴落プリモーテム → Slack通知。
 #
 # signal-judge とは独立した補助ワークフロー。Slack の /crash スラッシュコマンドを受けた Worker が
 # repository_dispatch (event_type=crash-scenario、client_payload.ticker に単一銘柄) で起動する。
@@ -35,7 +35,6 @@ concurrency:
 
 permissions:
   contents: read
-  issues: read     # Issue本文(コンテキスト)を読むだけ。書き込みはしない。
   id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
 
 jobs:
@@ -75,8 +74,8 @@ jobs:
           # Worker (GitHub App "omnistove-internal-auth") 発の repository_dispatch の actor は
           # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
-          # 第2引数に需給イベント文脈 (SQ含む)、@ で始まる第3引数に数値コンテキスト JSON の
-          # パスを渡す。skill は JSON を Read し、Issue 本文だけ gh で読む。
+          # 第2引数に需給イベント文脈 (SQ含む)、@ で始まる第3引数に数値コンテキスト JSON
+          # (コンテキスト本文同梱) のパスを渡す。skill は JSON を Read するだけ。
           prompt: "/crash-scenario ${{ github.event.client_payload.ticker }} -- ${{ steps.events.outputs.ctx }} @${{ runner.temp }}/numctx.json"
           claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
         env:

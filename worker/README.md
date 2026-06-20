@@ -7,7 +7,7 @@ LLM 判定を GitHub Actions に移した。**ローカル常駐プロセスも�
 - 収集: kabutan / kioxia をスクレイプ (IR / per_ticker ニュース / prices / daily / fundamentals / premarket / earnings)
 - 保存: 記事本文JSON → **R2** (`ARTICLES`)、メタ・時系列・重複排除キー → **D1** (`DB`)
 - 発火: Cron Triggers (下記) + 手動 `/run`
-- 判定: 新規 IR/ニュースがあれば `repository_dispatch(signal-update)` で **GitHub Actions の context-builder** を起動 (`.claude/skills/context-builder`)。context-builder が `/pull` `/pull-news` で材料を引いて銘柄ごとの Issue 本文(コンテキスト)を更新し、続けて `repository_dispatch(signal-judge)` で signal-judge を起動。signal-judge が `/latest` を引いて buy/sell/hold を判定し Slack へ通知 (Issue は触らない)。
+- 判定: 新規 IR/ニュースがあれば `repository_dispatch(signal-update)` で **GitHub Actions の context-builder** を起動 (`.claude/skills/context-builder`)。context-builder が `/pull` `/pull-news` で材料を引いて銘柄ごとの **D1 コンテキスト** (`POST /context`、`contexts` テーブル) を更新し、更新後の本文全文を Slack のコンテキスト更新チャンネルへ投稿、続けて `repository_dispatch(signal-judge)` で signal-judge を起動。signal-judge が `/latest` と `/context` を引いて buy/sell を判定し Slack へ通知 (コンテキストは触らない)。
 
 ## エンドポイント
 
@@ -18,6 +18,8 @@ LLM 判定を GitHub Actions に移した。**ローカル常駐プロセスも�
 | `/pull?code=&since=&limit=` | IR だけ (source LIKE 'ir:%') を本文込み・fetched_at 昇順で返す |
 | `/pull-news?code=&since=&limit=` | per_ticker ニュースだけ (source LIKE 'kabutan:%') を本文込みで返す |
 | `/latest?kind=&code=&n=` | D1 から最新行 (prices/daily/fundamentals は時系列、premarket/earnings/ir も対応) |
+| `/context?code=` (GET) | 銘柄コンテキスト本文 + 2カーソル (ir/news) を返す。行なしは exists=false |
+| `/context` (POST) | `{code, body, ir_cursor?, news_cursor?}` で本文+カーソルを1行 upsert (全面上書き) |
 | `/dispatch-test?code=` | App認証→repository_dispatch の E2E 確認 (収集せず強制発火) |
 | `/test-slack` | Slack Webhook 疎通確認 |
 
@@ -93,6 +95,7 @@ pnpm exec wrangler deploy                                 # ★初回のみ手�
 | `fundamentals` | (ticker, date) | 予想PER/EPS・実績EPS |
 | `premarket_backdrop` | date (PK) | 前夜の地合い (SOX/Nasdaq/Dow/日経先物) |
 | `earnings` | ticker (PK) | 次回決算発表予定日の推定 (watchlist.yaml の代替 source of truth) |
+| `contexts` | ticker (PK) | 銘柄コンテキスト本文(markdown) + 2カーソル(ir/news の last_fetched_at)。本文とカーソルを1 upsert で原子的に前進 |
 
 冪等性は複合 PRIMARY KEY が担保し、`INSERT OR IGNORE`/`OR REPLACE` で二重取得を弾く。
 watchlist (4銘柄) と URL テンプレートは各 src (`timeseries.ts` / `news.ts` / `earnings.ts` の

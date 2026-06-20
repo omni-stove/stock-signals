@@ -31,6 +31,11 @@ export interface Env {
 	// signal-judge/crash-scenario の投稿先 = 返信を受けるチャンネル。Secret でも Var でも可。
 	//   設定: npx wrangler secret put SLACK_REPLY_CHANNEL  (または wrangler.toml の [vars])
 	SLACK_REPLY_CHANNEL?: string;
+	// 銘柄コンテキスト (contexts テーブル) 更新時の通知先 Slack チャンネルID。context-builder が
+	// living document を D1 に書いた後、その全文をここへ投稿する (人間が普段見ない内部ストアの
+	// 覗き窓。解析結果の SLACK_REPLY_CHANNEL とは別チャンネルに分離する)。未設定なら通知をスキップ。
+	//   設定: npx wrangler secret put SLACK_CONTEXT_CHANNEL  (または wrangler.toml の [vars])
+	SLACK_CONTEXT_CHANNEL?: string;
 	// 全エンドポイント (/health を除く) の簡易認証トークン (Secret)。未設定なら認証なし (dev用)。
 	//   設定: npx wrangler secret put SYNC_TOKEN
 	//   送り方は Authorization: Bearer <token> ヘッダ、または ?token=<token> クエリのどちらでも可。

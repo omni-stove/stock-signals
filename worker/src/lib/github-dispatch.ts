@@ -144,7 +144,7 @@ const INTRADAY_DEBOUNCE_MS = 15 * 60 * 1000;
 // デバウンス判定の純粋部分。lastByTicker は intraday_dispatch から引いた
 // 「銘柄 → 前回 dispatch 時刻(ms)」。窓以内の銘柄を間引いて実際に撃つ銘柄を返す。
 // 未記録 (last===undefined) は常に対象。DB アクセスと切り離してテストできるよう分離した。
-export function selectDebounceTargets(
+function selectDebounceTargets(
 	tickers: string[],
 	lastByTicker: Map<string, number>,
 	nowMs: number,

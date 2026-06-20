@@ -9,6 +9,8 @@
 # 設計:
 #   - Worker /latest への curl は judge-context.sh の fetch() が見る FETCH_<KIND>_JSON 環境変数で
 #     差し替える (注入口)。<KIND> は earnings/prices/daily/premarket/margin。
+#   - Worker /context への curl は CONTEXT_JSON 環境変数で差し替える (注入口)。未指定なら
+#     curl が失敗 → context_body=null に倒れる。
 #   - WORKER_URL は必須チェックがあるのでダミー値を渡す (注入があるので curl は走らない)。
 #   - 出力は JSON 1 行なので jq で値を取り出して突き合わせる。
 #   - @test の説明は ASCII のみ (bats 1.13 は非ASCIIのテスト名を実行できない)。
@@ -28,6 +30,7 @@ run_judge() {
   run env \
     WORKER_URL="http://test.invalid" \
     SYNC_TOKEN="" \
+    CONTEXT_JSON="${CONTEXT_JSON:-}" \
     FETCH_EARNINGS_JSON="${FETCH_EARNINGS_JSON:-}" \
     FETCH_PRICES_JSON="${FETCH_PRICES_JSON:-}" \
     FETCH_DAILY_JSON="${FETCH_DAILY_JSON:-}" \
@@ -53,6 +56,22 @@ daily_rows() {
   {"date":"2026-06-15","close":100,"high":110,"low":90,"ma5":100,"ma25":100,"volume":1000}
 ]}
 JSON
+}
+
+# === context_body (living document 同梱) ====================================
+
+# /context の body が context_body として同梱される
+@test "context: body from /context is bundled as context_body" {
+  CONTEXT_JSON='{"exists":true,"body":"living doc here","cursors":{"ir":null,"news":null}}' \
+    run_judge 285A 2026-06-20
+  [ "$(jqf '.context_body')" = "living doc here" ]
+}
+
+# /context に行が無い (body null) なら context_body=null
+@test "context: missing context row yields null context_body" {
+  CONTEXT_JSON='{"exists":false,"body":null,"cursors":{"ir":null,"news":null}}' \
+    run_judge 285A 2026-06-20
+  [ "$(jqf '.context_body')" = "null" ]
 }
 
 # === earnings: days_to_earnings ============================================

@@ -1,4 +1,4 @@
-# 新規IR/ニュース → Claude Code Action で「銘柄コンテキスト(Issue本文)」を更新 → signal-judge を起動。
+# 新規IR/ニュース → Claude Code Action で「銘柄コンテキスト(D1)」を更新 → signal-judge を起動。
 #
 # 2段アーキテクチャの前段。Worker (Cloudflare) が IR(8:30/12:30/18:30) と per_ticker ニュース
 # (IR時刻 + 場中5分毎)を取得し、どちらかに新規があった銘柄ごとに repository_dispatch
@@ -7,11 +7,12 @@
 #
 # 起動後は .claude/skills/context-builder が Worker /pull(IR) と /pull-news(ニュース) を
 # 「前回カーソル以降の新規だけ」本文込みで引き、銘柄の持続コンテキスト(経営判断/商品ラインナップ/
-# 技術ロードマップ + 直近の重大トピック要約)として Issue本文を更新する。判定(buy/sell)はここでは
-# 出さない。本文更新が終わったら repository_dispatch (event_type=signal-judge) で後段の判定を起動する。
+# 技術ロードマップ + 直近の重大トピック要約)として D1 (Worker /context) を更新する。判定(buy/sell)は
+# ここでは出さない。更新後は全文を Slack (SLACK_CONTEXT_CHANNEL) に投稿し、repository_dispatch
+# (event_type=signal-judge) で後段の判定を起動する。
 #
-# 判定は signal-judge.yml が担う(Issue本文+価格/地合いを読み Slackに通知)。本文には判定を書かない
-# ので、judge → context の編集ループは物理的に発生しない。
+# 判定は signal-judge.yml が担う(D1 コンテキスト+価格/地合いを読み Slackに通知)。コンテキストには
+# 判定を書かないので、judge → context の編集ループは物理的に発生しない。
 #
 # 認証は Claude サブスク (OAuth) 方式: ローカルで `claude setup-token` → 生成トークンを
 # リポジトリ Secret CLAUDE_CODE_OAUTH_TOKEN に設定する。
@@ -42,7 +43,7 @@ on:
           - "6981"  # 村田製作所
 
 # 銘柄ごとに同時実行を1本に抑え、走行中に同じ銘柄の新着が来たら古いジョブをキャンセルして
-# 新しい材料を含むジョブだけ走らせる。skill は最後に Issue を一括上書きするので、
+# 新しい材料を含むジョブだけ走らせる。skill は最後に D1 を一括上書き (本文+カーソルを原子的に) するので、
 # キャンセルされてもカーソル未更新 → 次回 dispatch で取りこぼし分も含めて再判定される (冪等)。
 concurrency:
   group: context-builder-${{ github.event.client_payload.ticker || inputs.ticker }}
@@ -50,7 +51,6 @@ concurrency:
 
 permissions:
   contents: write   # signal-judge を repos/.../dispatches で起動するのに書き込みトークンが要る
-  issues: write
   id-token: write   # claude-code-action@v1 が OIDC トークン取得に要求する
 
 jobs:
@@ -62,13 +62,13 @@ jobs:
       # Action 実行時は CLAUDE.md / AGENTS.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
-      # 既存 Issue + カーソル以降の新規 IR/ニュースを fetch + 正規化し、1 つの JSON に
-      # まとめて prompt に渡す。Issue 取得・カーソル抽出・/pull /pull-news の since 付き取得・
-      # 新規0判定・次カーソル算出は決定論的なのでここ (step) で完結させ、skill には curl/gh を
+      # 既存コンテキスト本文 + カーソル以降の新規 IR/ニュースを fetch + 正規化し、1 つの JSON に
+      # まとめて prompt に渡す。/context 取得・カーソル抽出・/pull /pull-news の since 付き取得・
+      # 新規0判定・次カーソル算出は決定論的なのでここ (step) で完結させ、skill には fetch を
       # 叩かせず「新規アイテムの取捨選択と本文の再生成」だけをさせる (signal-judge と同じ思想)。
-      # JSON は Issue 本文込みで巨大・特殊文字を含むので prompt に直接埋めず、ファイルに書いて
-      # skill にパスを渡す。skill はそのファイルを Read するだけ。status (no-issue / no-update /
-      # ok) で skill の分岐が決まる。
+      # JSON はコンテキスト本文込みで巨大・特殊文字を含むので prompt に直接埋めず、ファイルに書いて
+      # skill にパスを渡す。skill はそのファイルを Read するだけ。status (no-update / ok) で
+      # skill の分岐が決まる。
       - name: Build context input
         run: |
           ticker="${{ github.event.client_payload.ticker || inputs.ticker }}"
@@ -87,8 +87,8 @@ jobs:
           allowed_bots: "omnistove-internal-auth[bot]"
           # 第1引数=対象銘柄 (Worker発火時 client_payload.ticker / 手動時 inputs.ticker)。
           # @ で始まる第2引数=入力コンテキスト JSON (context-input.sh 出力) のパス。
-          # skill は JSON を Read し、新規があれば本文を再生成して gh issue edit で上書きし
-          # signal-judge を dispatch する。curl/gh での fetch はしない。
+          # skill は JSON を Read し、新規があれば本文を再生成してファイルに書き、POST /context で
+          # D1 を上書き → 全文を Slack に投稿 → signal-judge を dispatch する。入力の fetch はしない。
           prompt: "/context-builder ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/ctxin.json"
           # Actions の使い捨てサンドボックス内なので Bash を広く許可 (パイプ/heredoc/tmpfile書き込みが
           # 細かい Bash(gh:*) 指定だと弾かれ、リトライでターンを浪費して失敗していたため)。
@@ -99,3 +99,5 @@ jobs:
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          # context-builder が D1 更新後に living document 全文を投稿する Slack チャンネル。
+          SLACK_CONTEXT_CHANNEL: ${{ vars.SLACK_CONTEXT_CHANNEL }}

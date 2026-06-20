@@ -296,14 +296,16 @@ if (import.meta.vitest) {
 				"<p class='m-text__item'>決算説明会</p>",
 				"</a></li>",
 			].join("");
-			expect(parseList("advantest", html, "https://www.advantest.com")).toEqual([
-				{
-					url: "https://www.advantest.com/ja/news/a.html",
-					title: "決算説明会",
-					date: "2026-06-10",
-					category: "投資家の皆様へ",
-				},
-			]);
+			expect(parseList("advantest", html, "https://www.advantest.com")).toEqual(
+				[
+					{
+						url: "https://www.advantest.com/ja/news/a.html",
+						title: "決算説明会",
+						date: "2026-06-10",
+						category: "投資家の皆様へ",
+					},
+				],
+			);
 		});
 	});
 
@@ -317,14 +319,16 @@ if (import.meta.vitest) {
 				"<h3 class='news__title'>決算短信<i class='news__filesize'>(PDF)</i></h3>",
 				"</article>",
 			].join("");
-			expect(parseList("lasertec", html, "https://www.lasertec.co.jp")).toEqual([
-				{
-					url: "https://www.lasertec.co.jp/news/2026/a.html",
-					title: "決算短信",
-					date: "2026-06-09",
-					category: "IR",
-				},
-			]);
+			expect(parseList("lasertec", html, "https://www.lasertec.co.jp")).toEqual(
+				[
+					{
+						url: "https://www.lasertec.co.jp/news/2026/a.html",
+						title: "決算短信",
+						date: "2026-06-09",
+						category: "IR",
+					},
+				],
+			);
 		});
 	});
 
@@ -356,8 +360,7 @@ if (import.meta.vitest) {
 
 	describe("parseKioxiaArticle", () => {
 		it("h1 を title、main を body に取り空白を畳む", () => {
-			const html =
-				"<h1>新製品リリース</h1><main>本文   行1\n\n\n\n行2</main>";
+			const html = "<h1>新製品リリース</h1><main>本文   行1\n\n\n\n行2</main>";
 			const r = parseKioxiaArticle(html);
 			expect(r.title).toBe("新製品リリース");
 			expect(r.body).toBe("本文 行1\n\n行2");

@@ -176,3 +176,14 @@ export const macroEvents = sqliteTable(
 		index("idx_macro_events_date").on(t.date),
 	],
 );
+
+// ── contexts (銘柄 living document。PK = ticker) ─────────────────────────────
+// 従来 GitHub Issue 本文に持っていた living document を D1 に移したもの。本文(markdown)と
+// IR/news の2カーソルを同じ行に持ち、本文の全面上書きとカーソル前進を1 upsert で原子的に行う。
+export const contexts = sqliteTable("contexts", {
+	ticker: text("ticker").primaryKey(),
+	body: text("body").notNull(),
+	irLastFetchedAt: text("ir_last_fetched_at"),
+	newsLastFetchedAt: text("news_last_fetched_at"),
+	updatedAt: text("updated_at").notNull(),
+});

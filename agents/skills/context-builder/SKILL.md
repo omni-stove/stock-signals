@@ -1,19 +1,11 @@
 ---
 name: context-builder
-description: For a single ticker given as argument, pull newly-fetched IR AND per-ticker news from the Worker (each since its own cursor), then update that ticker's standing GitHub Issue body — a *living context* for the name (business shape, product lineup / tech roadmap, capital & management decisions, and a rolling summary of the latest material topics). It does NOT decide buy/sell. After updating the body it fires the signal-judge workflow. One-shot; designed for GitHub Actions, fired by the Worker on new IR or news.
+description: For a single ticker given as argument, pull newly-fetched IR AND per-ticker news from the Worker (each since its own cursor), then update that ticker's *living context* stored in D1 (Worker /context) — business shape, product lineup / tech roadmap, capital & management decisions, and a rolling summary of the latest material topics. It does NOT decide buy/sell. After updating the context it posts the full body to a Slack channel and fires the signal-judge workflow. One-shot; designed for GitHub Actions, fired by the Worker on new IR or news.
 ---
 
 # context-builder
 
-This skill maintains the **living context** for a ticker in its standing GitHub Issue. It reads
-newly-fetched IR and per-ticker news and folds what matters into the Issue body, so that the body
-is always the best single-page brief for understanding the name.
-
-**It does not produce a buy/sell call** — judging is the separate `signal-judge` skill.
-context-builder writes the Issue; signal-judge reads it and writes only to Slack.
-
-**The system is built for SWING trading (holding several days to a few weeks).** Frame the context
-toward that horizon — what a swing trader needs to know to read this name's next few weeks.
+Update one ticker's *living context* (the Worker's D1 `/context` store). Do not decide buy/sell. Write the context for a SWING-trading horizon (holding several days to a few weeks).
 
 ## Invocation
 
@@ -21,36 +13,26 @@ toward that horizon — what a swing trader needs to know to read this name's ne
 /context-builder 285A @/path/to/ctxin.json
 ```
 
-`<ticker>` is the symbol this run owns. The `@<path>` second argument is the **input context**
-JSON the workflow computed at launch (`scripts/context-input.sh` output) — the existing Issue, the
-two cursors, and the newly-fetched IR/news already pulled since each cursor. **Read this file** for
-all of it (the Issue, cursors, and items are already in the JSON).
-
-Fired by the Worker's `repository_dispatch` (`signal-update`, one dispatch per ticker) when new IR
-or news arrives, or manually.
+First arg `<ticker>` is the symbol this run owns. Second arg `@<path>` is the input JSON from `scripts/context-input.sh` (the existing context body, the two cursors, and the newly-fetched IR/news pulled since each cursor).
 
 ## Steps
 
 ### 1. Read the ticker's metadata
 
-Read the `<ticker>` entry from `config/watchlist.yaml` and cache `name` / `fair_per` / `sector`.
+Read the `<ticker>` entry from `config/watchlist.yaml`; take `name` / `fair_per` / `sector`.
 
-### 2. Read the input context JSON and branch on `status`
+### 2. Read the input JSON and branch on `status`
 
-Read the `@<path>` JSON. Its `status` decides the whole run:
+Read the `@<path>` JSON.
 
-- `status: "no-issue"` → no standing Issue for this ticker. Print `<ticker> no-issue (skipped)` and
-  exit. (Standing Issues are provisioned once, out of band.)
-- `status: "no-update"` → the Issue exists but **both** new-item counts are 0. Print
-  `<ticker> ir=0 news=0 (no update)` and exit (leave the Issue as-is, skip signal-judge).
-- `status: "ok"` → there are new items. Continue to step 3.
+- `status: "no-update"` → print `<ticker> ir=0 news=0 (no update)` and exit. Skip the Slack post and signal-judge.
+- `status: "ok"` → continue to step 3.
 
-For `status: "ok"`, the JSON carries everything you need:
+Shape of the `status: "ok"` JSON:
 ```
 {
   "status": "ok",
-  "issue_number": 12,
-  "issue_body": "<the WHOLE existing body — the context you are amending, not replacing wholesale>",
+  "context_body": "<the whole existing body; empty string on first run>",
   "cursors": {
     "ir":   { "current": "<old>", "next": "<advance to this>" },
     "news": { "current": "<old>", "next": "<advance to this>" }
@@ -60,46 +42,33 @@ For `status: "ok"`, the JSON carries everything you need:
   "news_items": [{ ... same shape, "ir_category" is null ... }]
 }
 ```
-`ir_items` are IR (official IR + TDnet + `rating`); `news_items` are per-ticker news. Both are
-already filtered to "since each cursor" and ordered oldest-first. Use `cursors.*.next` verbatim when
-you rewrite the body (step 5) — the workflow already computed the correct max `fetched_at` per kind
-and left a kind's cursor unchanged when it had 0 new rows.
 
-### 4. Read each new item and decide what is material to the *context*
+`ir_items` are IR (official IR + TDnet + `rating`); `news_items` are per-ticker news. Both are already filtered to since each cursor and ordered oldest-first. When `context_body` is empty (first run), build the body from scratch using the section structure in step 4. On POST (step 4), pass `cursors.*.next` verbatim.
 
-This is a context update, **not** a judgment. For each item in `ir_items` / `news_items` ask: *does
-this change how the name should be understood over the next weeks?* Fold in only what shifts the
-picture; drop pure restatements and noise.
+### 3. Read each new item and select what is material to the context
 
-What counts as material context (this is the substance the Issue is for):
-- **Management & capital decisions** — capex plans, capacity ramp up/down, M&A / alliances /
-  supply agreements, buybacks / dilution / financing, leadership or strategy changes.
-- **Product lineup & tech roadmap** — product generations and where each is in its cycle (e.g. BiCS
-  layer count, HBM entry, tester/inspection generations), wins/losses vs competitors, customer
-  concentration shifts.
-- **Structural supply/demand** — position in the price cycle, inventory, end-market demand signals
-  that persist beyond a day.
-- **Earnings & guidance** — results vs expectations and revised guidance (durable, not the tape
-  reaction).
+For each item, decide whether it changes how the name should be understood over the next weeks. Fold in only what shifts the picture; drop restatements and noise.
 
-What is **not** context (leave it out — it's signal-judge's transient input, not the Issue's):
-- A buy/sell call. Never write a recommendation into the body.
+Fold into the context:
+- **Management & capital decisions** — capex plans, capacity ramp up/down, M&A / alliances / supply agreements, buybacks / dilution / financing, leadership or strategy changes.
+- **Product lineup & tech roadmap** — product generations and their cycle position (e.g. BiCS layer count, HBM entry, tester/inspection generations), wins/losses vs competitors, customer-concentration shifts.
+- **Structural supply/demand** — position in the price cycle, inventory, end-market demand signals that persist beyond a day.
+- **Earnings & guidance** — results vs expectations and revised guidance (durable facts, not the tape reaction).
+
+Keep out of the body:
+- A buy/sell recommendation.
 - Intraday price moves, PTS premiums, single-session volume spikes.
-- Stale rehashes of already-recorded facts.
+- Rehashes of already-recorded facts.
 
-**Recency:** treat items by `published_at`. Recent material updates the relevant section AND the
-rolling "直近の重大トピック" list. Items older than ~30 days are background only — fold into the
-structural sections if genuinely new to the body, but never into the rolling-topics list.
+Treat items by `published_at`. A recent material update revises both the relevant section AND the "直近の重大トピック" list. Items older than ~30 days fold into the structural sections only, never the topics list.
 
-**証券会社レーティング (`ir_category="rating"`) is the exception to the 30-day rule** — its 目標株価 is
-a 6–12-month view, so it goes in the **## 証券会社レーティング** section, not the rolling-topics list.
+Securities ratings (`ir_category="rating"`) are the exception to the 30-day rule: the target price is a 6–12-month view, so put it in the **## 証券会社レーティング** section, not the topics list.
 
-### 5. Regenerate and overwrite the Issue body
+### 4. Regenerate the whole body to a file, then POST it
 
-Rebuild the whole body (not incremental edits) and overwrite with `gh issue edit`, preserving the
-section structure below.
+Rebuild the whole body (not incremental edits), keep the section structure below, and write it to a file (e.g. `/tmp/<ticker>-context.md`).
 
-**Body structure** (Japanese; keep these headings stable — signal-judge reads them):
+Body structure (Japanese; keep these headings stable — signal-judge reads them):
 
 ```markdown
 # [<ticker> <name>] 銘柄コンテキスト
@@ -125,21 +94,34 @@ section structure below.
 
 ## 決算・ガイダンス
 <latest results vs expectations, current guidance, known next-earnings considerations — facts only>
-
-<!-- cursor: ir_last_fetched_at=<cursors.ir.next> -->
-<!-- cursor: news_last_fetched_at=<cursors.news.next> -->
-<!-- managed-by: context-builder skill. Auto-updated. Do not edit the body by hand. -->
 ```
 
-**Write `cursors.ir.next` / `cursors.news.next` verbatim** — the workflow already advanced each to
-the max `fetched_at` of the rows it pulled, or left it unchanged when that kind had 0 new rows.
+POST the body and the advanced cursors to the Worker in one call (upsert). Pass `cursors.ir.next` / `cursors.news.next` verbatim. `$WORKER_URL` / `$SYNC_TOKEN` are in the job env.
 
-Overwrite with `gh issue edit <issue_number> --body-file <file>` (use `issue_number` from the JSON).
+```
+jq -n --arg code "<ticker>" --rawfile body /tmp/<ticker>-context.md \
+  --arg ir "<cursors.ir.next>" --arg news "<cursors.news.next>" \
+  '{code:$code, body:$body, ir_cursor:(if $ir=="" then null else $ir end), news_cursor:(if $news=="" then null else $news end)}' \
+  | curl -sf -X POST -H "Authorization: Bearer $SYNC_TOKEN" -H 'Content-Type: application/json' \
+      --data @- "$WORKER_URL/context"
+```
+
+### 5. Post the full body to Slack
+
+After the POST succeeds, send the full body to the context channel. Use the Worker's `/slack/post` with `channel` set explicitly to `$SLACK_CONTEXT_CHANNEL`. Do not pass `thread_ts` or `ticker`.
+
+```
+jq -n --arg ch "$SLACK_CONTEXT_CHANNEL" --rawfile text /tmp/<ticker>-context.md \
+  '{channel:$ch, text:$text}' \
+  | curl -sf -X POST -H "Authorization: Bearer $SYNC_TOKEN" -H 'Content-Type: application/json' \
+      --data @- "$WORKER_URL/slack/post"
+```
+
+If `SLACK_CONTEXT_CHANNEL` is empty, skip the Slack post (do not fail the run).
 
 ### 6. Fire signal-judge
 
-After the body is updated (step 5 ran), trigger the `signal-judge` workflow via a
-`repository_dispatch` from inside this job (needs `contents: write` on the workflow token):
+Trigger the `signal-judge` workflow via `repository_dispatch` from inside this job (needs `contents: write` on the workflow token):
 
 ```
 gh api "repos/${GITHUB_REPOSITORY}/dispatches" \
@@ -149,9 +131,8 @@ gh api "repos/${GITHUB_REPOSITORY}/dispatches" \
 
 ## Output style (stdout)
 
-A single-line summary, no narration:
+One-line summary:
 ```
-<ticker> ir=<n> news=<n> → context updated (issue#<n>), signal-judge dispatched
+<ticker> ir=<n> news=<n> → context updated (D1), slack posted, signal-judge dispatched
 ```
-On zero new (both kinds): `<ticker> ir=0 news=0 (no update)`.
-On missing Issue: `<ticker> no-issue (skipped)`.
+When both kinds have zero new items: `<ticker> ir=0 news=0 (no update)`.

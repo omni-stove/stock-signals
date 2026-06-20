@@ -213,3 +213,22 @@ CREATE TABLE IF NOT EXISTS macro_events (
 );
 CREATE INDEX IF NOT EXISTS idx_macro_events_date
   ON macro_events (date);
+
+-- ── 銘柄コンテキスト (living document) ──────────────────────────────────────
+-- 従来 GitHub Issue 本文に持っていた「銘柄の living document」(事業の骨格 / 商品ライン
+-- ナップ・技術ロードマップ / 経営判断・資本政策 / 直近の重大トピック / 証券会社レーティング /
+-- 決算・ガイダンス) を D1 に移したもの。人間が直接読む UI ではなく、context-builder が
+-- 書き、signal-judge / crash-scenario / slack-reply が読む内部ストア。
+--
+-- 銘柄ごと1行 (PK=ticker, INSERT OR REPLACE で本文を全面上書き)。本文(markdown)と、
+-- 次回取得開始点となる2カーソル (IR / news の last_fetched_at) を同じ行に持つ。本文の
+-- 上書きとカーソル前進を1回の upsert で原子的に行うことで、本文更新は成ったがカーソルが
+-- 進まない (= 二重取得) / カーソルだけ進んで本文が古い (= 取りこぼし) を構造的に排除する。
+-- カーソル未確立 (初回) は NULL → /pull は since 省略で直近 backlog を引く。
+CREATE TABLE IF NOT EXISTS contexts (
+  ticker               TEXT PRIMARY KEY,   -- 銘柄コード (例 285A)
+  body                 TEXT NOT NULL,      -- living document 本体 (markdown)
+  ir_last_fetched_at   TEXT,               -- IR カーソル (次回 /pull の since)。未確立は NULL
+  news_last_fetched_at TEXT,               -- news カーソル (次回 /pull-news の since)。未確立は NULL
+  updated_at           TEXT NOT NULL       -- 最終更新時刻 (ISO8601)
+);

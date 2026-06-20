@@ -1,13 +1,13 @@
-# 銘柄コンテキスト(Issue本文)+ 価格/地合い → Claude Code Action でスイング判定 → Slack通知。
+# 銘柄コンテキスト + 価格/地合い → Claude Code Action でスイング判定 → Slack通知。
 #
-# 2段アーキテクチャの後段。前段 context-builder が銘柄の Issue本文(持続コンテキスト)を更新したあと、
+# 2段アーキテクチャの後段。前段 context-builder が銘柄の持続コンテキストを更新したあと、
 # repository_dispatch (event_type=signal-judge、client_payload.ticker に単一銘柄) でこのワークフローを
 # 起動する。手動でも実行できる。
 #
-# 起動後は .claude/skills/signal-judge が対象銘柄の Issue本文(context-builder が育てたコンテキスト)を
+# 起動後は .claude/skills/signal-judge が対象銘柄のコンテキスト(context-builder が育てたもの)を
 # 読み、Worker /latest で価格/日足/地合い/決算日/信用残を引いて buy/sell の方向を1本にまとめ、
-# Slack に通知する。**このワークフローは Issue を一切書き換えない**(出力は Slack のみ)。
-# context-builder が Issue本文を書き、signal-judge が Slack を書く、という役割の固定により、
+# Slack に通知する。**このワークフローはコンテキストを一切書き換えない**(出力は Slack のみ)。
+# context-builder がコンテキストを書き、signal-judge が Slack を書く、という役割の固定により、
 # judge → context の編集ループは発生しない。
 #
 # 認証は Claude サブスク (OAuth) 方式: ローカルで `claude setup-token` → 生成トークンを
@@ -24,7 +24,7 @@
 name: signal-judge
 
 on:
-  # context-builder が Issue本文(コンテキスト)を更新したあとに銘柄ごとに叩く。
+  # context-builder がコンテキストを更新したあとに銘柄ごとに叩く。
   repository_dispatch:
     types: [signal-judge]
   workflow_dispatch:       # 手動実行 (検証用)。対象銘柄を選んで実行する。
@@ -48,7 +48,6 @@ concurrency:
 
 permissions:
   contents: read
-  issues: read     # Issue本文(コンテキスト)を読むだけ。書き込みはしない。
   id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
 
 jobs:
@@ -70,12 +69,11 @@ jobs:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-      # Worker の数値データ (earnings/prices/daily/premarket/margin) を fetch + 正規化し、1 つの JSON に
-      # まとめて prompt に渡す。鮮度判定・20日レンジ位置・MA位置・出来高倍率・days_to_earnings は
-      # ここ (決定論的) で計算し、skill には curl を叩かせず数値解釈と判断だけをさせる。
-      # Issue 本文 (コンテキスト) は巨大かつ正規化不要なので skill が直接 gh で読む (このstepの対象外)。
-      # JSON は複数行・特殊文字を含むので prompt に直接埋めず、ファイルに書いて skill に
-      # パスを渡す。skill はそのファイルを Read するだけ (curl を叩かない)。
+      # Worker の数値データ (earnings/prices/daily/premarket/margin) と銘柄コンテキストを fetch +
+      # 正規化し、1 つの JSON にまとめて prompt に渡す。鮮度判定・20日レンジ位置・MA位置・出来高倍率・
+      # days_to_earnings はここ (決定論的) で計算し、コンテキスト本文は context_body として同梱する。
+      # skill には curl を叩かせず数値解釈と判断だけをさせる。JSON は複数行・特殊文字を含むので prompt に
+      # 直接埋めず、ファイルに書いて skill にパスを渡す。skill はそのファイルを Read するだけ。
       - name: Build numeric context
         run: |
           ticker="${{ github.event.client_payload.ticker || inputs.ticker }}"
@@ -94,8 +92,8 @@ jobs:
           # github-actions[bot] も許すため両方を列挙する。既定では Bot起動を Action が弾く。
           allowed_bots: "claude,github-actions[bot]"
           # 発火時は client_payload.ticker、手動実行時は inputs.ticker。@ で始まる 2 引数は
-          # 需給イベント文脈と数値コンテキストのファイルパス。skill は両方を Read し、Issue 本文だけ
-          # gh で読む。自由文字列を prompt に素埋めしないことで -- / @ の衝突を避ける。
+          # 需給イベント文脈と数値コンテキスト(コンテキスト本文同梱)のファイルパス。skill は両方を
+          # Read するだけ。自由文字列を prompt に素埋めしないことで -- / @ の衝突を避ける。
           prompt: "/signal-judge ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/eventctx.txt @${{ runner.temp }}/numctx.json"
           # Actions の使い捨てサンドボックス内なので Bash を広く許可。numctx.json を read するため Read も許可。
           claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"

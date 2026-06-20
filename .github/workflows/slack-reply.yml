@@ -1,4 +1,4 @@
-# Slack スレッド返信 → 銘柄コンテキスト(Issue本文)+価格/地合い+スレッド履歴 → Claude Code Action で
+# Slack スレッド返信 → 銘柄コンテキスト+価格/地合い+スレッド履歴 → Claude Code Action で
 # 返答生成 → 同じ Slack スレッドへ投稿。
 #
 # signal-judge / crash-scenario が Bot トークン (Worker /slack/post) で投稿した解析結果に、
@@ -34,7 +34,6 @@ concurrency:
 
 permissions:
   contents: read
-  issues: read     # Issue本文(コンテキスト)を読むだけ。書き込みはしない。
   id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
 
 jobs:
@@ -95,8 +94,8 @@ jobs:
           # Worker (GitHub App "omnistove-internal-auth") 発の repository_dispatch の actor は
           # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
-          # @ で始まる第2引数にスレッドJSON、第3引数に数値コンテキスト JSON のパスを渡す。
-          # skill は両 JSON を Read し、Issue 本文だけ gh で読む。返答は /slack/post で同スレッドへ。
+          # @ で始まる第2引数にスレッドJSON、第3引数に数値コンテキスト JSON (コンテキスト本文同梱) の
+          # パスを渡す。skill は両 JSON を Read するだけ。返答は /slack/post で同スレッドへ。
           prompt: "/slack-reply ${{ github.event.client_payload.ticker }} -- @${{ runner.temp }}/thread.json @${{ runner.temp }}/numctx.json"
           claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
         env:

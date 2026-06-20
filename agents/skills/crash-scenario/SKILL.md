@@ -1,6 +1,6 @@
 ---
 name: crash-scenario
-description: For a single ticker given as argument, read that ticker's standing GitHub Issue body (the living context maintained by context-builder) together with current price/daily/premarket/earnings/margin data from the Worker, then enumerate the concrete ways this name could crash — both ticker-specific (earnings miss, demand air-pocket, competition, regulation) and macro (SOX rout, rates, risk-off) — each with a trigger, leading indicators, an estimated drop, and a defensive move, and post the set to Slack. It is a pre-mortem, not a buy/sell call; it does NOT modify the Issue. One-shot; run manually or on a schedule.
+description: For a single ticker given as argument, read that ticker's living context together with current price/daily/premarket/earnings/margin data from the Worker, then enumerate the concrete ways this name could crash — both ticker-specific (earnings miss, demand air-pocket, competition, regulation) and macro (SOX rout, rates, risk-off) — each with a trigger, leading indicators, an estimated drop, and a defensive move, and post the set to Slack. It is a pre-mortem, not a buy/sell call; it does NOT modify the context. One-shot; run manually or on a schedule.
 ---
 
 # crash-scenario
@@ -55,15 +55,12 @@ Run manually or on a schedule.
    **バリュエーション剥落** scenario is live (a multiple that rich falls fast when the story cracks).
    `sector`/`sector_role` tell you the systematic exposure (semiconductor ⇒ SOX-driven; the role
    — memory / tester / inspection / components — says which part of the cycle hits first).
-2. **Living context (the Issue body) — your primary fundamental input, read it in full:**
-   ```
-   gh issue list --label ir-report --label "ticker:<ticker>" --state open --json number,body --limit 1
-   ```
-   Mine it for the *fault lines*, not the bull case: customer concentration, 単一製品依存, 受注の
-   先食い, 設備投資の前倒し, 過去の下方修正パターン, レーティングの強気度 (高すぎる目標株価は剥落余地).
-   The **直近の重大トピック** list shows what the market is currently pricing — a crash often comes
-   from *that* very topic disappointing. No Issue → say `context: unavailable` and build scenarios
-   from price + sector backdrop + the generic fault lines for this 業種.
+2. **Living context (`context_body`) — your primary fundamental input, read it in full.** Mine it
+   for the *fault lines*, not the bull case: customer concentration, 単一製品依存, 受注の先食い,
+   設備投資の前倒し, 過去の下方修正パターン, レーティングの強気度 (高すぎる目標株価は剥落余地). The
+   **直近の重大トピック** list shows what the market is currently pricing — a crash often comes from
+   *that* very topic disappointing. Null → say `context: unavailable` and build scenarios from price
+   + sector backdrop + the generic fault lines for this 業種.
 3. **Numeric context (`@<path>`)** — already normalized, just interpret. Each block has a
    `status`; skip any that's `insufficient`/`stale`/`unavailable`. Key fields: `daily.range_pct`
    (0 = bottom of 20-day range, 100 = top — high range位置 = more air below), `daily.ma_position`,
@@ -78,7 +75,7 @@ Run manually or on a schedule.
 also tells you how the unwind looks: a parabolic run (large `ma25_dev_pct`, thinning `vol_x_20d`)
 is the *setup* for a sharp mean-reversion scenario; high `range_pct` means there's air below; a
 near `days_to_earnings` is a scheduled binary; built-up 買残 is the fuel that turns a dip into a
-cascade. Tie every scenario to something concrete in the inputs or the Issue — no generic
+cascade. Tie every scenario to something concrete in the inputs or the living context — no generic
 "市況が悪化したら下がる."
 
 Calibration traps:
@@ -111,7 +108,7 @@ curl -s -X POST "$WORKER_URL/slack/post" \
   "text": "⚠️ <ticker> <name> 暴落プリモーテム (<N> scenarios)",
   "blocks": [ ... a header, then one block per scenario: 「<順位>. <名前> [固有/マクロ] 確度:<高/中/低>」
               followed by きっかけ / 先行サイン / 想定下落 / 防御 lines, then a 総括 block:
-              dominant 1–2 risks + the one indicator to watch this week, then the Issue link ... ]
+              dominant 1–2 risks + the one indicator to watch this week ... ]
 }'
 ```
 

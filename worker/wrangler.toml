@@ -62,7 +62,7 @@ bucket_name = "stock-signals-articles"
 [vars]
 USER_AGENT = "stock-signals-bot/0.1 (personal research; contact: admin@omnistove.com)"
 MIN_INTERVAL_MS = "5000"
-# GitHub App (omnistove-internal-auth) で ir-report を repository_dispatch 起動する。
+# GitHub App (omnistove-internal-auth) で signal-update を repository_dispatch 起動する。
 # App ID と installation ID は秘密でないので vars。private key だけ Secret:
 #   npx wrangler secret put GH_APP_PRIVATE_KEY   (.pem の中身を貼る)
 GH_APP_ID = "1625136"

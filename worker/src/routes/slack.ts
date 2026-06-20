@@ -156,7 +156,7 @@ const REPLY_EVENT_TYPE = "slack-reply";
 // POST /slack/events : Slack Events API の受け口 (message.channels)。
 // 解析結果 (signal-judge / crash-scenario) の投稿にスレッド返信されたら、その投稿の ts で
 // slack_threads を引いて銘柄を復元し、slack-reply ワークフローを dispatch する。Action が
-// Issue本文+数値+スレッド履歴を読んで返答を生成し、同スレッドへ投稿する。
+// 銘柄コンテキスト+数値+スレッド履歴を読んで返答を生成し、同スレッドへ投稿する。
 //
 // 制約: Slack は 3 秒以内の 200 応答を要求し、遅いと再送→多重発火する。dispatch は
 // waitUntil でバックグラウンドに回し、本体は即 200 を返す。無限ループ防止のため bot 自身の

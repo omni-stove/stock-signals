@@ -1,6 +1,6 @@
 ---
 name: slack-reply
-description: For a single ticker given as argument, answer a user's in-thread Slack reply to a prior analysis (signal-judge buy/sell call or crash-scenario pre-mortem). Read that ticker's standing GitHub Issue body (the living context maintained by context-builder), the current price/daily/premarket/earnings/margin numbers from the Worker, and the full Slack thread so far, then reply in the same thread. It does NOT modify the Issue — output goes back to the Slack thread only. One-shot; fired by the Worker when a user replies under an analysis post.
+description: For a single ticker given as argument, answer a user's in-thread Slack reply to a prior analysis (signal-judge buy/sell call or crash-scenario pre-mortem). Read that ticker's living context, the current price/daily/premarket/earnings/margin numbers from the Worker, and the full Slack thread so far, then reply in the same thread. It does NOT modify the context — output goes back to the Slack thread only. One-shot; fired by the Worker when a user replies under an analysis post.
 ---
 
 # slack-reply
@@ -31,12 +31,9 @@ analysis post and any back-and-forth. `@<path>` is the **numeric context** JSON 
 
 1. **The Slack thread** — read every message. The first is your original analysis (the call /
    the pre-mortem); the rest is the conversation. The user's latest message is the question.
-2. **Living context (the Issue body) — your primary fundamental input, read it in full:**
-   ```
-   gh issue list --label ir-report --label "ticker:<ticker>" --state open --json number,body --limit 1
-   ```
-   Same Issue signal-judge/crash-scenario read. The **直近の重大トピック** list is freshest. No Issue →
-   say `context: unavailable` and answer on price + backdrop alone.
+2. **Living context (`context_body`) — your primary fundamental input, read it in full.** Same
+   context signal-judge/crash-scenario read. The **直近の重大トピック** list is freshest. Null → say
+   `context: unavailable` and answer on price + backdrop alone.
 3. **Numeric context** (`@<path>`) — current price/MA/range position, days_to_earnings, 信用残,
    premarket backdrop (SOX etc.). The same numbers the original call used.
 4. **Metadata** — `<ticker>` in `config/watchlist.yaml` for `name`/`sector`/`fair_per`.

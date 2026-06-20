@@ -1,11 +1,10 @@
-# PR / main push の品質ゲート。共通アクション `.github/actions/verify` で `pnpm run verify` を回す。
+# PR の品質ゲート。共通アクション `.github/actions/verify` で `pnpm run verify` を回す。
+# main マージ時の verify は PR で検証済みのコミットの二重実行になるため走らせない。
 # dependabot の PR は dependabot-automerge.yml 側で verify+マージするのでここでは走らせない (二重実行回避)。
 name: ci
 
 on:
   pull_request:
-  push:
-    branches: [main]
   workflow_dispatch: {}
 
 concurrency:

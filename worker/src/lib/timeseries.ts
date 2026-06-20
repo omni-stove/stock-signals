@@ -9,6 +9,8 @@
 // 銘柄追加時は WATCHLIST を更新する。
 
 import * as cheerio from "cheerio";
+import { db } from "./db";
+import { daily, fundamentals, prices } from "./schema";
 import { fetchHtml, sleep } from "./utils";
 
 export interface TimeseriesEnv {
@@ -105,24 +107,23 @@ async function collectPricesOne(
 	const fetched_at = new Date().toISOString();
 	// 値付き時刻があればそれを、無ければ取得時刻を5分枠に丸めて冪等キーにする。
 	const slot = slot5min(p.quote_time || fetched_at);
-	const r = await env.DB.prepare(
-		`INSERT OR IGNORE INTO prices
-       (ticker, slot, source, price, change, change_pct, volume, quote_time, pts_price, pts_time, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-		.bind(
-			code,
+	// INSERT OR IGNORE 相当 = onConflictDoNothing。(ticker, slot) が既存なら無視。
+	const r = await db(env.DB)
+		.insert(prices)
+		.values({
+			ticker: code,
 			slot,
-			`${SITE}:${code}`,
-			p.price,
-			p.change,
-			p.change_pct,
-			p.volume,
-			p.quote_time,
-			p.pts_price,
-			p.pts_time,
-			fetched_at,
-		)
+			source: `${SITE}:${code}`,
+			price: p.price,
+			change: p.change,
+			changePct: p.change_pct,
+			volume: p.volume,
+			quoteTime: p.quote_time,
+			ptsPrice: p.pts_price,
+			ptsTime: p.pts_time,
+			fetchedAt: fetched_at,
+		})
+		.onConflictDoNothing()
 		.run();
 	const written = r.meta.changes ?? 0;
 	return { written, skipped: written ? 0 : 1 };
@@ -181,27 +182,31 @@ async function collectDailyOne(
 	const source = `${SITE}:${code}`;
 
 	// (ticker, date) PK の INSERT OR IGNORE で重複日付を自動スキップ。
-	const stmt = env.DB.prepare(
-		`INSERT OR IGNORE INTO daily
-       (ticker, date, source, open, high, low, close, change, change_pct, volume, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	// 1文に全行をまとめると D1/SQLite のバインド変数上限 (100個) を超えるため、旧コードの
+	// env.DB.batch() と同じく「1行=1ステートメント」を db.batch() で一括投入する。
+	const d = db(env.DB);
+	const stmts = bars.map((b) =>
+		d
+			.insert(daily)
+			.values({
+				ticker: code,
+				date: b.date,
+				source,
+				open: b.open,
+				high: b.high,
+				low: b.low,
+				close: b.close,
+				change: b.change,
+				changePct: b.change_pct,
+				volume: b.volume,
+				fetchedAt: fetched_at,
+			})
+			.onConflictDoNothing(),
 	);
-	const batch = bars.map((b) =>
-		stmt.bind(
-			code,
-			b.date,
-			source,
-			b.open,
-			b.high,
-			b.low,
-			b.close,
-			b.change,
-			b.change_pct,
-			b.volume,
-			fetched_at,
-		),
+	// batch() は最低1要素を要求する (型上 [first, ...rest])。bars.length===0 は冒頭で return 済み。
+	const results = await d.batch(
+		stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]],
 	);
-	const results = await env.DB.batch(batch);
 	let written = 0;
 	for (const r of results) written += r.meta.changes ?? 0;
 	return { written, skipped: bars.length - written };
@@ -308,25 +313,38 @@ async function collectFundamentalsOne(
 	const f = parseKabutanFundamentals(html);
 	const fetched_at = new Date().toISOString();
 	const date = fetched_at.slice(0, 10);
-	// 同日複数回は最新値で上書きしたいので OR REPLACE。
-	await env.DB.prepare(
-		`INSERT OR REPLACE INTO fundamentals
-       (ticker, date, source, per, pbr, dividend_yield, forecast_eps, forecast_period, actual_eps, actual_period, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-		.bind(
-			code,
-			date,
-			`${SITE}:${code}`,
-			f.per,
-			f.pbr,
-			f.dividend_yield,
-			f.forecast_eps,
-			f.forecast_period,
-			f.actual_eps,
-			f.actual_period,
-			fetched_at,
-		)
+	// 同日複数回は最新値で上書きしたいので、PK (ticker, date) 衝突時に全カラム上書き
+	// (旧 INSERT OR REPLACE と同じ「最新が勝つ」効果)。
+	const row = {
+		ticker: code,
+		date,
+		source: `${SITE}:${code}`,
+		per: f.per,
+		pbr: f.pbr,
+		dividendYield: f.dividend_yield,
+		forecastEps: f.forecast_eps,
+		forecastPeriod: f.forecast_period,
+		actualEps: f.actual_eps,
+		actualPeriod: f.actual_period,
+		fetchedAt: fetched_at,
+	};
+	await db(env.DB)
+		.insert(fundamentals)
+		.values(row)
+		.onConflictDoUpdate({
+			target: [fundamentals.ticker, fundamentals.date],
+			set: {
+				source: row.source,
+				per: row.per,
+				pbr: row.pbr,
+				dividendYield: row.dividendYield,
+				forecastEps: row.forecastEps,
+				forecastPeriod: row.forecastPeriod,
+				actualEps: row.actualEps,
+				actualPeriod: row.actualPeriod,
+				fetchedAt: row.fetchedAt,
+			},
+		})
 		.run();
 	return { written: 1, skipped: 0 };
 }

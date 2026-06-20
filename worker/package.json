@@ -13,10 +13,12 @@
   },
   "dependencies": {
     "cheerio": "^1.0.0",
+    "drizzle-orm": "^0.45.2",
     "hono": "^4.12.26"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240000.0",
+    "drizzle-kit": "^0.31.10",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9",
     "wrangler": "^4.0.0"

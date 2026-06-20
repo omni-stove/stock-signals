@@ -11,6 +11,8 @@
 // 全ソース UTF-8 なので TextDecoder で十分。
 
 import * as cheerio from "cheerio";
+import { db } from "./db";
+import { earnings } from "./schema";
 import { WATCHLIST } from "./timeseries";
 import { fetchHtml, sleep } from "./utils";
 
@@ -120,10 +122,14 @@ async function saveEarnings(
 	next_date: string | null,
 	detail: string,
 ): Promise<void> {
-	await env.DB.prepare(
-		`INSERT OR REPLACE INTO earnings (ticker, next_date, detail, fetched_at) VALUES (?, ?, ?, ?)`,
-	)
-		.bind(ticker, next_date, detail, new Date().toISOString())
+	const fetched_at = new Date().toISOString();
+	await db(env.DB)
+		.insert(earnings)
+		.values({ ticker, nextDate: next_date, detail, fetchedAt: fetched_at })
+		.onConflictDoUpdate({
+			target: earnings.ticker,
+			set: { nextDate: next_date, detail, fetchedAt: fetched_at },
+		})
 		.run();
 }
 
@@ -147,4 +153,90 @@ export async function collectEarnings(
 		await sleep(interval);
 	}
 	return results;
+}
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	// kabutan finance ページの四半期業績テーブルを最小再現する。
+	// 「決算期」「発表日」ヘッダを持ち、実績四半期行 (YY.MM-MM + 発表日) が並ぶ。
+	// 予想行 (「予」付き) と「前年同期比」注記行は推定の土台から除外される。
+	const financeHtml = (
+		rows: Array<[label: string, announce: string]>,
+	): string =>
+		[
+			"<table><thead><tr><th>決算期</th><th>売上高</th><th>発表日</th></tr></thead><tbody>",
+			...rows.map(
+				([label, announce]) =>
+					`<tr><th>${label}</th><td>1,000</td><td>${announce}</td></tr>`,
+			),
+			"</tbody></table>",
+		].join("");
+
+	describe("parseQLabel", () => {
+		it("四半期ラベル YY.MM-MM を分解する", () => {
+			expect(parseQLabel("25.04-06")).toEqual({
+				y: 2025,
+				startM: 4,
+				endM: 6,
+				raw: "25.04-06",
+			});
+		});
+		it("形式に合わない注記行は null", () => {
+			expect(parseQLabel("前年同期比")).toBeNull();
+			expect(parseQLabel("通期予")).toBeNull();
+		});
+	});
+
+	describe("parseAnnounce", () => {
+		it("YY/MM/DD を 20YY-MM-DD にする", () => {
+			expect(parseAnnounce("26/04/30")).toBe("2026-04-30");
+		});
+		it("空・null・未定は null", () => {
+			expect(parseAnnounce(null)).toBeNull();
+			expect(parseAnnounce("")).toBeNull();
+			expect(parseAnnounce("未定")).toBeNull();
+		});
+	});
+
+	describe("extractQuarterRows", () => {
+		it("実績行だけ拾い、予想行と注記行を除外する", () => {
+			const html = financeHtml([
+				["25.04-06", "25/08/06"],
+				["25.07-09", "25/11/05"],
+				["前年同期比", ""], // parseQLabel が null → スキップ
+				["26.04-06予", "26/08/05"], // 「予」付き → スキップ
+			]);
+			const rows = extractQuarterRows(html);
+			expect(rows.map((r) => r.q.raw)).toEqual(["25.04-06", "25.07-09"]);
+		});
+	});
+
+	describe("estimateNextEarningsDate", () => {
+		it("直近実績の次四半期 = 前年同期の発表日 +1年 で推定する", () => {
+			// 直近 = 25.07-09。次Q開始月 = 10。前年同期 24.10-12 の発表日 25/02/04 → +1年。
+			const html = financeHtml([
+				["24.10-12", "25/02/04"],
+				["25.04-06", "25/08/06"],
+				["25.07-09", "25/11/05"],
+			]);
+			expect(estimateNextEarningsDate(html).est).toBe("2026-02-04");
+		});
+		it("年跨ぎ (次Q開始月が翌年) でも前年同期を正しく引く", () => {
+			// 直近 = 25.10-12 → 次Q開始月 26.01。前年同期 25.01-03 の発表日 25/05/13 → +1年。
+			const html = financeHtml([
+				["25.01-03", "25/05/13"],
+				["25.07-09", "25/11/05"],
+				["25.10-12", "26/02/04"],
+			]);
+			expect(estimateNextEarningsDate(html).est).toBe("2026-05-13");
+		});
+		it("前年同期の発表日が無ければ est=null", () => {
+			const html = financeHtml([["25.07-09", "25/11/05"]]);
+			expect(estimateNextEarningsDate(html).est).toBeNull();
+		});
+		it("実績行ゼロなら est=null", () => {
+			expect(estimateNextEarningsDate("<table></table>").est).toBeNull();
+		});
+	});
 }

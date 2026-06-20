@@ -12,8 +12,16 @@
     "knip": "knip",
     "check:watchlist": "node scripts/check-watchlist-sync.ts",
     "test": "vitest run",
-    "test:sh": "bats scripts/event-context.bats",
-    "verify": "pnpm run lint && pnpm run typecheck && pnpm -C worker run typecheck && pnpm run check:watchlist && pnpm run test && pnpm -C worker run test && pnpm run test:sh && pnpm run knip"
+    "test:sh": "bash scripts/run-bats.sh",
+    "verify:lint": "bash scripts/quiet.sh lint biome check",
+    "verify:typecheck": "bash scripts/quiet.sh typecheck tsc --noEmit -p tsconfig.json",
+    "verify:worker:typecheck": "bash scripts/quiet.sh worker:typecheck pnpm -C worker run typecheck",
+    "verify:check:watchlist": "bash scripts/quiet.sh check:watchlist node scripts/check-watchlist-sync.ts",
+    "verify:test": "bash scripts/quiet.sh test vitest run",
+    "verify:worker:test": "bash scripts/quiet.sh worker:test pnpm -C worker run test",
+    "verify:test:sh": "bash scripts/quiet.sh test:sh bash scripts/run-bats.sh",
+    "verify:knip": "bash scripts/quiet.sh knip knip",
+    "verify": "bash scripts/verify.sh"
   },
   "dependencies": {
     "yaml": "^2.5.0"
@@ -23,6 +31,7 @@
     "@types/node": "^25.9.3",
     "bats": "^1.13.0",
     "knip": "^6.17.1",
+    "npm-run-all2": "^9.0.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
   }

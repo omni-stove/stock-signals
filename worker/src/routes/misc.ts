@@ -3,8 +3,10 @@
 
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
+import { slackThreads } from "../lib/schema";
 import { notifySlack, postMessage } from "../lib/slack";
 
 export const misc = new Hono<{ Bindings: Env }>();
@@ -107,17 +109,21 @@ misc.post("/slack/post", async (c) => {
 
 	// 解析結果 (親投稿) のみ slack_threads に控える。返答 (thread_ts 有り) は記録しない。
 	if (!b.thread_ts && b.ticker) {
-		await env.DB.prepare(
-			`INSERT OR REPLACE INTO slack_threads (thread_ts, ticker, kind, channel, created_at)
-			 VALUES (?, ?, ?, ?, ?)`,
-		)
-			.bind(
-				posted.ts,
-				b.ticker,
-				b.kind || "signal-judge",
-				posted.channel,
-				new Date().toISOString(),
-			)
+		const createdAt = new Date().toISOString();
+		const kind = b.kind || "signal-judge";
+		await db(env.DB)
+			.insert(slackThreads)
+			.values({
+				threadTs: posted.ts,
+				ticker: b.ticker,
+				kind,
+				channel: posted.channel,
+				createdAt,
+			})
+			.onConflictDoUpdate({
+				target: slackThreads.threadTs,
+				set: { ticker: b.ticker, kind, channel: posted.channel, createdAt },
+			})
 			.run();
 	}
 	return c.json({ ok: true, ts: posted.ts, channel: posted.channel });

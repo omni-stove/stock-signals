@@ -224,3 +224,143 @@ export function parseKioxiaArticle(html: string): {
 			.trim(),
 	};
 }
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("dateFromUrl", () => {
+		it("URL 末尾の YYYYMMDD-N.html から日付を取る", () => {
+			expect(
+				dateFromUrl("https://www.kioxia.com/ja-jp/about/news/20260611-1.html"),
+			).toBe("2026-06-11");
+		});
+		it("日付パターンが無ければ空文字", () => {
+			expect(dateFromUrl("https://www.kioxia.com/ja-jp/news.html")).toBe("");
+		});
+	});
+
+	describe("categoryFromUrl", () => {
+		const cases: Array<[string, string]> = [
+			["https://www.kioxia-holdings.com/x.html", "holdings"],
+			["https://www.kioxia.com/ja-jp/about/news/x.html", "corporate"],
+			["https://www.kioxia.com/ja-jp/business/news/x.html", "business"],
+			["https://www.kioxia.com/ja-jp/personal/news/x.html", "personal"],
+			["https://www.kioxia.com/ja-jp/other.html", "other"],
+		];
+		for (const [url, expected] of cases) {
+			it(`${url} → ${expected}`, () => {
+				expect(categoryFromUrl(url)).toBe(expected);
+			});
+		}
+	});
+
+	describe("rfc822ToYmd", () => {
+		it("RFC822 の暦日部分を JST 表記のまま YYYY-MM-DD にする", () => {
+			expect(rfc822ToYmd("Thu, 11 Jun 2026 00:00:00 +0900")).toBe("2026-06-11");
+		});
+		it("1桁日もゼロ埋めする", () => {
+			expect(rfc822ToYmd("Mon, 1 Sep 2025 00:00:00 +0900")).toBe("2025-09-01");
+		});
+		it("月名不正・形式不正は空文字", () => {
+			expect(rfc822ToYmd("11 Xxx 2026")).toBe("");
+			expect(rfc822ToYmd("invalid")).toBe("");
+		});
+	});
+
+	describe("parseList: kioxia", () => {
+		it("a.cmp-button から URL・タイトル・日付・カテゴリを抽出し重複URLを除く", () => {
+			const html = [
+				"<a class='cmp-button' href='/ja-jp/about/news/20260611-1.html'><span class='cmp-button__text'>新製品</span></a>",
+				"<a class='cmp-button' href='/ja-jp/about/news/20260611-1.html'><span class='cmp-button__text'>重複</span></a>",
+				"<a class='cmp-button' href='/ja-jp/news.html'><span class='cmp-button__text'>日付なしは除外</span></a>",
+			].join("");
+			const out = parseList("kioxia", html, "https://www.kioxia.com");
+			expect(out).toEqual([
+				{
+					url: "https://www.kioxia.com/ja-jp/about/news/20260611-1.html",
+					title: "新製品",
+					date: "2026-06-11",
+					category: "corporate",
+				},
+			]);
+		});
+	});
+
+	describe("parseList: advantest", () => {
+		it("li.m-list-news__item から datetime・タイトル・カテゴリを取る", () => {
+			const html = [
+				"<li class='m-list-news__item'>",
+				"<a class='m-list-news__wrapper' href='/ja/news/a.html'>",
+				"<time class='m-list-news__date' datetime='2026-06-10'></time>",
+				"<b class='m-list-news__category'>投資家の皆様へ</b>",
+				"<p class='m-text__item'>決算説明会</p>",
+				"</a></li>",
+			].join("");
+			expect(parseList("advantest", html, "https://www.advantest.com")).toEqual([
+				{
+					url: "https://www.advantest.com/ja/news/a.html",
+					title: "決算説明会",
+					date: "2026-06-10",
+					category: "投資家の皆様へ",
+				},
+			]);
+		});
+	});
+
+	describe("parseList: lasertec", () => {
+		it("article.news__article からタイトル (子の i を除く) を取る", () => {
+			const html = [
+				"<article class='news__article'>",
+				"<a class='news__type' href='/news/2026/a.html'></a>",
+				"<time class='news__date' datetime='2026-06-09'></time>",
+				"<span class='news__category'>IR</span>",
+				"<h3 class='news__title'>決算短信<i class='news__filesize'>(PDF)</i></h3>",
+				"</article>",
+			].join("");
+			expect(parseList("lasertec", html, "https://www.lasertec.co.jp")).toEqual([
+				{
+					url: "https://www.lasertec.co.jp/news/2026/a.html",
+					title: "決算短信",
+					date: "2026-06-09",
+					category: "IR",
+				},
+			]);
+		});
+	});
+
+	describe("parseList: murata (RSS)", () => {
+		it("item の link/title/pubDate(RFC822) を JST 暦日のまま正規化する", () => {
+			const xml = [
+				"<rss><channel>",
+				"<item><link>https://corporate.murata.com/ja-jp/x</link>",
+				"<title>業績予想の修正 (PDF: 241KB)</title>",
+				"<pubDate>Thu, 11 Jun 2026 00:00:00 +0900</pubDate></item>",
+				"</channel></rss>",
+			].join("");
+			expect(parseList("murata", xml, "")).toEqual([
+				{
+					url: "https://corporate.murata.com/ja-jp/x",
+					title: "業績予想の修正 (PDF: 241KB)",
+					date: "2026-06-11",
+					category: "irnews",
+				},
+			]);
+		});
+	});
+
+	describe("parseList: 未知 site", () => {
+		it("空配列を返す", () => {
+			expect(parseList("unknown", "<html></html>", "")).toEqual([]);
+		});
+	});
+
+	describe("parseKioxiaArticle", () => {
+		it("h1 を title、main を body に取り空白を畳む", () => {
+			const html =
+				"<h1>新製品リリース</h1><main>本文   行1\n\n\n\n行2</main>";
+			const r = parseKioxiaArticle(html);
+			expect(r.title).toBe("新製品リリース");
+			expect(r.body).toBe("本文 行1\n\n行2");
+		});
+	});
+}

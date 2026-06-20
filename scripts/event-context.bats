@@ -140,3 +140,57 @@ JSON
   # 改行を含まない (1 行)。
   [ "$(printf '%s' "$output" | wc -l | tr -d ' ')" = "0" ]
 }
+
+# --- 指数リバランスの実施前/当日/実施後の出し分け ---------------------------
+
+# MSCI半期リバランス (2026-05-29 実施) の 2 日前は「N日後」文言を出す (実施前)
+@test "index: MSCI rebalance shows days-after wording before the date" {
+  MACRO_EVENTS_JSON="" run_ctx 2026-05-27
+  [[ "$output" == *"MSCI半期リバランス"* ]]
+  [[ "$output" == *"実施=2026-05-29/2日後"* ]]
+  [[ "$output" == *"当日へ向けた歪み"* ]]
+}
+
+# 同リバランスを通過した後 (実施後) は「N日前に通過」文言を出す
+@test "index: MSCI rebalance shows passed wording after the date" {
+  MACRO_EVENTS_JSON="" run_ctx 2026-06-01
+  [[ "$output" == *"MSCI半期リバランス"* ]]
+  [[ "$output" == *"実施=2026-05-29/3日前に通過"* ]]
+  [[ "$output" == *"剥落"* ]]
+}
+
+# FTSE/Russell リバランス (= 米SQ と同日 6/19) 当日は「本日」文言を出す
+@test "index: FTSE rebalance on the day shows today wording" {
+  MACRO_EVENTS_JSON="" run_ctx 2026-06-19
+  [[ "$output" == *"FTSE/Russellリバランス(実施=本日2026-06-19"* ]]
+}
+
+# --- マクロイベントのエッジケース -------------------------------------------
+
+# impact が null のときは [..] を付けない
+@test "macro: null impact omits the bracket tag" {
+  MACRO_EVENTS_JSON='{"rows":[{"date":"2026-07-30","label":"日銀会合","impact":null,"jst_effect_date":"2026-07-30"}]}' \
+    run_ctx 2026-07-30
+  [[ "$output" == *"日銀会合(2026-07-30/本日)"* ]]
+  [[ "$output" != *"[null]"* ]]
+  [[ "$output" != *"[]"* ]]
+}
+
+# 日付がパースできない行は無視され、正常な行だけが出る
+@test "macro: unparseable date is skipped, valid row survives" {
+  MACRO_EVENTS_JSON='{"rows":[
+    {"date":"not-a-date","label":"broken","impact":"high"},
+    {"date":"2026-07-30","label":"正常イベント","impact":"high","jst_effect_date":"2026-07-30"}
+  ]}' run_ctx 2026-07-30
+  [[ "$output" == *"正常イベント(2026-07-30/本日)[high]"* ]]
+  # "broken" は stderr の警告にも出る (run は stderr を $output に混ぜる) ので、
+  # マクロ note の体裁 "broken(" が出力本体に無いことで「スキップされた」を判定する。
+  [[ "$output" != *"broken("* ]]
+}
+
+# 近接窓 (DAYS=5) の外のマクロイベントは拾わない (10日後)
+@test "macro: event beyond the horizon window is not picked up" {
+  MACRO_EVENTS_JSON='{"rows":[{"date":"2026-08-09","label":"遠いイベント","impact":"high","jst_effect_date":"2026-08-09"}]}' \
+    run_ctx 2026-07-30
+  [[ "$output" != *"遠いイベント"* ]]
+}

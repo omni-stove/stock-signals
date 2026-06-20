@@ -11,6 +11,8 @@
 // ※LLM は使わない。スクレイピング・正規化のみ。kabutan は全ソース UTF-8 なので iconv 不要。
 
 import * as cheerio from "cheerio";
+import { db } from "./db";
+import { premarketBackdrop } from "./schema";
 import { fetchHtml, sleep } from "./utils";
 
 export interface PremarketEnv {
@@ -148,21 +150,29 @@ export async function collectBackdrop(
 		us_indexes.find((q) => q.key === key)?.change_pct ?? null;
 	const fetched_at = new Date().toISOString();
 
-	await env.DB.prepare(
-		`INSERT OR REPLACE INTO premarket_backdrop
-       (fetched_at, sox_change_pct, nasdaq_change_pct, dow_change_pct,
-        nikkei_futures_price, nikkei_contract, us_indexes_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-	)
-		.bind(
-			fetched_at,
-			pick("sox"),
-			pick("ndx"),
-			pick("dji"),
-			nikkei.price,
-			nikkei.contract,
-			JSON.stringify(us_indexes),
-		)
+	const backdropRow = {
+		fetchedAt: fetched_at,
+		soxChangePct: pick("sox"),
+		nasdaqChangePct: pick("ndx"),
+		dowChangePct: pick("dji"),
+		nikkeiFuturesPrice: nikkei.price,
+		nikkeiContract: nikkei.contract,
+		usIndexesJson: JSON.stringify(us_indexes),
+	};
+	await db(env.DB)
+		.insert(premarketBackdrop)
+		.values(backdropRow)
+		.onConflictDoUpdate({
+			target: premarketBackdrop.fetchedAt,
+			set: {
+				soxChangePct: backdropRow.soxChangePct,
+				nasdaqChangePct: backdropRow.nasdaqChangePct,
+				dowChangePct: backdropRow.dowChangePct,
+				nikkeiFuturesPrice: backdropRow.nikkeiFuturesPrice,
+				nikkeiContract: backdropRow.nikkeiContract,
+				usIndexesJson: backdropRow.usIndexesJson,
+			},
+		})
 		.run();
 
 	return {
@@ -173,4 +183,76 @@ export async function collectBackdrop(
 		nikkei_futures_price: nikkei.price,
 		nikkei_contract: nikkei.contract,
 	};
+}
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+	const SOX = US_INDEXES[0];
+
+	describe("toNumber", () => {
+		it("カンマ・単位・符号装飾 (円/株/%/＋/+/括弧) を除く", () => {
+			expect(toNumber("12,876.90")).toBe(12876.9);
+			expect(toNumber("＋674.36")).toBe(674.36);
+			expect(toNumber("(5.53)%")).toBe(5.53);
+		});
+		it("全角/半角マイナスは数値として残る", () => {
+			expect(toNumber("-1.2")).toBe(-1.2);
+		});
+		it("空・各種ダッシュ・null は null", () => {
+			expect(toNumber(null)).toBeNull();
+			expect(toNumber("")).toBeNull();
+			expect(toNumber("－")).toBeNull();
+			expect(toNumber("ー")).toBeNull();
+			expect(toNumber("-")).toBeNull();
+		});
+	});
+
+	describe("parseUsIndex", () => {
+		// us.kabutan の現値ブロック: .text-3xl が現値、親要素テキストに前日比・参照時刻が並ぶ。
+		const html = [
+			"<div>",
+			"<span class='text-3xl'>12,876.90</span>",
+			" 前日比 +674.36 (+5.53%) NY時間 26日 17:16 日本時間 27日 06:16",
+			"</div>",
+		].join("");
+
+		it("現値・前日比・変化率・NY/JST時刻を分解する", () => {
+			const q = parseUsIndex(html, SOX);
+			expect(q).toMatchObject({
+				key: "sox",
+				price: 12876.9,
+				change: 674.36,
+				change_pct: 5.53,
+				ny_time: "26日 17:16",
+				jst_time: "27日 06:16",
+			});
+		});
+		it("前日比ブロックが無くても price だけは返す", () => {
+			const q = parseUsIndex(
+				"<div><span class='text-3xl'>1,234.5</span></div>",
+				SOX,
+			);
+			expect(q.price).toBe(1234.5);
+			expect(q.change).toBeNull();
+			expect(q.change_pct).toBeNull();
+		});
+	});
+
+	describe("parseNikkeiFutures", () => {
+		it("現値と限月を取る (前日比空欄は無視)", () => {
+			const html =
+				"<div><span class='text-3xl'>65,560円</span> ー 円 ー 6月限</div>";
+			expect(parseNikkeiFutures(html)).toEqual({
+				price: 65560,
+				contract: "6月限",
+			});
+		});
+		it("限月が無ければ contract=null", () => {
+			const html = "<div><span class='text-3xl'>65,560円</span></div>";
+			expect(parseNikkeiFutures(html)).toEqual({
+				price: 65560,
+				contract: null,
+			});
+		});
+	});
 }

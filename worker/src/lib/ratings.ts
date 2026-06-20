@@ -23,6 +23,8 @@
 //
 // watchlist 銘柄にレーティング変更があった日だけ新規が出る (毎日は出ない)。
 
+import { db } from "./db";
+import { articles } from "./schema";
 import { WATCHLIST } from "./timeseries";
 import { fetchHtml, hash } from "./utils";
 
@@ -38,24 +40,32 @@ const URL_NEWS = (code: string) =>
 	`https://kabutan.jp/stock/news?code=${code}&nmode=3`;
 const URL_ARTICLE = (b: string) => `https://kabutan.jp/news/marketnews/?b=${b}`;
 
-// 信頼する証券会社 (短縮名の正規化後)。仮の初期値。後で調整可。
+// 信頼する証券会社 (短縮名の正規化後)。後で調整可。
 // ここに無い機関も保存はするが body に「信頼度: 低」を付け、judge 側で割り引けるようにする。
+//
+// 重要: 照合は toHalf() で半角化した機関名に対して行う (saveRating の firmHalf)。
+// よって登録は必ず半角で書く。kabutan 実データの英字機関は半角 (UBS / GS / JPモル) で
+// 出るため、全角で登録すると一致せず信頼度:低 に落ちる。
 const TRUSTED_FIRMS = new Set<string>([
 	"野村",
 	"みずほ",
 	"大和",
-	"ＳＭＢＣ日興",
+	"SMBC日興",
 	"日興",
-	"ＧＳ", // ゴールドマン・サックス
+	"GS", // ゴールドマン・サックス
 	"モルガン", // モルガン・スタンレーMUFG
-	"ＪＰモル", // JPモルガン
-	"ＵＢＳ",
+	"JPモル", // JPモルガン
+	"UBS",
 	"メリル", // BofA
-	"ＣＳ",
+	"CS",
 	"ジェフリーズ",
 	"バークレイズ",
 	"シティ",
 	"ドイツ",
+	// 国内中堅・アジア系で半導体銘柄に実際よく出る機関 (実データで確認済)。
+	"東海東京",
+	"岡三",
+	"マッコリ", // マッコーリー
 ]);
 
 // 半角化 (全角英数記号 → 半角)。コード照合・機関名比較を安定させる。
@@ -77,12 +87,15 @@ type Rating = {
 	date: string; // 日付 "M/D"
 };
 
-// 当日のレーティング日報記事ID (b=n...) を、銘柄ニュースページと記事内の関連リンクから集める。
+// 当日のレーティング日報/週報記事ID (b=n...) を、銘柄ニュースページと記事内の関連リンクから集める。
 // 戻り値は記事IDの集合 (重複排除済)。
+// kabutan は平日に「レーティング日報」、週末 (土曜) に1週間分をまとめた「レーティング週報」を出す。
+// 本文フォーマットは同一 (銘柄名<コード> 機関 格付 目標株価 日付) なので parseReport で両対応できる。
+// 「日報」だけ拾うと週報日 (≒毎週末) の watchlist 変更を取りこぼすため、両方を起点にする。
 function extractReportIds(html: string): Set<string> {
 	const ids = new Set<string>();
 	const re =
-		/href="\/news\/marketnews\/\?b=(n\d+)"[^>]*>[^<]*レーティング日報[^<]*/g;
+		/href="\/news\/marketnews\/\?b=(n\d+)"[^>]*>[^<]*レーティング(?:日報|週報)[^<]*/g;
 	let m: RegExpExecArray | null = re.exec(html);
 	while (m !== null) {
 		ids.add(m[1]);
@@ -198,21 +211,19 @@ async function saveRating(
 	await env.ARTICLES.put(r2_key, payload, {
 		httpMetadata: { contentType: "application/json" },
 	});
-	await env.DB.prepare(
-		`INSERT OR IGNORE INTO articles
-      (url, ticker, source, title, published_at, ir_category, r2_key, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-		.bind(
-			key,
-			r.code,
-			`rating:${firmHalf}`,
+	await db(env.DB)
+		.insert(articles)
+		.values({
+			url: key,
+			ticker: r.code,
+			source: `rating:${firmHalf}`,
 			title,
-			published_at,
-			"rating",
-			r2_key,
-			fetched_at,
-		)
+			publishedAt: published_at,
+			irCategory: "rating",
+			r2Key: r2_key,
+			fetchedAt: fetched_at,
+		})
+		.onConflictDoNothing()
 		.run();
 	return true;
 }
@@ -283,4 +294,76 @@ export async function collectRatings(
 		written: perTickerWritten,
 	};
 	return { results, freshTickers };
+}
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	// kabutan レーティング週報【格上げ↑】(2026-06-20 取得) の実本文を <br> 区切りで再現。
+	// 機関に半角英字 (UBS/GS/JPモル) と全角・国内中堅 (岩井ｺｽﾓ/東海東京/マッコリ) が混在する。
+	// 実 HTML では銘柄コードの山括弧は &lt; &gt; とエスケープされて届く (parseReport が復元する)。
+	const FIXTURE_BODY = [
+		"格付　　　　目標株価　　　　日付",
+		"きんでん &lt;1944&gt; 　　　　岩井ｺｽﾓ　　 Ｂ＋→Ａ　　5900→9000　　　6/18",
+		"タイミー &lt;215A&gt; 　　　　モルガン　　中立→強気　1400→1900　　　6/15",
+		"村田製 &lt;6981&gt; 　　　　　日興　　　　中立→強気　4000→13400　　 6/17",
+		"いすゞ &lt;7202&gt; 　　　　　ＵＢＳ　　　中立→買い　2200→2700　　　6/18",
+		"メルカリ &lt;4385&gt; 　　　　ＪＰモル　　中立→強気　3200→5000　　　6/16",
+		"塩野義 &lt;4507&gt; 　　　　　ＧＳ　　　　中立→買い　3300→3400　　　6/15",
+		"フジシール &lt;7864&gt; 　　　岡三　　　　中立→強気　3000→3800　　　6/19",
+		"株探ニュース", // 終端マーカー: これ以降は読まない。
+	].join("<br>");
+
+	describe("parseReport", () => {
+		it("週報/日報本文を Rating[] にパースする (フォーマットは同一)", () => {
+			const rows = parseReport(FIXTURE_BODY);
+			expect(rows.length).toBe(7); // 終端マーカーで打ち切られる
+			expect(rows[2]).toMatchObject({
+				code: "6981",
+				firm: "日興",
+				rating: "中立→強気",
+				target: "4000→13400",
+				date: "6/17",
+			});
+		});
+		it("285A 形式 (英字混じり) のコードも拾う", () => {
+			const rows = parseReport(FIXTURE_BODY);
+			expect(rows.find((r) => r.name === "タイミー")?.code).toBe("215A");
+		});
+		it("『株探』以降は本文外として打ち切る", () => {
+			const rows = parseReport(FIXTURE_BODY);
+			expect(rows.some((r) => r.name.includes("株探"))).toBe(false);
+		});
+	});
+
+	describe("TRUSTED_FIRMS 照合 (toHalf 後で一致するか)", () => {
+		// saveRating は toHalf(firm) で半角化してから TRUSTED_FIRMS.has() する。
+		// 実データの英字機関は半角 (UBS/GS/JPモル) なので、登録も半角でないと信頼度:低 に落ちる。
+		const cases: Array<[string, boolean]> = [
+			["ＵＢＳ", true], // 全角入力 → toHalf で UBS → 一致すべき
+			["ＧＳ", true],
+			["ＪＰモル", true],
+			["モルガン", true],
+			["日興", true],
+			["岩井ｺｽﾓ", false], // 未登録 → 低
+			["水戸", false],
+		];
+		for (const [firm, expected] of cases) {
+			it(`${firm} → trusted=${expected}`, () => {
+				expect(TRUSTED_FIRMS.has(toHalf(firm))).toBe(expected);
+			});
+		}
+	});
+
+	describe("extractReportIds", () => {
+		it("日報・週報の両方のリンクを拾う", () => {
+			const html = [
+				'<a href="/news/marketnews/?b=n101">レーティング日報【格上げ↑】</a>',
+				'<a href="/news/marketnews/?b=n202">レーティング週報【格下げ↓】(6月15日－19日)</a>',
+				'<a href="/news/marketnews/?b=n303">今週の業績上方修正銘柄一覧</a>', // 無関係
+			].join("");
+			const ids = extractReportIds(html);
+			expect([...ids].sort()).toEqual(["n101", "n202"]);
+		});
+	});
 }

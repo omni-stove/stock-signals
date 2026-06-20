@@ -5,6 +5,8 @@
 // 冪等キー = (ticker, 集計基準日)。毎日取っても1週1行に収束する流儀は schema.sql の margin を参照。
 
 import * as cheerio from "cheerio";
+import { db } from "./db";
+import { margin } from "./schema";
 import { WATCHLIST } from "./timeseries";
 import { fetchHtml, sleep } from "./utils";
 
@@ -101,23 +103,25 @@ async function collectMarginOne(
 	const source = `${SITE}:${code}`;
 
 	// (ticker, date) PK の INSERT OR IGNORE で既取得の週次行を自動スキップ。
-	const stmt = env.DB.prepare(
-		`INSERT OR IGNORE INTO margin
-       (ticker, date, source, short_qty, long_qty, ratio, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	// 1行=1ステートメントを db.batch() で投入 (1文に全行まとめると D1 のバインド変数上限を超える)。
+	const d = db(env.DB);
+	const stmts = bars.map((b) =>
+		d
+			.insert(margin)
+			.values({
+				ticker: code,
+				date: b.date,
+				source,
+				shortQty: b.short_qty,
+				longQty: b.long_qty,
+				ratio: b.ratio,
+				fetchedAt: fetched_at,
+			})
+			.onConflictDoNothing(),
 	);
-	const batch = bars.map((b) =>
-		stmt.bind(
-			code,
-			b.date,
-			source,
-			b.short_qty,
-			b.long_qty,
-			b.ratio,
-			fetched_at,
-		),
+	const results = await d.batch(
+		stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]],
 	);
-	const results = await env.DB.batch(batch);
 	let written = 0;
 	for (const r of results) written += r.meta.changes ?? 0;
 	return { written, skipped: bars.length - written };
@@ -148,4 +152,79 @@ export async function collectMargin(
 		}
 	}
 	return { results, freshTickers };
+}
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("toNumber", () => {
+		it("カンマ・単位 (倍/円/株/%/％) を除いて数値化する", () => {
+			expect(toNumber("1,234,567株")).toBe(1234567);
+			expect(toNumber("3.42倍")).toBe(3.42);
+			expect(toNumber("12.5％")).toBe(12.5);
+		});
+		it("空・ダッシュ・null は null", () => {
+			expect(toNumber(null)).toBeNull();
+			expect(toNumber("")).toBeNull();
+			expect(toNumber("－")).toBeNull();
+			expect(toNumber("-")).toBeNull();
+		});
+	});
+
+	describe("normalizeMarginDate", () => {
+		// nowIso (UTC) の暦日を基準に「当年の月日が今日より後なら前年」で年補完する。
+		it("今日以前の月日は当年扱い", () => {
+			expect(normalizeMarginDate("06/12", "2026-06-20T10:00:00Z")).toBe(
+				"2026-06-12",
+			);
+		});
+		it("当日ちょうども当年扱い (> 判定なので)", () => {
+			expect(normalizeMarginDate("06/20", "2026-06-20T10:00:00Z")).toBe(
+				"2026-06-20",
+			);
+		});
+		it("当年だと未来になる月日は前年に倒す", () => {
+			expect(normalizeMarginDate("12/26", "2026-06-20T10:00:00Z")).toBe(
+				"2025-12-26",
+			);
+		});
+		it("年末年始: 1月時点で残る12月の週次は前年に倒れる", () => {
+			expect(normalizeMarginDate("12/26", "2026-01-09T10:00:00Z")).toBe(
+				"2025-12-26",
+			);
+		});
+		it("MM/DD のゼロ埋めをする", () => {
+			expect(normalizeMarginDate("6/5", "2026-06-20T10:00:00Z")).toBe(
+				"2026-06-05",
+			);
+		});
+		it("形式に合わなければ null", () => {
+			expect(normalizeMarginDate("不明", "2026-06-20T10:00:00Z")).toBeNull();
+		});
+	});
+
+	describe("parseKabutanMargin", () => {
+		// 信用残テーブル = ヘッダに「売り残」「買い残」「倍率」を持つ table。
+		const html = [
+			"<table><thead><tr>",
+			"<th>日付</th><th>売り残</th><th>買い残</th><th>倍率</th>",
+			"</tr></thead><tbody>",
+			"<tr><td>06/13</td><td>120,000</td><td>360,000</td><td>3.00倍</td></tr>",
+			"<tr><td>06/06</td><td>110,000</td><td>330,000</td><td>3.00倍</td></tr>",
+			"</tbody></table>",
+		].join("");
+
+		it("信用残テーブルの各行を正規化して返す", () => {
+			const rows = parseKabutanMargin(html, "2026-06-20T10:00:00Z");
+			expect(rows).toEqual([
+				{ date: "2026-06-13", short_qty: 120000, long_qty: 360000, ratio: 3 },
+				{ date: "2026-06-06", short_qty: 110000, long_qty: 330000, ratio: 3 },
+			]);
+		});
+		it("該当ヘッダの無いテーブルは無視する", () => {
+			const other =
+				"<table><thead><tr><th>日付</th><th>株価</th></tr></thead><tbody><tr><td>06/13</td><td>1000</td></tr></tbody></table>";
+			expect(parseKabutanMargin(other, "2026-06-20T10:00:00Z")).toEqual([]);
+		});
+	});
 }

@@ -33,8 +33,24 @@ AUTH=(-H "Authorization: Bearer ${SYNC_TOKEN:-}")
 
 # Worker /latest を引く。失敗 (非200/空) は "{}" を返す。空文字を jq に渡すと parse error で
 # 落ちるため、ここで必ず有効な JSON ("{}") に正規化しておく (以降の jq は安全に走る)。
+#
+# テスト/オフライン用の注入口: FETCH_<KEY>_JSON 環境変数があればそれを最優先で返す
+# (curl を一切叩かない)。<KEY> はクエリ先頭の kind を大文字化したもの
+# (例: kind=earnings → FETCH_EARNINGS_JSON, kind=daily → FETCH_DAILY_JSON)。
+# event-context.sh の MACRO_EVENTS_JSON と同じ思想で、bats から決定論的に固定 JSON を流せる。
 fetch() {
-  local out; out="$(curl -sf "${AUTH[@]}" "$WORKER_URL/latest?$1" 2>/dev/null || true)"
+  local query="$1"
+  # query 先頭の "kind=xxx" から注入用の env 名を組み立てる。
+  local kind; kind="$(printf '%s' "$query" | sed -n 's/^kind=\([a-z]*\).*/\1/p')"
+  if [[ -n "$kind" ]]; then
+    # ${kind^^} は bash 4+ 専用 (macOS の bash 3.2 で落ちる) ので tr で大文字化する。
+    local var; var="FETCH_$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')_JSON"
+    if [[ -n "${!var:-}" ]]; then
+      printf '%s' "${!var}"
+      return 0
+    fi
+  fi
+  local out; out="$(curl -sf "${AUTH[@]}" "$WORKER_URL/latest?$query" 2>/dev/null || true)"
   # 失敗 (空) でも、タイムアウトで途中まで返った非 JSON でも "{}" に正規化する。
   if [[ -z "$out" ]] || ! echo "$out" | jq -e . >/dev/null 2>&1; then
     echo "{}"
@@ -45,7 +61,10 @@ fetch() {
 
 EARNINGS="$(fetch "kind=earnings&code=$TICKER")"
 PRICES="$(fetch "kind=prices&code=$TICKER&n=20")"
-DAILY="$(fetch "kind=daily&code=$TICKER&n=20")"
+# RSI14 / ATR14 は直近14本の「前日比」が要る = close 15本以上。さらに ATR の「平時比」(SKILL: heat 判定) を
+# 出すには ATR14 系列を複数本作って中央値を取る必要があるため、レンジ位置 (20日) より大きく
+# n=70 で引く (ATR14 を約56本分。日足が足りなければ baseline は null になる)。
+DAILY="$(fetch "kind=daily&code=$TICKER&n=70")"
 PREMARKET="$(fetch "kind=premarket&n=1")"
 MARGIN="$(fetch "kind=margin&code=$TICKER&n=4")"
 
@@ -93,17 +112,67 @@ else
   MARGIN_JSON='{"status":"unavailable"}'
 fi
 
-# --- daily: 20日レンジ位置 / MA位置 / 出来高倍率を正規化 ----------------------
+# --- daily: 20日レンジ位置 / MA位置 / 出来高倍率 / RSI / ATR を正規化 ----------
 # rows は新しい順。最新行 (rows[0]) を「現在地」とし、range_pct = (close-low)/(high-low)*100
 # (0=安値圏 / 100=高値圏)、MA位置 (above/between/below)、vol_x = 最新volume / 平均volume。
+#
+# モメンタム指標 (過熱/失速の判別用、SKILL「モメンタムのステージ」参照):
+#   rsi_14   買われすぎ/売られすぎ。close の前日比 14本を単純平均した RSI (Wilder ではなく
+#            SMA 版 = bash で軽い近似。閾値の読みは普段の RSI と同じく ~70 過熱 / ~30 売られすぎ)。
+#   atr_14   値動きの荒さ (True Range の 14日平均)。atr_pct = atr_14/close*100。
+#            銘柄横断 (他銘柄比) でも、その銘柄の平時比でも読める。SKILL の heat 判定は後者を使うので、
+#            ATR14 をローリング系列として作り、過去の中央値 (atr_pct_baseline) と最新比 (atr_vs_baseline)
+#            も渡す。atr_vs_baseline > 1 = 平時より荒い (= 燃えている) サイン。
+#
+# 注意: range_pct / range_high/low は「20日」レンジ。daily は ATR ベースライン用に n=70 で引くので、
+#       レンジ計算は必ず直近20本に窓を絞る (全70本だと "20日レンジ" の意味が壊れる)。
 DAILY_ROWS="$(echo "$DAILY" | jq '.rows // []' 2>/dev/null || echo "[]")"
 DAILY_N="$(echo "$DAILY_ROWS" | jq 'length')"
 if [[ "$DAILY_N" -ge 5 ]]; then
   DAILY_JSON="$(echo "$DAILY_ROWS" | jq '
-    (map(.high) | max) as $hi |
-    (map(.low)  | min) as $lo |
-    (map(.volume) | add / length) as $avgvol |
+    # rows は新しい順 (DESC)。古い順 (ASC) に直すと「前日との差」が素直に取れる。
+    (sort_by(.date)) as $asc |
+    # 20日レンジ・出来高倍率は直近20本 (= $asc の末尾20本) に窓を絞る。
+    ($asc[-20:]) as $win20 |
+    ($win20 | map(.high) | max) as $hi |
+    ($win20 | map(.low)  | min) as $lo |
+    ($win20 | map(.volume) | add / ($win20 | length)) as $avgvol |
     .[0] as $cur |
+
+    # --- RSI14 (SMA版) : 直近14本の前日比 close 差から up/down 平均を取る ---------
+    # close 15本以上 (= 差分14本) で計算可能。足りなければ null。
+    ([ range(1; ($asc|length)) as $i | ($asc[$i].close - $asc[$i-1].close) ]) as $diffs |
+    (if ($diffs | length) >= 14
+       then ($diffs[-14:]) as $d14 |
+            ([ $d14[] | if . > 0 then .   else 0 end ] | add / 14) as $gain |
+            ([ $d14[] | if . < 0 then -.  else 0 end ] | add / 14) as $loss |
+            (if $loss == 0 then 100
+             else (100 - 100 / (1 + $gain / $loss)) end | floor)
+       else null end) as $rsi |
+
+    # --- ATR14 ローリング系列 : True Range = max(high-low, |high-prevClose|, |low-prevClose|) ---
+    # まず TR 系列 (ASC, 各日1本) を作り、14本窓の移動平均で ATR14 系列を作る。
+    ([ range(1; ($asc|length)) as $i |
+        ($asc[$i].high - $asc[$i].low) as $hl |
+        (($asc[$i].high - $asc[$i-1].close) | if . < 0 then -. else . end) as $hc |
+        (($asc[$i].low  - $asc[$i-1].close) | if . < 0 then -. else . end) as $lc |
+        [$hl, $hc, $lc] | max
+     ]) as $trs |
+    # ATR14 を atr_pct (= ATR14/その日のclose*100) の系列として作る。ATR の絶対値は価格水準に
+    # 依存するので、平時比は必ず atr_pct ベースで取る (close 0 の日は除外)。
+    # j は $trs のインデックス。$trs[j] は $asc[j+1] の TR に対応するので close は $asc[j+1].close。
+    ([ range(13; ($trs|length)) as $j |
+        ($trs[($j-13):($j+1)] | add / 14) as $a |
+        ($asc[$j+1].close) as $c |
+        (if $c > 0 then ($a / $c * 1000 | floor / 10) else null end)
+     ] | map(select(. != null))) as $atr_pct_series |
+    (if ($atr_pct_series | length) >= 1 then $atr_pct_series[-1] else null end) as $atr_pct |
+    # baseline = 最新を除いた過去 ATR% の中央値。系列が短い (最新1本のみ) なら null。
+    ($atr_pct_series[0:-1] | sort) as $hist |
+    (if ($hist | length) >= 5
+       then (($hist[ (($hist|length)/2 | floor) ]) * 10 | floor / 10)
+       else null end) as $atr_baseline |
+
     {
       status: "ok",
       rows_n: length,
@@ -122,7 +191,13 @@ if [[ "$DAILY_N" -ge 5 ]]; then
       # ma5_dev_pct が小さい (close が ma5 に張り付き) = 放物線的な垂直加速のサイン。SKILL 4b 参照。
       ma25_dev_pct: (if $cur.ma25 != null and $cur.ma25 > 0 then (($cur.close - $cur.ma25) / $cur.ma25 * 1000 | floor / 10) else null end),
       ma5_dev_pct:  (if $cur.ma5  != null and $cur.ma5  > 0 then (($cur.close - $cur.ma5)  / $cur.ma5  * 1000 | floor / 10) else null end),
-      vol_x_20d: (if $avgvol > 0 then ($cur.volume / $avgvol * 10 | floor / 10) else null end)
+      vol_x_20d: (if $avgvol > 0 then ($cur.volume / $avgvol * 10 | floor / 10) else null end),
+      rsi_14: $rsi,
+      atr_pct: $atr_pct,
+      # 平時 (過去) の atr_pct 中央値と、最新がその何倍か。SKILL の heat 判定はこの倍率を使う。
+      atr_pct_baseline: $atr_baseline,
+      atr_vs_baseline: (if $atr_pct != null and $atr_baseline != null and $atr_baseline > 0
+                        then ($atr_pct / $atr_baseline * 100 | floor / 100) else null end)
     }')"
 else
   DAILY_JSON="$(jq -n --argjson n "$DAILY_N" '{status:"insufficient", rows_n:$n}')"

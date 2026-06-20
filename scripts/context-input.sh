@@ -32,8 +32,14 @@ AUTH=(-H "Authorization: Bearer ${SYNC_TOKEN:-}")
 # --- Issue 取得 --------------------------------------------------------------
 # ticker ラベルで開いている ir-report Issue を 1 件引く。無ければ status=no-issue で即返す
 # (Issue は out-of-band で provision される前提。skill は勝手に作らない)。
-ISSUE="$(gh issue list --label ir-report --label "ticker:$TICKER" --state open \
-  --json number,body --limit 1 2>/dev/null || echo '[]')"
+# テスト/オフライン用の注入口: ISSUE_JSON があれば gh を叩かずそれを使う
+# (judge-context.sh の FETCH_*_JSON と同じ思想)。
+if [[ -n "${ISSUE_JSON:-}" ]]; then
+  ISSUE="$ISSUE_JSON"
+else
+  ISSUE="$(gh issue list --label ir-report --label "ticker:$TICKER" --state open \
+    --json number,body --limit 1 2>/dev/null || echo '[]')"
+fi
 # gh 失敗や非 JSON は "[]" に正規化 (status=no-issue に倒す)。
 echo "$ISSUE" | jq -e . >/dev/null 2>&1 || ISSUE='[]'
 ISSUE_N="$(echo "$ISSUE" | jq 'length')"
@@ -57,9 +63,19 @@ NEWS_CURSOR="${NEWS_CURSOR%% -->}"
 # 以降の jq を安全に走らせる (judge-context.sh の fetch() と同じ作法)。
 pull() {
   local path="$1" cursor="$2"
-  local q="code=$TICKER&limit=20"
-  [[ -n "$cursor" ]] && q+="&since=$cursor"
-  local out; out="$(curl -sf "${AUTH[@]}" "$WORKER_URL/$path?$q" 2>/dev/null || true)"
+  local out
+  # テスト/オフライン用の注入口: path=pull → PULL_IR_JSON / path=pull-news → PULL_NEWS_JSON。
+  # あれば curl を叩かず注入値を out に積む (curl 経路と同じ {} 正規化を下で通す)。
+  local injected=""
+  case "$path" in
+    pull)      injected="${PULL_IR_JSON+set}";   out="${PULL_IR_JSON:-}" ;;
+    pull-news) injected="${PULL_NEWS_JSON+set}"; out="${PULL_NEWS_JSON:-}" ;;
+  esac
+  if [[ -z "$injected" ]]; then
+    local q="code=$TICKER&limit=20"
+    [[ -n "$cursor" ]] && q+="&since=$cursor"
+    out="$(curl -sf "${AUTH[@]}" "$WORKER_URL/$path?$q" 2>/dev/null || true)"
+  fi
   # curl 失敗 (空) または非 JSON (タイムアウトで途中まで返った等) は "{}" に正規化し、
   # 以降の jq を確実に走らせる。jq -e で妥当性を判定する。
   if [[ -z "$out" ]] || ! echo "$out" | jq -e . >/dev/null 2>&1; then

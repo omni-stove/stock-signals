@@ -18,6 +18,8 @@
 // 重複排除は articles.url の PRIMARY KEY + INSERT OR IGNORE (news.ts と同じ)。
 
 import * as cheerio from "cheerio";
+import { db } from "./db";
+import { articles } from "./schema";
 import { WATCHLIST } from "./timeseries";
 import { fetchHtml, hash } from "./utils";
 
@@ -102,21 +104,19 @@ async function saveDisclosure(
 	await env.ARTICLES.put(r2_key, payload, {
 		httpMetadata: { contentType: "application/json" },
 	});
-	await env.DB.prepare(
-		`INSERT OR IGNORE INTO articles
-      (url, ticker, source, title, published_at, ir_category, r2_key, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-		.bind(
-			meta.url,
-			meta.ticker,
-			`${SITE}:${meta.ticker}`,
-			meta.title,
-			meta.published_at,
-			"disclosure",
-			r2_key,
-			fetched_at,
-		)
+	await db(env.DB)
+		.insert(articles)
+		.values({
+			url: meta.url,
+			ticker: meta.ticker,
+			source: `${SITE}:${meta.ticker}`,
+			title: meta.title,
+			publishedAt: meta.published_at,
+			irCategory: "disclosure",
+			r2Key: r2_key,
+			fetchedAt: fetched_at,
+		})
+		.onConflictDoNothing()
 		.run();
 }
 
@@ -176,4 +176,51 @@ export async function collectDisclosures(
 		}
 	}
 	return { results, freshTickers };
+}
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+	const BASE = "https://kabutan.jp/stock/news?code=285A&nmode=3";
+
+	describe("parseDisclosureList", () => {
+		const html = [
+			"<table class='s_news_list'>",
+			"<tr><td><time>26/05/29 17:00</time></td><td><a href='/disclosures/abc'>決算短信</a></td></tr>",
+			"<tr><td><time>26/05/15 15:00</time></td><td><a href='https://kabutan.jp/disclosures/def'>業績予想の修正</a></td></tr>",
+			"<tr><td>区切り (aなし)</td></tr>",
+			"</table>",
+		].join("");
+
+		it("開示一覧の行を絶対URL・タイトル・生日付で抽出する", () => {
+			const rows = parseDisclosureList(html, BASE);
+			expect(rows).toEqual([
+				{
+					url: "https://kabutan.jp/disclosures/abc",
+					title: "決算短信",
+					date: "26/05/29 17:00",
+				},
+				{
+					url: "https://kabutan.jp/disclosures/def",
+					title: "業績予想の修正",
+					date: "26/05/15 15:00",
+				},
+			]);
+		});
+		it("aリンクの無い行は除外する", () => {
+			expect(parseDisclosureList(html, BASE)).toHaveLength(2);
+		});
+	});
+
+	describe("normDate", () => {
+		it("年2桁 YY/MM/DD は 20YY-MM-DD に補完する", () => {
+			expect(normDate("26/05/29 17:00")).toBe("2026-05-29");
+			expect(normDate("26/5/9")).toBe("2026-05-09");
+		});
+		it("4桁年があればそれを使う", () => {
+			expect(normDate("2026/05/29")).toBe("2026-05-29");
+		});
+		it("取れなければ unknown", () => {
+			expect(normDate("日付なし")).toBe("unknown");
+		});
+	});
 }

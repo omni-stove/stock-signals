@@ -6,7 +6,10 @@
 // Cloudflare Workers の Web Crypto (crypto.subtle) で RS256 JWT を署名し、installation
 // access token に交換して叩く。外部ライブラリ不要。index.ts から dispatchSignalUpdate を呼ぶ。
 
+import { inArray } from "drizzle-orm";
+import { db } from "./db";
 import type { Env } from "./env";
+import { intradayDispatch } from "./schema";
 
 function b64url(data: ArrayBuffer | string): string {
 	const bytes =
@@ -138,6 +141,20 @@ export async function dispatchEventPayload(
 // 5分毎 cron の3スロット相当。短時間に複数の新着ニュースが出ても1サイクルに束ねる。
 const INTRADAY_DEBOUNCE_MS = 15 * 60 * 1000;
 
+// デバウンス判定の純粋部分。lastByTicker は intraday_dispatch から引いた
+// 「銘柄 → 前回 dispatch 時刻(ms)」。窓以内の銘柄を間引いて実際に撃つ銘柄を返す。
+// 未記録 (last===undefined) は常に対象。DB アクセスと切り離してテストできるよう分離した。
+export function selectDebounceTargets(
+	tickers: string[],
+	lastByTicker: Map<string, number>,
+	nowMs: number,
+): string[] {
+	return tickers.filter((t) => {
+		const last = lastByTicker.get(t);
+		return last === undefined || nowMs - last >= INTRADAY_DEBOUNCE_MS;
+	});
+}
+
 // 新規IR or ニュースを取得したとき signal-report ワークフローを repository_dispatch で起動する。
 // 判定は IR+ニュース両方の最新状態を読むので、どちらの新着が引き金でも同じイベント
 // (signal-update) で発火する。銘柄ごとに別ジョブにして concurrency(cancel-in-progress) を
@@ -159,19 +176,18 @@ export async function dispatchSignalUpdate(
 	const nowMs = Date.now();
 	let targets = tickers;
 	if (debounce) {
-		const placeholders = tickers.map(() => "?").join(",");
-		const { results } = await env.DB.prepare(
-			`SELECT ticker, last_dispatch_at FROM intraday_dispatch WHERE ticker IN (${placeholders})`,
-		)
-			.bind(...tickers)
-			.all<{ ticker: string; last_dispatch_at: string }>();
+		const results = await db(env.DB)
+			.select({
+				ticker: intradayDispatch.ticker,
+				lastDispatchAt: intradayDispatch.lastDispatchAt,
+			})
+			.from(intradayDispatch)
+			.where(inArray(intradayDispatch.ticker, tickers))
+			.all();
 		const lastByTicker = new Map(
-			results.map((r) => [r.ticker, Date.parse(r.last_dispatch_at)]),
+			results.map((r) => [r.ticker, Date.parse(r.lastDispatchAt)]),
 		);
-		targets = tickers.filter((t) => {
-			const last = lastByTicker.get(t);
-			return last === undefined || nowMs - last >= INTRADAY_DEBOUNCE_MS;
-		});
+		targets = selectDebounceTargets(tickers, lastByTicker, nowMs);
 		const skipped = tickers.filter((t) => !targets.includes(t));
 		if (skipped.length > 0) {
 			console.log(`intraday dispatch debounced: ${skipped.join(",")}`);
@@ -209,14 +225,57 @@ export async function dispatchSignalUpdate(
 			}
 			// 場中のみ: 撃てた銘柄だけデバウンス時刻を更新する (失敗分は窓を進めず次スロットで再挑戦)。
 			if (debounce) {
-				await env.DB.prepare(
-					`INSERT OR REPLACE INTO intraday_dispatch (ticker, last_dispatch_at) VALUES (?, ?)`,
-				)
-					.bind(ticker, nowIso)
+				await db(env.DB)
+					.insert(intradayDispatch)
+					.values({ ticker, lastDispatchAt: nowIso })
+					.onConflictDoUpdate({
+						target: intradayDispatch.ticker,
+						set: { lastDispatchAt: nowIso },
+					})
 					.run();
 			}
 		}
 	} catch (e) {
 		console.error(`dispatch error: ${(e as Error).message}`);
 	}
+}
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("b64url", () => {
+		it("base64url にエンコードする (+/→-_、= 除去)", () => {
+			// "subjects?_d" は標準 base64 で "+/" と末尾 "=" を含む文字列。
+			expect(b64url("subjects?_d")).toBe("c3ViamVjdHM_X2Q");
+			expect(b64url("")).toBe("");
+		});
+		it("結果に + / = を含まない", () => {
+			const out = b64url("\xfb\xff\xfe any payload >>> ???");
+			expect(out).not.toMatch(/[+/=]/);
+		});
+	});
+
+	describe("selectDebounceTargets", () => {
+		const NOW = 1_700_000_000_000;
+		const WINDOW = 15 * 60 * 1000;
+
+		it("未記録の銘柄は常に対象", () => {
+			expect(selectDebounceTargets(["285A"], new Map(), NOW)).toEqual(["285A"]);
+		});
+		it("窓以内の銘柄は間引き、窓を過ぎた銘柄は撃つ", () => {
+			const last = new Map([
+				["A", NOW - (WINDOW - 1000)], // まだ窓内 → 間引く
+				["B", NOW - WINDOW], // ちょうど窓 (>=) → 撃つ
+				["C", NOW - 2 * WINDOW], // 窓外 → 撃つ
+			]);
+			expect(selectDebounceTargets(["A", "B", "C"], last, NOW)).toEqual([
+				"B",
+				"C",
+			]);
+		});
+		it("全銘柄が窓内なら空配列", () => {
+			const last = new Map([["A", NOW - 1000]]);
+			expect(selectDebounceTargets(["A"], last, NOW)).toEqual([]);
+		});
+	});
 }

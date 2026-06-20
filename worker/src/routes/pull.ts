@@ -8,8 +8,11 @@
 //   since 省略時は直近 limit 件 (= 初回 / カーソル未確立時のフォールバック)。
 //   IR とニュースは同じ articles テーブルに同居するので source プレフィクスで振り分ける。
 
+import { and, asc, eq, gt, gte, like, or } from "drizzle-orm";
 import { type Context, Hono } from "hono";
+import { db } from "../lib/db";
 import type { Env } from "../lib/env";
+import { articles } from "../lib/schema";
 
 export const pull = new Hono<{ Bindings: Env }>();
 
@@ -25,9 +28,12 @@ async function handlePull(c: Context<{ Bindings: Env }>, isNews: boolean) {
 	// (いずれも銘柄の材料で、context-builder は同じ ir カーソルで読むため)。
 	// rating:% は証券会社レーティング (個社別 目標株価)。
 	const sourceClause = isNews
-		? "source LIKE ?"
-		: "(source LIKE ? OR source LIKE ? OR source LIKE ?)";
-	const sourceBinds = isNews ? ["kabutan:%"] : ["ir:%", "tdnet:%", "rating:%"];
+		? like(articles.source, "kabutan:%")
+		: or(
+				like(articles.source, "ir:%"),
+				like(articles.source, "tdnet:%"),
+				like(articles.source, "rating:%"),
+			);
 
 	// スイング判断に古い記事は不要。published_at が30日より古いものは保管はするが返さない
 	// (取得時に一覧の下まで遡れず back-dated 記事が新しい fetched_at で入ることがあるため、
@@ -37,14 +43,27 @@ async function handlePull(c: Context<{ Bindings: Env }>, isNews: boolean) {
 		.slice(0, 10);
 
 	// since があれば fetched_at > since で絞る。無ければ直近 limit 件を ASC で返す。
-	const stmt = since
-		? env.DB.prepare(
-				`SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND ${sourceClause} AND published_at >= ? AND fetched_at > ? ORDER BY fetched_at ASC LIMIT ?`,
-			).bind(code, ...sourceBinds, cutoff, since, limit)
-		: env.DB.prepare(
-				`SELECT url, title, published_at, ir_category, r2_key, fetched_at FROM articles WHERE ticker = ? AND ${sourceClause} AND published_at >= ? ORDER BY fetched_at ASC LIMIT ?`,
-			).bind(code, ...sourceBinds, cutoff, limit);
-	const { results } = await stmt.all();
+	const results = await db(env.DB)
+		.select({
+			url: articles.url,
+			title: articles.title,
+			published_at: articles.publishedAt,
+			ir_category: articles.irCategory,
+			r2_key: articles.r2Key,
+			fetched_at: articles.fetchedAt,
+		})
+		.from(articles)
+		.where(
+			and(
+				eq(articles.ticker, code),
+				sourceClause,
+				gte(articles.publishedAt, cutoff),
+				since ? gt(articles.fetchedAt, since) : undefined,
+			),
+		)
+		.orderBy(asc(articles.fetchedAt))
+		.limit(limit)
+		.all();
 
 	// 各メタに R2 本文を同梱する。本文は判断に必須。R2 欠損は body=null で返す。
 	const rows = await Promise.all(

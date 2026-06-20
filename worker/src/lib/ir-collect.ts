@@ -13,6 +13,7 @@
 //   advantest/lasertec/murata は記事リンクが PDF/カレンダーで本文HTMLが取れないため、
 //   一覧の見出しを本文として保存する (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。
 
+import { db } from "./db";
 import type { Env } from "./env";
 import {
 	DEFAULT_LIMIT,
@@ -21,6 +22,7 @@ import {
 	parseKioxiaArticle,
 	parseList,
 } from "./ir-sources";
+import { articles } from "./schema";
 import { type NotifyItem, notifySlack } from "./slack";
 import { fetchHtml, hash, sleep } from "./utils";
 
@@ -54,21 +56,19 @@ async function saveArticle(
 	await env.ARTICLES.put(r2_key, payload, {
 		httpMetadata: { contentType: "application/json" },
 	});
-	await env.DB.prepare(
-		`INSERT OR IGNORE INTO articles
-      (url, ticker, source, title, published_at, ir_category, r2_key, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-		.bind(
-			meta.url,
-			meta.ticker,
-			meta.source,
-			meta.title,
-			meta.published_at,
-			meta.ir_category,
-			r2_key,
-			fetched_at,
-		)
+	await db(env.DB)
+		.insert(articles)
+		.values({
+			url: meta.url,
+			ticker: meta.ticker,
+			source: meta.source,
+			title: meta.title,
+			publishedAt: meta.published_at,
+			irCategory: meta.ir_category,
+			r2Key: r2_key,
+			fetchedAt: fetched_at,
+		})
+		.onConflictDoNothing()
 		.run();
 }
 

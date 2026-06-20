@@ -14,9 +14,12 @@
 // dispatch 実体は GitHub Actions の crash-scenario.yml (repository_dispatch: crash-scenario)。
 // このルートは「起動するだけ」で、暴落シナリオ本文は skill が SLACK_WEBHOOK_URL に投稿する。
 
+import { eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
+import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
+import { slackThreads } from "../lib/schema";
 import { addReaction } from "../lib/slack";
 import { verifySlackSignature } from "../lib/slack-verify";
 import { WATCHLIST } from "../lib/timeseries";
@@ -174,11 +177,16 @@ slack.post("/slack/events", async (c) => {
 	const ev = body.event;
 
 	// 親 ts (thread_ts) で銘柄を復元。slack_threads に無ければ対象外スレッド → 無視。
-	const row = await c.env.DB.prepare(
-		"SELECT ticker, kind, channel FROM slack_threads WHERE thread_ts = ?",
-	)
-		.bind(ev.thread_ts)
-		.first<{ ticker: string; kind: string; channel: string }>();
+	const row =
+		(await db(c.env.DB)
+			.select({
+				ticker: slackThreads.ticker,
+				kind: slackThreads.kind,
+				channel: slackThreads.channel,
+			})
+			.from(slackThreads)
+			.where(eq(slackThreads.threadTs, ev.thread_ts))
+			.get()) ?? null;
 	if (!row) return c.body(null, 200);
 
 	const text = (ev.text ?? "").trim();

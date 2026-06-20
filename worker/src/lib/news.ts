@@ -13,6 +13,8 @@
 // 全ソース UTF-8 (調査済) なので TextDecoder で十分。iconv 不要。
 
 import * as cheerio from "cheerio";
+import { db } from "./db";
+import { articles } from "./schema";
 import { WATCHLIST } from "./timeseries";
 import { fetchHtml, hash, sleep } from "./utils";
 
@@ -116,21 +118,19 @@ async function saveArticle(
 	await env.ARTICLES.put(r2_key, payload, {
 		httpMetadata: { contentType: "application/json" },
 	});
-	await env.DB.prepare(
-		`INSERT OR IGNORE INTO articles
-      (url, ticker, source, title, published_at, ir_category, r2_key, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-		.bind(
-			meta.url,
-			meta.ticker,
-			`${SITE}:${meta.ticker}`,
-			meta.title,
-			meta.published_at,
-			null,
-			r2_key,
-			fetched_at,
-		)
+	await db(env.DB)
+		.insert(articles)
+		.values({
+			url: meta.url,
+			ticker: meta.ticker,
+			source: `${SITE}:${meta.ticker}`,
+			title: meta.title,
+			publishedAt: meta.published_at,
+			irCategory: null,
+			r2Key: r2_key,
+			fetchedAt: fetched_at,
+		})
+		.onConflictDoNothing()
 		.run();
 }
 
@@ -187,4 +187,65 @@ export async function collectNews(
 		}
 	}
 	return { results, freshTickers };
+}
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+	const BASE = "https://kabutan.jp/stock/news?code=285A";
+
+	describe("parseKabutanList", () => {
+		const html = [
+			"<table class='s_news_list'>",
+			"<tr><td><time>06/18</time></td><td><a href='/news/marketnews/?b=n1'>業績上方修正</a></td></tr>",
+			"<tr><td><time>06/17</time></td><td><a href='https://kabutan.jp/news/?b=n2'>新製品発表</a></td></tr>",
+			"<tr><td>ヘッダ行 (aなし)</td></tr>",
+			"</table>",
+		].join("");
+
+		it("相対hrefを絶対URLに解決しタイトル・日付を拾う", () => {
+			const rows = parseKabutanList(html, BASE);
+			expect(rows).toEqual([
+				{
+					url: "https://kabutan.jp/news/marketnews/?b=n1",
+					title: "業績上方修正",
+					date: "06/18",
+				},
+				{
+					url: "https://kabutan.jp/news/?b=n2",
+					title: "新製品発表",
+					date: "06/17",
+				},
+			]);
+		});
+		it("aリンクの無い行 (ヘッダ等) は除外する", () => {
+			expect(parseKabutanList(html, BASE)).toHaveLength(2);
+		});
+	});
+
+	describe("parseKabutanArticle", () => {
+		it("見出しと本文を抽出する", () => {
+			const html =
+				"<h2>テスト見出し</h2><div id='shijyo_news_text'>  本文テキスト  </div>";
+			const r = parseKabutanArticle(html);
+			expect(r.title).toBe("テスト見出し");
+			expect(r.body).toBe("本文テキスト");
+		});
+		it("本文の優先順 (#shijyo_news_text → .news_body → article → main)", () => {
+			const html = "<h2>T</h2><div class='news_body'>fallback本文</div>";
+			expect(parseKabutanArticle(html).body).toBe("fallback本文");
+		});
+	});
+
+	describe("normDate", () => {
+		it("4桁年は YYYY-MM-DD に正規化する", () => {
+			expect(normDate("2026/6/8")).toBe("2026-06-08");
+			expect(normDate("2026-06-08 17:00")).toBe("2026-06-08");
+		});
+		it("年なし MM/DD は当年補完せず MM-DD だけ拾う", () => {
+			expect(normDate("06/18")).toBe("06-18");
+		});
+		it("日付が取れなければ unknown", () => {
+			expect(normDate("日付不明")).toBe("unknown");
+		});
+	});
 }

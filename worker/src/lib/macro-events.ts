@@ -17,6 +17,8 @@
 //          各年テーブルの1列目「開催日および結果」が "7月30日（木）・31日（金）" 形式 (最終日=結果日)。
 //          日本時間昼に出るので jst_effect_date は付けない (当日に効く)。
 
+import { db } from "./db";
+import { macroEvents } from "./schema";
 import { fetchHtml } from "./utils";
 
 export interface MacroEventsEnv {
@@ -196,20 +198,28 @@ function dedupe(events: MacroEvent[]): MacroEvent[] {
 
 // 1イベントを D1 に保存。冪等キー = (date, kind)。再スクレープで最新の label/note に上書き。
 async function saveEvent(env: MacroEventsEnv, e: MacroEvent): Promise<void> {
-	await env.DB.prepare(
-		`INSERT OR REPLACE INTO macro_events
-       (date, kind, label, impact, jst_effect_date, note, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-	)
-		.bind(
-			e.date,
-			e.kind,
-			e.label,
-			e.impact,
-			e.jst_effect_date,
-			e.note,
-			new Date().toISOString(),
-		)
+	const fetched_at = new Date().toISOString();
+	await db(env.DB)
+		.insert(macroEvents)
+		.values({
+			date: e.date,
+			kind: e.kind,
+			label: e.label,
+			impact: e.impact,
+			jstEffectDate: e.jst_effect_date,
+			note: e.note,
+			fetchedAt: fetched_at,
+		})
+		.onConflictDoUpdate({
+			target: [macroEvents.date, macroEvents.kind],
+			set: {
+				label: e.label,
+				impact: e.impact,
+				jstEffectDate: e.jst_effect_date,
+				note: e.note,
+				fetchedAt: fetched_at,
+			},
+		})
 		.run();
 }
 

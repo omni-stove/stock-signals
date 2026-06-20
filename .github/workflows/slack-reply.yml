@@ -45,15 +45,27 @@ jobs:
       # Action 実行時は CLAUDE.md / AGENTS.md の指示が判断の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
+      # payload.ticker を watchlist の許可リストと照合し、未知の銘柄なら即 fail する。
+      # ticker は後段で skill prompt に文字列展開されるため、ここで弾くことで
+      # 細工した銘柄文字列による prompt インジェクションを防ぐ (env 経由 + 許可リスト)。
+      - name: Validate ticker
+        env:
+          TICKER: ${{ github.event.client_payload.ticker }}
+        run: |
+          if ! grep -qE "^[[:space:]]*-[[:space:]]*code:[[:space:]]*\"?${TICKER}\"?[[:space:]]*$" config/watchlist.yaml; then
+            echo "::error::unknown ticker: $TICKER"; exit 1
+          fi
+
       # Worker の数値データ (earnings/prices/daily/premarket/margin) を fetch + 正規化し、1 つの
       # JSON にまとめて prompt に渡す。signal-judge と同じ judge-context.sh をそのまま使う。
       - name: Build numeric context
-        run: |
-          ticker="${{ github.event.client_payload.ticker }}"
-          bash scripts/judge-context.sh "$ticker" > "$RUNNER_TEMP/numctx.json"
+        run: bash scripts/judge-context.sh "$TICKER" > "$RUNNER_TEMP/numctx.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # payload 由来の値は ${{ }} で run/jq/prompt に生展開せず env 経由で渡す
+          # (Slack ユーザーの自由入力が Worker 経由で透過してくるためインジェクション対策)。
+          TICKER: ${{ github.event.client_payload.ticker }}
 
       # Slack スレッドの会話履歴を conversations.replies で丸ごと取得し、skill に渡す JSON に整形する。
       # 返信本文 (client_payload.text) は履歴の末尾としても来るが、payload からも明示で渡す
@@ -61,19 +73,17 @@ jobs:
       - name: Build thread context
         id: thread
         run: |
-          channel='${{ github.event.client_payload.channel }}'
-          thread_ts='${{ github.event.client_payload.thread_ts }}'
           # conversations.replies: 親 + 全返信を ts 昇順で返す。channels:history スコープが要る。
-          curl -s "https://slack.com/api/conversations.replies?channel=${channel}&ts=${thread_ts}&limit=100" \
+          curl -s "https://slack.com/api/conversations.replies?channel=${CHANNEL}&ts=${THREAD_TS}&limit=100" \
             -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" > "$RUNNER_TEMP/replies.json"
           # skill に渡す形に整形: { channel, thread_ts, kind, replies: [{user,text,ts}, ...] }。
           # conversations.replies が失敗 (ok:false) した場合も channel/thread_ts/kind は payload から
           # 必ず埋め、replies は空配列でフォールバック (skill は payload の text を末尾とみなして答える)。
           jq -n \
-            --arg channel "$channel" \
-            --arg thread_ts "$thread_ts" \
-            --arg kind '${{ github.event.client_payload.kind }}' \
-            --arg text '${{ github.event.client_payload.text }}' \
+            --arg channel "$CHANNEL" \
+            --arg thread_ts "$THREAD_TS" \
+            --arg kind "$KIND" \
+            --arg text "$TEXT" \
             --slurpfile r "$RUNNER_TEMP/replies.json" '
             ($r[0].messages // []) as $msgs
             | {
@@ -86,6 +96,11 @@ jobs:
               }' > "$RUNNER_TEMP/thread.json"
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          # payload 由来の値はすべて env 経由で渡す (run/jq への ${{ }} 生展開を排除)。
+          CHANNEL: ${{ github.event.client_payload.channel }}
+          THREAD_TS: ${{ github.event.client_payload.thread_ts }}
+          KIND: ${{ github.event.client_payload.kind }}
+          TEXT: ${{ github.event.client_payload.text }}
 
       - name: Run slack-reply skill
         uses: anthropics/claude-code-action@v1

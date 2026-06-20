@@ -62,6 +62,17 @@ jobs:
       # Action 実行時は CLAUDE.md / AGENTS.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
+      # payload/inputs.ticker を watchlist の許可リストと照合し、未知の銘柄なら即 fail する。
+      # ticker は後段で skill prompt に文字列展開されるため、ここで弾くことで
+      # 細工した銘柄文字列による prompt インジェクションを防ぐ (env 経由 + 許可リスト)。
+      - name: Validate ticker
+        env:
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
+        run: |
+          if ! grep -qE "^[[:space:]]*-[[:space:]]*code:[[:space:]]*\"?${TICKER}\"?[[:space:]]*$" config/watchlist.yaml; then
+            echo "::error::unknown ticker: $TICKER"; exit 1
+          fi
+
       # 既存コンテキスト本文 + カーソル以降の新規 IR/ニュースを fetch + 正規化し、1 つの JSON に
       # まとめて prompt に渡す。/context 取得・カーソル抽出・/pull /pull-news の since 付き取得・
       # 新規0判定・次カーソル算出は決定論的なのでここ (step) で完結させ、skill には fetch を
@@ -70,13 +81,13 @@ jobs:
       # skill にパスを渡す。skill はそのファイルを Read するだけ。status (no-update / ok) で
       # skill の分岐が決まる。
       - name: Build context input
-        run: |
-          ticker="${{ github.event.client_payload.ticker || inputs.ticker }}"
-          bash scripts/context-input.sh "$ticker" > "$RUNNER_TEMP/ctxin.json"
+        run: bash scripts/context-input.sh "$TICKER" > "$RUNNER_TEMP/ctxin.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
+          # payload/inputs 由来の ticker は run へ生展開せず env 経由で渡す。
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
 
       - name: Run context-builder skill
         uses: anthropics/claude-code-action@v1

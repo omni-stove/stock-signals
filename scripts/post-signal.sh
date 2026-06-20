@@ -15,7 +15,8 @@
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意)。
 #
 # 出力 (stdout): "slack ok" または "slack skipped" の 1 行。skill の stdout 行はこれを使う。
-# テスト/オフライン用の注入口: POST_SIGNAL_DRYRUN=1 で curl を叩かず "slack skipped" を返す。
+# テスト/オフライン用の注入口: POST_SIGNAL_DRYRUN=1 で curl を叩かず、組み立てた JSON
+#   ペイロードを stderr に "POST <url> <json>" 形式で出すだけにする (bats が blocks を検証できる)。
 
 set -euo pipefail
 
@@ -25,12 +26,9 @@ BODY="${3:?body required}"
 
 : "${WORKER_URL:?WORKER_URL is required}"
 
-if [[ "${POST_SIGNAL_DRYRUN:-}" == "1" ]]; then
-  echo "slack skipped"
-  exit 0
-fi
-
 # headline + 本文行を section blocks に組み立てる。本文は改行区切りで 1 行 1 section。
+# skill がリテラル "\n" (バックスラッシュ+n) を渡してくることがあるので、split の前に
+# gsub で本物の改行へ正規化する。実改行・リテラル \n のどちらで渡されても同じ結果になる。
 PAYLOAD="$(jq -n \
   --arg ticker "$TICKER" \
   --arg headline "$HEADLINE" \
@@ -40,9 +38,17 @@ PAYLOAD="$(jq -n \
     kind: "signal-judge",
     text: $headline,
     blocks: ([{type:"section", text:{type:"mrkdwn", text:$headline}}]
-      + ([$body | split("\n")[] | select(length > 0)
+      + ([$body | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0)
           | {type:"section", text:{type:"mrkdwn", text:.}}]))
   }')"
+
+# テスト/オフライン用の注入口: POST_SIGNAL_DRYRUN=1 で curl を叩かず、組み立てた payload を
+# stderr に出して "slack skipped" を返す。本物の呼び出しでは curl を使う。
+if [[ "${POST_SIGNAL_DRYRUN:-}" == "1" ]]; then
+  printf 'POST %s %s\n' "${WORKER_URL%/}/slack/post" "$(jq -c . <<<"$PAYLOAD")" >&2
+  echo "slack skipped"
+  exit 0
+fi
 
 AUTH=()
 [[ -n "${SYNC_TOKEN:-}" ]] && AUTH=(-H "Authorization: Bearer ${SYNC_TOKEN}")

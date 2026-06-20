@@ -59,6 +59,17 @@ jobs:
       # Action 実行時は CLAUDE.md / AGENTS.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
+      # payload/inputs.ticker を watchlist の許可リストと照合し、未知の銘柄なら即 fail する。
+      # ticker は後段で skill prompt に文字列展開されるため、ここで弾くことで
+      # 細工した銘柄文字列による prompt インジェクションを防ぐ (env 経由 + 許可リスト)。
+      - name: Validate ticker
+        env:
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
+        run: |
+          if ! grep -qE "^[[:space:]]*-[[:space:]]*code:[[:space:]]*\"?${TICKER}\"?[[:space:]]*$" config/watchlist.yaml; then
+            echo "::error::unknown ticker: $TICKER"; exit 1
+          fi
+
       # SQ (日本/米メジャー)・指数リバランスは GNU date で計算し、FOMC/日銀は Worker
       # /latest?kind=macro-events (D1) から取得して近接イベントを 1 行に整形し prompt に渡す。
       # skill 本体にはカレンダーを読ませない方針 (決定論的な算出は step 側で完結)。
@@ -75,12 +86,12 @@ jobs:
       # skill には curl を叩かせず数値解釈と判断だけをさせる。JSON は複数行・特殊文字を含むので prompt に
       # 直接埋めず、ファイルに書いて skill にパスを渡す。skill はそのファイルを Read するだけ。
       - name: Build numeric context
-        run: |
-          ticker="${{ github.event.client_payload.ticker || inputs.ticker }}"
-          bash scripts/judge-context.sh "$ticker" > "$RUNNER_TEMP/numctx.json"
+        run: bash scripts/judge-context.sh "$TICKER" > "$RUNNER_TEMP/numctx.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # payload/inputs 由来の ticker は run へ生展開せず env 経由で渡す。
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
 
       - name: Run signal-judge skill
         uses: anthropics/claude-code-action@v1

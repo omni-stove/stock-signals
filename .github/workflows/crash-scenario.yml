@@ -46,6 +46,17 @@ jobs:
       # Action 実行時は CLAUDE.md / AGENTS.md の指示が判断の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
+      # payload.ticker を watchlist の許可リストと照合し、未知の銘柄なら即 fail する。
+      # ticker は後段で skill prompt に文字列展開されるため、ここで弾くことで
+      # 細工した銘柄文字列による prompt インジェクションを防ぐ (env 経由 + 許可リスト)。
+      - name: Validate ticker
+        env:
+          TICKER: ${{ github.event.client_payload.ticker }}
+        run: |
+          if ! grep -qE "^[[:space:]]*-[[:space:]]*code:[[:space:]]*\"?${TICKER}\"?[[:space:]]*$" config/watchlist.yaml; then
+            echo "::error::unknown ticker: $TICKER"; exit 1
+          fi
+
       # SQ (日本/米メジャー)・指数リバランスは GNU date で計算し、FOMC/日銀は Worker
       # /latest?kind=macro-events (D1) から取得して近接イベントを 1 行に整形し prompt に渡す。
       # メジャーSQ unwind や near macro print は暴落シナリオの trigger になりうる。
@@ -60,12 +71,12 @@ jobs:
       # JSON にまとめて prompt に渡す。signal-judge と同じ judge-context.sh をそのまま使う
       # (暴落プリモーテムも同じ数値=レンジ位置/MA乖離/信用残/days_to_earnings から fragility を読む)。
       - name: Build numeric context
-        run: |
-          ticker="${{ github.event.client_payload.ticker }}"
-          bash scripts/judge-context.sh "$ticker" > "$RUNNER_TEMP/numctx.json"
+        run: bash scripts/judge-context.sh "$TICKER" > "$RUNNER_TEMP/numctx.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # payload 由来の ticker は run へ生展開せず env 経由で渡す。
+          TICKER: ${{ github.event.client_payload.ticker }}
 
       - name: Run crash-scenario skill
         uses: anthropics/claude-code-action@v1

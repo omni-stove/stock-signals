@@ -96,24 +96,13 @@ Calibration traps:
 
 ## Post to Slack (only output)
 
-Post via the Worker's `/slack/post` (Bot token), **not** a raw webhook. The Worker records the
-returned `ts` against this `<ticker>` in D1, so a user replying in-thread gets routed back here
-(slack-reply). Pass `ticker` and `kind:"crash-scenario"`.
+Build the `blocks` array — one block per scenario (「<順位>. <名前> [固有/マクロ] 確度:<高/中/低>」
+then きっかけ / 先行サイン / 想定下落 / 防御 lines), 総括 block last. The script prepends the header
+and posts.
 
 ```
-curl -s -X POST "$WORKER_URL/slack/post" \
-  -H "Authorization: Bearer $SYNC_TOKEN" -H 'Content-Type: application/json' -d '{
-  "ticker": "<ticker>",
-  "kind": "crash-scenario",
-  "text": "⚠️ <ticker> <name> 暴落プリモーテム (<N> scenarios)",
-  "blocks": [ ... a header, then one block per scenario: 「<順位>. <名前> [固有/マクロ] 確度:<高/中/低>」
-              followed by きっかけ / 先行サイン / 想定下落 / 防御 lines, then a 総括 block:
-              dominant 1–2 risks + the one indicator to watch this week ... ]
-}'
+bash scripts/post-reply.sh crash <ticker> <name> '<blocks-json>'
 ```
-
-`channel` is omitted — the Worker fills it from `SLACK_REPLY_CHANNEL`. If `/slack/post` returns
-503 (`SLACK_BOT_TOKEN` unset), skip the post and print the scenarios to stdout instead.
 
 ## stdout — one line, no narration
 

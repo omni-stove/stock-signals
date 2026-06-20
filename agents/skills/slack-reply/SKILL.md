@@ -49,21 +49,12 @@ analysis post and any back-and-forth. `@<path>` is the **numeric context** JSON 
 
 ## Post the reply to the thread (only output)
 
-Post back into the **same thread** via the Worker's `/slack/post` with `thread_ts` set. The Worker
-does not re-record thread replies, so the user can keep the conversation going (their next reply
-re-fires this skill).
+Pass the `<thread-json>` path and your reply; the script pulls channel/thread_ts from it and posts
+back into the same thread.
 
 ```
-curl -s -X POST "$WORKER_URL/slack/post" \
-  -H "Authorization: Bearer $SYNC_TOKEN" -H 'Content-Type: application/json' -d '{
-  "channel": "<channel from thread-json>",
-  "thread_ts": "<thread_ts from thread-json>",
-  "text": "<your reply>"
-}'
+bash scripts/post-reply.sh reply <thread-json> "<your reply>"
 ```
-
-Use `channel` and `thread_ts` exactly as given in `<thread-json>`. If `/slack/post` returns 503
-(`SLACK_BOT_TOKEN` unset) the feature is off — print the reply to stdout instead.
 
 ## stdout — one line, no narration
 

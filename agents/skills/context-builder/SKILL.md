@@ -28,22 +28,7 @@ Read the `@<path>` JSON.
 - `status: "no-update"` → print `<ticker> ir=0 news=0 (no update)` and exit. Skip the Slack post and signal-judge.
 - `status: "ok"` → continue to step 3.
 
-Shape of the `status: "ok"` JSON:
-```
-{
-  "status": "ok",
-  "context_body": "<the whole existing body; empty string on first run>",
-  "cursors": {
-    "ir":   { "current": "<old>", "next": "<advance to this>" },
-    "news": { "current": "<old>", "next": "<advance to this>" }
-  },
-  "ir_count": 2, "news_count": 1,
-  "ir_items":   [{ "url", "title", "published_at", "ir_category", "fetched_at", "body" }, ...],
-  "news_items": [{ ... same shape, "ir_category" is null ... }]
-}
-```
-
-`ir_items` are IR (official IR + TDnet + `rating`); `news_items` are per-ticker news. Both are already filtered to since each cursor and ordered oldest-first. When `context_body` is empty (first run), build the body from scratch using the section structure in step 4. On POST (step 4), pass `cursors.*.next` verbatim.
+`ir_items` are IR (official IR + TDnet + `rating`); `news_items` are per-ticker news. Both are already filtered to since each cursor and ordered oldest-first. Empty `context_body` means first run — build the body from scratch (step 4). Pass `cursors.*.next` verbatim to the script in step 5.
 
 ### 3. Read each new item and select what is material to the context
 
@@ -64,7 +49,7 @@ Treat items by `published_at`. A recent material update revises both the relevan
 
 Securities ratings (`ir_category="rating"`) are the exception to the 30-day rule: the target price is a 6–12-month view, so put it in the **## 証券会社レーティング** section, not the topics list.
 
-### 4. Regenerate the whole body to a file, then POST it
+### 4. Regenerate the whole body to a file
 
 Rebuild the whole body (not incremental edits), keep the section structure below, and write it to a file (e.g. `/tmp/<ticker>-context.md`).
 
@@ -96,37 +81,12 @@ Body structure (Japanese; keep these headings stable — signal-judge reads them
 <latest results vs expectations, current guidance, known next-earnings considerations — facts only>
 ```
 
-POST the body and the advanced cursors to the Worker in one call (upsert). Pass `cursors.ir.next` / `cursors.news.next` verbatim. `$WORKER_URL` / `$SYNC_TOKEN` are in the job env.
+### 5. Commit the body: upsert, post to Slack, fire signal-judge
+
+Pass the body file and the advanced cursors (`cursors.ir.next` / `cursors.news.next`, verbatim). The script upserts the context to the Worker, posts the full body to `$SLACK_CONTEXT_CHANNEL` (skipped if empty), and fires the signal-judge workflow.
 
 ```
-jq -n --arg code "<ticker>" --rawfile body /tmp/<ticker>-context.md \
-  --arg ir "<cursors.ir.next>" --arg news "<cursors.news.next>" \
-  '{code:$code, body:$body, ir_cursor:(if $ir=="" then null else $ir end), news_cursor:(if $news=="" then null else $news end)}' \
-  | curl -sf -X POST -H "Authorization: Bearer $SYNC_TOKEN" -H 'Content-Type: application/json' \
-      --data @- "$WORKER_URL/context"
-```
-
-### 5. Post the full body to Slack
-
-After the POST succeeds, send the full body to the context channel. Use the Worker's `/slack/post` with `channel` set explicitly to `$SLACK_CONTEXT_CHANNEL`. Do not pass `thread_ts` or `ticker`.
-
-```
-jq -n --arg ch "$SLACK_CONTEXT_CHANNEL" --rawfile text /tmp/<ticker>-context.md \
-  '{channel:$ch, text:$text}' \
-  | curl -sf -X POST -H "Authorization: Bearer $SYNC_TOKEN" -H 'Content-Type: application/json' \
-      --data @- "$WORKER_URL/slack/post"
-```
-
-If `SLACK_CONTEXT_CHANNEL` is empty, skip the Slack post (do not fail the run).
-
-### 6. Fire signal-judge
-
-Trigger the `signal-judge` workflow via `repository_dispatch` from inside this job (needs `contents: write` on the workflow token):
-
-```
-gh api "repos/${GITHUB_REPOSITORY}/dispatches" \
-  -f event_type=signal-judge \
-  -F "client_payload[ticker]=<ticker>"
+bash scripts/post-context.sh <ticker> /tmp/<ticker>-context.md "<cursors.ir.next>" "<cursors.news.next>"
 ```
 
 ## Output style (stdout)

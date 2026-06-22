@@ -32,22 +32,21 @@ Read the `@<path>` JSON.
 
 ### 3. Read each new item and select what is material to the context
 
-For each item, decide whether it changes how the name should be understood over the next weeks. Fold in only what shifts the picture; drop restatements and noise.
+The test for every item is whether it changes how the name should be understood over the
+next weeks. Fold in only what shifts that picture; drop restatements and noise.
 
-Fold into the context:
-- **Management & capital decisions** — capex plans, capacity ramp up/down, M&A / alliances / supply agreements, buybacks / dilution / financing, leadership or strategy changes.
-- **Product lineup & tech roadmap** — product generations and their cycle position (e.g. BiCS layer count, HBM entry, tester/inspection generations), wins/losses vs competitors, customer-concentration shifts.
-- **Structural supply/demand** — position in the price cycle, inventory, end-market demand signals that persist beyond a day.
-- **Earnings & guidance** — results vs expectations and revised guidance (durable facts, not the tape reaction).
+What earns a place is a durable fact: a management or capital decision (capex, capacity,
+M&A, alliances, financing, strategy), a move in the product lineup or tech roadmap (a
+generation advancing, a customer-concentration or competitive shift), a structural
+supply/demand turn that outlives a single session, or earnings/guidance against
+expectations. What never belongs is a buy/sell view, the day's tape (intraday moves, PTS,
+one-session volume), or a restatement of something already recorded.
 
-Keep out of the body:
-- A buy/sell recommendation.
-- Intraday price moves, PTS premiums, single-session volume spikes.
-- Rehashes of already-recorded facts.
-
-Treat items by `published_at`. A recent material update revises both the relevant section AND the "直近の重大トピック" list. Items older than ~30 days fold into the structural sections only, never the topics list.
-
-Securities ratings (`ir_category="rating"`) are the exception to the 30-day rule: the target price is a 6–12-month view, so put it in the **## 証券会社レーティング** section, not the topics list.
+`published_at` governs where a fact lands, not whether it counts. A fresh material fact
+revises both its structural section AND the 直近の重大トピック list; once it is ~30 days
+old its lasting part stays in the structural sections and it leaves the topics list. The
+exception is securities ratings (`ir_category="rating"`): a target price is a 6–12-month
+view, so it goes to **## 証券会社レーティング** regardless of age, never the topics list.
 
 ### 4. Regenerate the whole body to a file
 

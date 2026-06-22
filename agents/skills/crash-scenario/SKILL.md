@@ -5,12 +5,12 @@ description: For a single ticker given as argument, read that ticker's living co
 
 # crash-scenario
 
-You are a risk manager running a **pre-mortem** on one ticker: assume the position is dead
-six months from now and work backwards — *what killed it?* You are not calling buy or sell.
-You are mapping the downside so it is not a surprise. Read the living context and the current
-market picture, enumerate the plausible ways this name drops hard, and post the set to Slack.
-This is judgment — the notes below say what the inputs mean and where the traps are; they
-don't give you the scenarios. State each scenario's likelihood honestly, including "low."
+You are a risk manager running a **pre-mortem** on one ticker: the position is dead six
+months out — what killed it? You are not calling buy or sell; you are mapping the downside
+so it is not a surprise. Read the living context and the current market picture, enumerate
+the plausible ways this name drops hard, and post the set to Slack. This is judgment — the
+notes below say what the inputs mean and where the traps are; they don't give you the
+scenarios. State each scenario's likelihood honestly, including "low."
 
 ## Output — a set of crash scenarios
 
@@ -25,13 +25,12 @@ sides:
 
 Each scenario is one block:
 
-- **きっかけ (trigger)** — the specific event that starts it (concrete, not "もし悪化したら").
+- **きっかけ (trigger)** — the specific event that starts it; concrete, not a conditional.
 - **先行サイン (leading signs)** — what you'd see *before/as* it breaks, tied to inputs you can
-  actually watch (e.g. `vol_x_20d` 急増 without news, `ma25` 割れ, 買残 急増, SOX 連夜安, 決算 days_to_earnings).
-- **想定下落 (severity)** — a rough magnitude band (e.g. −8〜15% gap, −25%+ trend break). Be a
-  range, not false precision; anchor to range位置 / MA乖離 / 過去の similar moves where you can.
-- **効きにくさ / 防御 (defense)** — how to size or hedge against it (減配/損切りライン目安, 決算跨ぎ回避,
-  相関の高い指標で先回り). One line.
+  actually watch (`vol_x_20d`, MA割れ, 買残, SOX, `days_to_earnings`).
+- **想定下落 (severity)** — a rough magnitude band, not false precision; anchor it to range位置 /
+  MA乖離 / past similar moves where you can.
+- **効きにくさ / 防御 (defense)** — how to size or hedge against it. One line.
 
 End with a **総括**: which 1–2 scenarios actually dominate the risk right now, and the single
 indicator most worth watching this week.
@@ -75,26 +74,24 @@ Run manually or on a schedule.
 
 **Read the inputs for fragility, not direction.** The same picture that makes a bullish call
 also tells you how the unwind looks: a parabolic run (large `ma25_dev_pct`, thinning `vol_x_20d`)
-is the *setup* for a sharp mean-reversion scenario; high `range_pct` means there's air below; a
-near `days_to_earnings` is a scheduled binary; built-up 買残 is the fuel that turns a dip into a
-cascade. Tie every scenario to something concrete in the inputs or the living context — no generic
-"市況が悪化したら下がる."
+is the *setup* for a sharp mean-reversion; high `range_pct` means there's air below; a near
+`days_to_earnings` is a scheduled binary; built-up 買残 is the fuel that turns a dip into a
+cascade. Tie every scenario to something concrete in the inputs or the living context.
 
 Calibration traps:
 
 - **Don't inflate every scenario to high likelihood.** A pre-mortem lists tail risks too —
-  mark them "low" honestly. A list where everything is "高" is useless. Reserve "高" for risks
-  with a fresh trigger or a near-term catalyst (e.g. 決算直前 + rich valuation).
-- **Severity scales with how far it's run, not how scary the story is.** A −30% scenario needs
-  either a high `range_pct` (room to fall), a rich multiple vs `fair_per`, or a structural break —
-  not just a bad headline.
-- **Idiosyncratic vs macro must be separable.** "SOX が落ちたら下がる" is macro; "次の決算で
-  データセンター向けが失速" is idiosyncratic. Don't collapse them — a hedge against one doesn't
-  cover the other, and the 総括 should say which type dominates.
-- **Sector contagion** — for semiconductor names, the role matters: a memory glut hits 285A first,
-  a capex freeze hits 6857/6920 first, a smartphone air-pocket hits 6981 first. Name the channel.
-- **Event context** — メジャーSQ unwind can *be* the trigger for a near-term gap (treat as a real,
-  if short-lived, scenario); a near high-impact macro print is a scheduled risk-off catalyst.
+  mark them "low" honestly; a list where everything is "高" is useless. Reserve "高" for a risk
+  with a fresh trigger or a near-term catalyst.
+- **Severity scales with how far it's run, not how scary the story is.** A deep-drop scenario
+  needs a high `range_pct`, a rich multiple vs `fair_per`, or a structural break — not just a bad
+  headline.
+- **Idiosyncratic vs macro must be separable.** A hedge against one doesn't cover the other, so
+  don't collapse them — the 総括 should say which type dominates.
+- **Sector contagion** — for semiconductor names the `sector_role` sets which channel hits first
+  (memory glut, capex freeze, end-demand air-pocket). Name the channel.
+- **Event context** — a メジャーSQ unwind can *be* the trigger for a near-term gap (real, if
+  short-lived); a near high-impact macro print is a scheduled risk-off catalyst.
 
 ## Post to Slack (only output)
 

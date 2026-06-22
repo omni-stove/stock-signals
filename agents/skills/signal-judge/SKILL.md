@@ -24,6 +24,10 @@ JSON. Read both. The JSON is self-describing — what isn't obvious from the fie
   continues or reverses; 証券会社レーティング is a 6–12mo view that corroborates (weight by 発行日 /
   アップサイド% / 信頼度), never dominates. Null → `context: unavailable`, call on price alone.
 - In `prices`, **ignore `pts_price`** (use `change_pct`/`volume`/`quote_time`/`slot`).
+- `prices.quote_status: closed` → the tape is stale; demote it to backdrop, lead on context + `premarket`.
+- `market_phase` (top level, JST trading-day position) disambiguates a `closed` `quote_status` —
+  same stale tape, but `premarket` (pre-open, digesting overnight NY → lead on `premarket`/context)
+  vs `closed` (after close → react to the close + tonight's NY setup) changes what the level means.
 - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.
 - `<ticker>`'s `name`/`sector` are in `config/watchlist.yaml`.
 

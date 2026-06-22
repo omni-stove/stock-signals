@@ -32,6 +32,35 @@ fi
 : "${WORKER_URL:?WORKER_URL is required}"
 AUTH=(-H "Authorization: Bearer ${SYNC_TOKEN:-}")
 
+# --- market_phase: 今が JST で東証のどのフェーズか (寄り前/場中/昼休み/引け後) -----
+# quote_status (prices の鮮度) は「最新の取得値がライブか引け値か」しか分からず、寄り前と
+# 引け後がどちらも closed になり両者を区別できない。skill が市場フェーズを直接読めるよう、
+# JST の現在時刻と曜日から東証の場立てフェーズを 1 フィールドで渡す。
+#   premarket          : 平日 〜09:00     (寄り前。前夜 NY を消化中)
+#   morning_session    : 平日 09:00-11:30 (前場ザラ場)
+#   lunch_break        : 平日 11:30-12:30 (昼休み)
+#   afternoon_session  : 平日 12:30-15:30 (後場ザラ場)
+#   closed             : 平日 15:30〜 / 土日 (引け後・休場)
+# テスト用注入口: NOW (= "YYYY-MM-DD HH:MM" の JST 文字列) があれば現在時刻の代わりに使う。
+NOW_JST="${NOW:-$(TZ=Asia/Tokyo "$DATE" '+%F %H:%M')}"
+JST_HM="$(printf '%s' "$NOW_JST" | sed -n 's/^[0-9-]* \([0-9][0-9]\):\([0-9][0-9]\).*/\1\2/p')"
+JST_DOW="$(TZ=Asia/Tokyo "$DATE" -d "$NOW_JST" '+%u')"  # 1=月 .. 7=日
+# 先頭ゼロ付きの時刻 (例 0900) は 8 進数とみなされ 08/09 で落ちるため 10# で 10 進数に固定する。
+hm=$((10#${JST_HM:-0000}))
+if [[ "$JST_DOW" -ge 6 ]]; then
+  MARKET_PHASE="closed"
+elif [[ "$hm" -lt 900 ]]; then
+  MARKET_PHASE="premarket"
+elif [[ "$hm" -lt 1130 ]]; then
+  MARKET_PHASE="morning_session"
+elif [[ "$hm" -lt 1230 ]]; then
+  MARKET_PHASE="lunch_break"
+elif [[ "$hm" -lt 1530 ]]; then
+  MARKET_PHASE="afternoon_session"
+else
+  MARKET_PHASE="closed"
+fi
+
 # Worker /latest を引く。失敗 (非200/空) は "{}" を返す。空文字を jq に渡すと parse error で
 # 落ちるため、ここで必ず有効な JSON ("{}") に正規化しておく (以降の jq は安全に走る)。
 #
@@ -218,11 +247,22 @@ fi
 
 # --- prices: トレンドの素材だけ渡す (判断は skill) ---------------------------
 # pts_price は skill 側で無視する方針なので JSON には載せるが「使うな」は SKILL 側に明記。
+#
+# 鮮度ラベル (premarket と同じ思想): 日中足は引け後に新しい slot が積まれず、引け後の judge は
+# 引け値を「最新」と見てしまう。最新行の fetched_at が >~2h なら quote_status="closed" を渡す。
+PRICE_FETCHED="$(echo "$PRICES" | jq -r '.rows[0].fetched_at // empty' 2>/dev/null || echo "")"
+if [[ -n "$PRICE_FETCHED" ]]; then
+  price_age_h=$(( ( $("$DATE" +%s) - $("$DATE" -d "$PRICE_FETCHED" +%s) ) / 3600 ))
+  if [[ "$price_age_h" -gt 2 ]]; then quote_status="closed"; else quote_status="live"; fi
+else
+  price_age_h=0
+  quote_status="unavailable"
+fi
 if [[ -n "$PRICES" ]]; then
-  PRICES_JSON="$(echo "$PRICES" | jq '
+  PRICES_JSON="$(echo "$PRICES" | jq --arg qs "$quote_status" --argjson age "$price_age_h" '
     (.rows // []) as $r |
     if ($r | length) > 0
-    then {status:"ok", rows_n:($r|length), latest:$r[0], series:($r | map({slot, change_pct, volume, quote_time}))}
+    then {status:"ok", quote_status:$qs, age_hours:$age, rows_n:($r|length), latest:$r[0], series:($r | map({slot, change_pct, volume, quote_time}))}
     else {status:"unavailable"} end')"
 else
   PRICES_JSON='{"status":"unavailable"}'
@@ -232,10 +272,11 @@ fi
 jq -n \
   --arg ticker "$TICKER" \
   --arg today "$TODAY" \
+  --arg market_phase "$MARKET_PHASE" \
   --arg context_body "${CONTEXT_BODY:-}" \
   --argjson earnings "$EARNINGS_JSON" \
   --argjson premarket "$PREMARKET_JSON" \
   --argjson daily "$DAILY_JSON" \
   --argjson prices "$PRICES_JSON" \
   --argjson margin "$MARGIN_JSON" \
-  '{ticker:$ticker, today:$today, context_body:(if $context_body=="" then null else $context_body end), earnings:$earnings, premarket:$premarket, daily:$daily, prices:$prices, margin:$margin}'
+  '{ticker:$ticker, today:$today, market_phase:$market_phase, context_body:(if $context_body=="" then null else $context_body end), earnings:$earnings, premarket:$premarket, daily:$daily, prices:$prices, margin:$margin}'

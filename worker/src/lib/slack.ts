@@ -84,6 +84,65 @@ export async function addReaction(
 	}
 }
 
+// trigger_id を使って modal (views.open) を開く。スラッシュコマンドの銘柄ピッカーを
+// ephemeral の static_select ではなく真の modal で出すのに使う。trigger_id は発行から
+// 約3秒で失効するので、command ハンドラの中で (waitUntil ではなく) 即座に呼ぶこと。
+// best-effort: トークン未設定/失敗時は false を返し、呼び出し側で握りつぶす。
+export async function openView(
+	env: Env,
+	args: { trigger_id: string; view: unknown },
+): Promise<boolean> {
+	if (!env.SLACK_BOT_TOKEN) return false;
+	try {
+		const res = await fetch("https://slack.com/api/views.open", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json; charset=utf-8",
+				Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+			},
+			body: JSON.stringify({ trigger_id: args.trigger_id, view: args.view }),
+		});
+		const body = (await res.json()) as { ok: boolean; error?: string };
+		if (!body.ok) {
+			console.error(`views.open failed: ${body.error}`);
+			return false;
+		}
+		return true;
+	} catch (e) {
+		console.error(`views.open error: ${(e as Error).message}`);
+		return false;
+	}
+}
+
+// 既に開いている modal を view_id 指定で差し替える (views.update)。trigger_id と違い view_id は
+// 失効しないので、block_actions を受けたあと waitUntil で非同期に呼んでよい。銘柄選択後に
+// ピッカーを「起動しました」表示へ差し替えるのに使う。best-effort: 失敗時は false。
+export async function updateView(
+	env: Env,
+	args: { view_id: string; view: unknown },
+): Promise<boolean> {
+	if (!env.SLACK_BOT_TOKEN) return false;
+	try {
+		const res = await fetch("https://slack.com/api/views.update", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json; charset=utf-8",
+				Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+			},
+			body: JSON.stringify({ view_id: args.view_id, view: args.view }),
+		});
+		const body = (await res.json()) as { ok: boolean; error?: string };
+		if (!body.ok) {
+			console.error(`views.update failed: ${body.error}`);
+			return false;
+		}
+		return true;
+	} catch (e) {
+		console.error(`views.update error: ${(e as Error).message}`);
+		return false;
+	}
+}
+
 export type NotifyItem = {
 	ticker: string;
 	title: string;

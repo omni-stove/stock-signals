@@ -21,7 +21,7 @@ const app = new Hono<{ Bindings: Env }>();
 // /health は疎通確認用に無認証で残す (外形監視/curl で叩けるように)。auth より前に置く。
 app.get("/health", (c) => c.text("ok"));
 
-// /slack/command, /slack/interact (スラッシュコマンド /crash), /slack/events (Events API の
+// /slack/command, /slack/interact (スラッシュコマンド /crash, /signal), /slack/events (Events API の
 // 返信受信) は Slack が Bearer を付けられないので auth の対象外。なりすまし防止は Slack 署名検証
 // (ルート内の verifySlackSignature) が担う。auth より前に置く。
 // ※ /slack/post (Actions からの投稿) は misc 側にあり SYNC_TOKEN 認証配下 (Slack 発ではない)。

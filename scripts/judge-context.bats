@@ -30,6 +30,7 @@ run_judge() {
   run env \
     WORKER_URL="http://test.invalid" \
     SYNC_TOKEN="" \
+    NOW="${NOW:-}" \
     CONTEXT_JSON="${CONTEXT_JSON:-}" \
     FETCH_EARNINGS_JSON="${FETCH_EARNINGS_JSON:-}" \
     FETCH_PRICES_JSON="${FETCH_PRICES_JSON:-}" \
@@ -258,6 +259,46 @@ ramp_rows() {
   FETCH_DAILY_JSON="$(ramp_rows 30 10)" run_judge 285A 2026-06-20
   [ "$(jqf '.daily.range_low_20d')" = "195" ]
   [ "$(jqf '.daily.range_high_20d')" = "395" ]
+}
+
+# === market_phase: JST 時刻ベースの東証フェーズ ============================
+# NOW="YYYY-MM-DD HH:MM" (JST) を注入してフェーズを固定する。2026-06-22 は月曜 (平日)、
+# 2026-06-20 は土曜 (休場)。
+
+@test "market_phase: weekday before 09:00 is premarket" {
+  NOW="2026-06-22 08:30" run_judge 285A 2026-06-22
+  [ "$(jqf '.market_phase')" = "premarket" ]
+}
+
+@test "market_phase: weekday 09:00-11:30 is morning_session" {
+  NOW="2026-06-22 10:00" run_judge 285A 2026-06-22
+  [ "$(jqf '.market_phase')" = "morning_session" ]
+}
+
+@test "market_phase: weekday 11:30-12:30 is lunch_break" {
+  NOW="2026-06-22 12:00" run_judge 285A 2026-06-22
+  [ "$(jqf '.market_phase')" = "lunch_break" ]
+}
+
+@test "market_phase: weekday 12:30-15:30 is afternoon_session" {
+  NOW="2026-06-22 14:00" run_judge 285A 2026-06-22
+  [ "$(jqf '.market_phase')" = "afternoon_session" ]
+}
+
+@test "market_phase: weekday after 15:30 is closed" {
+  NOW="2026-06-22 16:00" run_judge 285A 2026-06-22
+  [ "$(jqf '.market_phase')" = "closed" ]
+}
+
+# 境界: 09:00 ちょうどは morning_session、11:30 ちょうどは lunch_break、15:30 ちょうどは closed
+@test "market_phase: 09:00 boundary opens morning_session" {
+  NOW="2026-06-22 09:00" run_judge 285A 2026-06-22
+  [ "$(jqf '.market_phase')" = "morning_session" ]
+}
+
+@test "market_phase: weekend is always closed" {
+  NOW="2026-06-20 10:00" run_judge 285A 2026-06-20
+  [ "$(jqf '.market_phase')" = "closed" ]
 }
 
 # === 全体 ===================================================================

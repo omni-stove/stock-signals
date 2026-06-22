@@ -67,7 +67,9 @@ Run manually or on a schedule.
    `daily.ma25_dev_pct` / `ma5_dev_pct` (steep run = more to give back), `vol_x_20d`,
    `earnings.days_to_earnings` (a near print is a scheduled catalyst — its own scenario),
    `premarket.sox_change_pct`, `margin.ratio` + WoW `long_chg`/`short_chg` (built-up 買残 = forced
-   selling fuel). **Ignore `pts_price`.**
+   selling fuel). Top-level `market_phase` is the JST trading-day position — `premarket` makes a
+   tonight→open gap-down its own scenario; `closed` hangs the next move on tonight's NY.
+   **Ignore `pts_price`.**
 
 ## Building the scenarios
 

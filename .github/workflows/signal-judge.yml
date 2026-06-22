@@ -101,7 +101,9 @@ jobs:
           # (claude_code_oauth_token) で走るため、その中から叩く dispatch の actor は
           # github-actions[bot] ではなく claude (type: Bot) になる。手動/github.token 経由の
           # github-actions[bot] も許すため両方を列挙する。既定では Bot起動を Action が弾く。
-          allowed_bots: "claude,github-actions[bot]"
+          # Slack スラッシュコマンド /signal 経由は Worker (GitHub App "omnistove-internal-auth")
+          # 発の dispatch なので、その App の Bot も許可する (slack-reply.yml と同じ)。
+          allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
           # 発火時は client_payload.ticker、手動実行時は inputs.ticker。@ で始まる 2 引数は
           # 需給イベント文脈と数値コンテキスト(コンテキスト本文同梱)のファイルパス。skill は両方を
           # Read するだけ。自由文字列を prompt に素埋めしないことで -- / @ の衝突を避ける。

@@ -14,6 +14,7 @@
 - **出力の住み分け**。D1 コンテキスト = 銘柄を読み解く生きたナレッジ(context-builder が書く)。判定 (buy/sell) = Slack に流れる(signal-judge が書く)。コンテキストは人間が直接見るものではないが、更新のたび全文が Slack のコンテキスト更新チャンネル (`SLACK_CONTEXT_CHANNEL`) に投稿される(覗き窓)。
 - **記事系は1つに合流**。公式IR・銘柄ニュース・適時開示(TDnet)・証券会社レーティングはすべて同じ記事ストアに保存され、収集元が増えても context-builder は無改修で読む。レーティングは目標株価が中期(6〜12ヶ月)ビューなので、context-builder がコンテキストの専用セクションに畳み込む(直近トピックの30日ルールの例外)。
 - **補助: 暴落プリモーテム**。`crash-scenario` skill は signal-judge と同じインプット (コンテキスト + 数値) を読み、その銘柄が崩れる道筋を銘柄固有/マクロの両面で3〜5本列挙して Slack に流す。buy/sell 判定とは別物 (リスクの事前棚卸し)。起動は **Slack スラッシュコマンド `/crash` 専用**: `/crash 285A` なら即発火 / 引数なしなら watchlist から銘柄ピッカーが出る。GitHub 画面からの手動実行は持たない。
+- **手動 buy/sell 判定**。`signal-judge` は通常 context-builder のあとに自動で走るが、**Slack スラッシュコマンド `/signal` でも任意のタイミングで起動できる**: `/signal 285A` なら即発火 / 引数なしなら銘柄ピッカー (`/crash` と同じ口を共有)。
 
 ## 対象銘柄 (watchlist)
 
@@ -102,7 +103,7 @@ flowchart TB
     API -.->|/latest（prices/daily/premarket/earnings/margin） /context（本文）| JUDGECTX
 
     %% Slack 連携 (双方向)
-    SLACK -.->|/crash・スレッド返信| SLACKAPI
+    SLACK -.->|/crash・/signal・スレッド返信| SLACKAPI
     JUDGESKILL -.->|/slack/post Bot| SLACKAPI
     CRASHSKILL -.->|/slack/post Bot| SLACKAPI
     REPLYSKILL -.->|/slack/post thread_ts| SLACKAPI
@@ -186,7 +187,11 @@ sequenceDiagram
     end
 ```
 
-### 暴落プリモーテム起動 (/crash スラッシュコマンド)
+### スラッシュコマンド起動 (/crash 暴落プリモーテム・/signal buy/sell 判定)
+
+`/crash` と `/signal` は同じ `/slack/command` の口を共有し、コマンド名で撃つ event_type
+(crash-scenario / signal-judge) を切り替える。下図は `/crash` の例。`/signal` も流れは同じで、
+dispatch 先が signal-judge、投稿内容が buy/sell 判定になる。
 
 ```mermaid
 sequenceDiagram
@@ -194,23 +199,23 @@ sequenceDiagram
     participant SL as Slack
     participant W as Worker (/slack/command)
     participant GH as GitHub
-    participant CS as crash-scenario (LLM)
+    participant CS as crash-scenario / signal-judge (LLM)
 
-    U->>SL: /crash [銘柄]
+    U->>SL: /crash または /signal [銘柄]
     SL->>W: slash command (署名付き)
     alt 引数が有効な銘柄コード
-        W->>GH: dispatch(crash-scenario) で即発火
+        W->>GH: dispatch(該当 event_type) で即発火
         W-->>SL: ephemeral「起動しました」
     else 引数なし / 未知コード
-        W-->>SL: ephemeral 銘柄ピッカー (static_select)
+        W-->>SL: ephemeral 銘柄ピッカー (static_select, value=<cmd>:<code>)
         U->>SL: 銘柄を選択
         SL->>W: block_actions (/slack/interact)
-        W->>GH: dispatch(crash-scenario)
+        W->>GH: dispatch(該当 event_type)
         W-->>SL: ephemeral を結果メッセージに差し替え
     end
     GH->>CS: 起動
     CS->>CS: コンテキスト本文 + 数値 (judge-context.sh) を読む
-    CS->>SL: /slack/post で暴落シナリオ3〜5本を投稿
+    CS->>SL: /slack/post で結果を投稿
 ```
 
 **場中ニュースのデバウンス**。場中 (5分毎) は同じ銘柄に短時間で複数の新着が出ると判定が数分おきに

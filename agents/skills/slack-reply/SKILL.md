@@ -34,8 +34,11 @@ analysis post and any back-and-forth. `@<path>` is the **numeric context** JSON 
 2. **Living context (`context_body`) — your primary fundamental input, read it in full.** Same
    context signal-judge/crash-scenario read. The **直近の重大トピック** list is freshest. Null → say
    `context: unavailable` and answer on price + backdrop alone.
-3. **Numeric context** (`@<path>`) — current price/MA/range position, days_to_earnings, 信用残,
-   premarket backdrop (SOX etc.). The same numbers the original call used.
+3. **Numeric context** (`@<path>`) — the same self-describing JSON the original call used, but
+   **re-fetched fresh at reply time**: the tape / premarket / margin are current, only
+   `context_body` is read-only from D1. Pair top-level `market_phase` with `prices.quote_status`:
+   both 寄り前 (premarket) and 引け後 (after close) read as `quote_status: closed`, so use
+   `market_phase` to tell *why* the tape is stale — about to open vs already closed.
 4. **Metadata** — `<ticker>` in `config/watchlist.yaml` for `name`/`sector`/`fair_per`.
 
 ## What to do

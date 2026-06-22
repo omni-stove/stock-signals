@@ -24,7 +24,7 @@ import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
 import { slackThreads } from "../lib/schema";
 import { addReaction, openView, updateView } from "../lib/slack";
 import { verifySlackSignature } from "../lib/slack-verify";
-import { WATCHLIST } from "../lib/timeseries";
+import { WATCHLIST, WATCHLIST_NAMES } from "../lib/timeseries";
 
 export const slack = new Hono<{ Bindings: Env }>();
 
@@ -67,14 +67,20 @@ function ephemeral(text: string): Response {
 }
 
 // WATCHLIST から銘柄選択用の static_select option を組み立てる。
-// 表示名は持たない (Worker は watchlist.yaml を読まない設計) のでコードをそのまま出す。
+// 表示は「コード 会社名」(WATCHLIST_NAMES)。コードだけだと選べないため会社名を併記する。
 // interact (block_actions) には元コマンドの手掛かりが残らないので、value に "<cmd>:<code>"
 // を埋めて往復させる (どの解析を撃つかをピッカー選択時に復元するため)。
 function tickerOptions(cmd: string) {
-	return WATCHLIST.map((code) => ({
-		text: { type: "plain_text", text: code },
-		value: `${cmd}:${code}`,
-	}));
+	return WATCHLIST.map((code) => {
+		const name = WATCHLIST_NAMES[code];
+		return {
+			text: {
+				type: "plain_text",
+				text: name ? `${code} ${name}` : code,
+			},
+			value: `${cmd}:${code}`,
+		};
+	});
 }
 
 // 銘柄ピッカー modal の view を組む。section の accessory に static_select を置き、選択した
@@ -313,8 +319,8 @@ slack.post("/slack/interact", async (c) => {
 	const [cmdKey, ticker] = (action?.selected_option?.value ?? "").split(":");
 	const cmd = COMMANDS[cmdKey ?? ""];
 	const viewId = payload.view?.id ?? "";
+	// 不正値: modal をエラー文へ差し替える (閉じずに理由を見せる)。
 	if (!cmd || !WATCHLIST.includes(ticker ?? "")) {
-		// 不正値: modal をエラー文へ差し替える (best-effort)。
 		if (viewId)
 			c.executionCtx.waitUntil(
 				updateView(c.env, {
@@ -325,16 +331,22 @@ slack.post("/slack/interact", async (c) => {
 		return c.body(null, 200);
 	}
 
-	// 3秒制約: dispatch (GitHub App JWT 取得を含み数百ms〜) と views.update は waitUntil に回し、
-	// HTTP は即 200 を返す。view_id は失効しないので非同期更新で問題ない。modal は選択直後は
-	// そのまま残り、dispatch 完了後に結果文へ差し替わる。
-	c.executionCtx.waitUntil(
-		fire(c.env, cmd, ticker, Date.now()).then((text) =>
-			viewId
-				? updateView(c.env, { view_id: viewId, view: resultView(text) })
-				: undefined,
-		),
-	);
+	// 選択した瞬間に発火し、modal は自動で閉じる。dispatch (GitHub App JWT 取得を含む) は
+	// 3秒制約に収まるので await し、成否を確かめてから応答を決める:
+	//   成功 → response_action: clear で modal を閉じる (起動結果は数分後にチャンネルへ届く)。
+	//   失敗 → modal を閉じず resultView で失敗理由を見せる (押し直せるように)。
+	const ok = await dispatchEvent(c.env, cmd.eventType, ticker, Date.now());
+	if (ok) {
+		// block_actions への JSON 応答。clear で modal スタックを全て閉じる。
+		return c.json({ response_action: "clear" });
+	}
+	if (viewId)
+		c.executionCtx.waitUntil(
+			updateView(c.env, {
+				view_id: viewId,
+				view: resultView(cmd.failed(ticker)),
+			}),
+		);
 	return c.body(null, 200);
 });
 
@@ -354,11 +366,14 @@ if (import.meta.vitest) {
 	});
 
 	describe("tickerOptions", () => {
-		it("WATCHLIST 各コードを static_select option 形式にし、value に <cmd>:<code> を埋める", () => {
+		it("コードと会社名を表示し、value に <cmd>:<code> を埋める", () => {
 			const opts = tickerOptions("signal");
 			expect(opts).toHaveLength(WATCHLIST.length);
 			expect(opts[0]).toEqual({
-				text: { type: "plain_text", text: WATCHLIST[0] },
+				text: {
+					type: "plain_text",
+					text: `${WATCHLIST[0]} ${WATCHLIST_NAMES[WATCHLIST[0]]}`,
+				},
 				value: `signal:${WATCHLIST[0]}`,
 			});
 		});

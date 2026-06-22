@@ -23,6 +23,16 @@ export interface TimeseriesEnv {
 // この定義を import して使う唯一の出所 (銘柄追加時はここ + watchlist.yaml だけ直す)。
 export const WATCHLIST: string[] = ["285A", "6857", "6920", "6981"];
 
+// コード → 表示名 (watchlist.yaml の name と対応)。Slack の銘柄ピッカーで
+// コードだけだと判別できないので会社名を出すために持つ。WATCHLIST と同じく
+// yaml の写経先で、check:watchlist が name のドリフトも検証する。
+export const WATCHLIST_NAMES: Record<string, string> = {
+	"285A": "キオクシアホールディングス",
+	"6857": "アドバンテスト",
+	"6920": "レーザーテック",
+	"6981": "村田製作所",
+};
+
 // ローカル config/sources.yaml の url_template と対応。
 const URL_PRICES = (code: string) => `https://kabutan.jp/stock/?code=${code}`;
 const URL_DAILY = (code: string) =>

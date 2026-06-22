@@ -18,10 +18,16 @@ import { parse as parseYaml } from "yaml";
 
 const read = (rel: string) => readFile(new URL(rel, import.meta.url), "utf8");
 
-// ① 真のソース: watchlist.yaml の tickers[].code
+// ① 真のソース: watchlist.yaml の tickers[].code (+ name)
 const yamlText = await read("../config/watchlist.yaml");
-const parsed = parseYaml(yamlText) as { tickers?: { code?: string }[] };
+const parsed = parseYaml(yamlText) as {
+	tickers?: { code?: string; name?: string }[];
+};
 const source = (parsed.tickers ?? []).map((t) => String(t.code));
+// code → name (Slack 銘柄ピッカーの表示名)。timeseries.ts の WATCHLIST_NAMES と照合する。
+const sourceNames = Object.fromEntries(
+	(parsed.tickers ?? []).map((t) => [String(t.code), String(t.name ?? "")]),
+);
 if (source.length === 0) {
 	console.error("config/watchlist.yaml の tickers が空です");
 	process.exit(1);
@@ -40,7 +46,7 @@ function expect(label: string, actual: string[]): void {
 	}
 }
 
-// ② worker/src/lib/timeseries.ts の WATCHLIST 配列リテラル
+// ② worker/src/lib/timeseries.ts の WATCHLIST 配列リテラル + WATCHLIST_NAMES マップ
 {
 	const text = await read("../worker/src/lib/timeseries.ts");
 	const m = text.match(/export const WATCHLIST: string\[\] = \[([^\]]*)\];/);
@@ -49,6 +55,25 @@ function expect(label: string, actual: string[]): void {
 	} else {
 		const codes = [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
 		expect("timeseries.ts の WATCHLIST", codes);
+	}
+
+	// WATCHLIST_NAMES: Record<string, string> = { "CODE": "名前", ... } を抽出し、
+	// yaml の code→name と完全一致 (キー集合 + 各値) するか検証する。
+	const nm = text.match(
+		/export const WATCHLIST_NAMES: Record<string, string> = \{([\s\S]*?)\};/,
+	);
+	if (!nm) {
+		errors.push("timeseries.ts の WATCHLIST_NAMES 定義を抽出できませんでした");
+	} else {
+		const pairs = [...nm[1].matchAll(/"([^"]+)"\s*:\s*"([^"]+)"/g)];
+		const names = Object.fromEntries(pairs.map((p) => [p[1], p[2]]));
+		const actual = JSON.stringify(names);
+		const expected = JSON.stringify(sourceNames);
+		if (actual !== expected) {
+			errors.push(
+				`timeseries.ts の WATCHLIST_NAMES が watchlist.yaml の name と不一致:\n  yaml: ${expected}\n  実物: ${actual}`,
+			);
+		}
 	}
 }
 

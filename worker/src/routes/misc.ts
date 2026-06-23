@@ -5,11 +5,26 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
+import { checkIndexRebalance } from "../lib/event-context";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
+import { resolveMarketPhase } from "../lib/market-phase";
 import { slackThreads } from "../lib/schema";
 import { notifySlack, postMessage } from "../lib/slack";
 
 export const misc = new Hono<{ Bindings: Env }>();
+
+// /index-rebalance?now=<ISO8601 任意>
+//   今日 (JST) が指数リバランス (MSCI/FTSE/日経/TOPIX) の近接窓に入っていれば、その観測行断片を
+//   "; " 連結で返す (窓外なら空文字)。post-signal.sh が投稿末尾に貼る「📅 リバランス窓」用。
+//   方向判断 (judge) には渡さない時間アノマリーなので judge-context とは別の軽量口にしている。
+misc.get("/index-rebalance", (c) => {
+	const { today } = resolveMarketPhase(c.req.query("now") ?? null, Date.now());
+	return c.json({
+		ok: true,
+		today,
+		note: checkIndexRebalance(today).join("; "),
+	});
+});
 
 // /dispatch-test?code=285A
 //   App認証→repository_dispatch の疎通確認用。IR取得はせず、指定銘柄で強制発火する。

@@ -15,6 +15,9 @@
 setup() {
   ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   SCRIPT="$ROOT/scripts/post-signal.sh"
+  # リバランス観測行は Worker /index-rebalance から取る (bash の日付計算は廃止)。bats では
+  # FETCH_REBALANCE_JSON で注入する。既定は「窓外 (note 空)」とし、窓ありのテストだけ上書きする。
+  export FETCH_REBALANCE_JSON="${FETCH_REBALANCE_JSON:-{\"ok\":true,\"note\":\"\"}}"
 }
 
 # dryrun で post-signal.sh を実行。stderr も取り込む。
@@ -24,6 +27,8 @@ run_ps() {
     WORKER_URL="http://test.invalid" \
     SYNC_TOKEN="${SYNC_TOKEN:-}" \
     POST_SIGNAL_DRYRUN=1 \
+    FETCH_FORCED_JSON="${FETCH_FORCED_JSON:-}" \
+    FETCH_REBALANCE_JSON="${FETCH_REBALANCE_JSON:-}" \
     bash "$SCRIPT" "$@" 2>&1
 }
 
@@ -100,4 +105,72 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 3 ]
   [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "a" ]
   [ "$(printf '%s' "$p" | jq -r '.blocks[2].text.text')" = "b" ]
+}
+
+# === forced: 強制決済スコアの観測行を本文末尾に貼る (judge には渡さない) =======
+
+# stance!=none の行があれば最終 block に "強制フロー観測" 行が付く
+@test "forced: building row appends an observation line as last block" {
+  FETCH_FORCED_JSON='{"rows":[{"stance":"building","summary":"toss warning 285A"}]}' \
+    run_ps 285A "HEAD" "alpha"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  # headline + alpha + forced = 3 blocks。最終 block が観測行。
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 3 ]
+  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("強制フロー観測")' >/dev/null
+  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("toss warning 285A")' >/dev/null
+}
+
+# stance==none の行は何も足さない
+@test "forced: none stance appends nothing" {
+  FETCH_FORCED_JSON='{"rows":[{"stance":"none","summary":"na"}]}' \
+    run_ps 285A "HEAD" "alpha"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[-1].text.text | test("強制フロー観測")')" = "false" ]
+}
+
+# 行なし (未算出) も何も足さない
+@test "forced: missing row appends nothing" {
+  FETCH_FORCED_JSON='{"rows":[]}' run_ps 285A "HEAD" "alpha"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
+}
+
+# === rebalance: 指数リバランス窓の観測行 (judge には渡さない) ================
+
+# /index-rebalance が note を返す日 (窓内) は観測行が末尾に付く
+@test "rebalance: in-window note appends an observation line" {
+  FETCH_FORCED_JSON='{"rows":[]}' \
+    FETCH_REBALANCE_JSON='{"ok":true,"note":"MSCI半期リバランス(実施=本日2026-05-29/...)"}' \
+    run_ps 285A "HEAD" "alpha"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("リバランス窓")' >/dev/null
+  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("MSCI")' >/dev/null
+}
+
+# note が空 (窓外) の日は何も足さない
+@test "rebalance: empty note appends nothing" {
+  FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON='{"ok":true,"note":""}' \
+    run_ps 285A "HEAD" "alpha"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[-1].text.text | test("リバランス窓")')" = "false" ]
+}
+
+# forced 観測 + リバランス観測が両方ある日は両方付く (順序: forced → rebalance)
+@test "rebalance: forced and rebalance observations stack" {
+  FETCH_FORCED_JSON='{"rows":[{"stance":"building","summary":"toss 285A"}]}' \
+    FETCH_REBALANCE_JSON='{"ok":true,"note":"MSCI半期リバランス(実施=本日2026-05-29/...)"}' \
+    run_ps 285A "HEAD" "alpha"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  # headline + alpha + forced + rebalance = 4 blocks
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 4 ]
+  printf '%s' "$p" | jq -e '.blocks[2].text.text | test("強制フロー観測")' >/dev/null
+  printf '%s' "$p" | jq -e '.blocks[3].text.text | test("リバランス窓")' >/dev/null
 }

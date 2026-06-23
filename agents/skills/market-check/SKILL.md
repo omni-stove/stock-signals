@@ -18,8 +18,8 @@ writes no context.
 
 ## Inputs
 
-One file is passed: the numeric context JSON from `scripts/market-context.sh` (already fetched &
-normalized — **read it**). Self-describing; what isn't obvious:
+One file is passed: the numeric context JSON from the Worker `/market-context` endpoint (already
+fetched & normalized — **read it**). Self-describing; what isn't obvious:
 
 - **`premarket`** is last night's NY tell — the strongest single input pre-open. `sox_change_pct` is
   the most important field for this semis-heavy watchlist: SOX leads the JP semis at the open. Read
@@ -57,9 +57,11 @@ days; don't manufacture a regime that isn't there.
 risk-off by itself — it argues for 様子見 / 持ち越しを軽く regardless of which way the tilt points. A
 strong リスクオン tape into a binary event is still 拾うなら軽く, not 全力.
 
-- **独り負け銘柄** (deeply negative `rel_strength_pct`) is a per-name flag worth surfacing in the
-  body even when the overall 地合い is benign — it's the one place a market read touches a specific
-  name. Don't turn it into a buy/sell call; just name it as a thing to watch.
+- **独り負け銘柄** (deeply negative `rel_strength_pct`) is a per-name flag worth surfacing even when
+  the overall 地合い is benign — the one place a market read touches a specific name. Don't turn it
+  into a buy/sell call; name it as a thing to watch. Weight it by the tilt: under a SOX-led リスクオフ
+  it marks the弱い手 where the next 投げ comes first; on a risk-on / split tape the same value is an
+  idiosyncratic laggard, not a fault line.
 
 ## Output — one 地合いスコア
 

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/llm-instruction-guard.sh\"",
+            "statusMessage": "Loading LLM instruction rules"
+          }
+        ]
+      }
+    ]
+  }
+}

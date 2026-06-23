@@ -1,10 +1,9 @@
 # ニュースソース定義
 #
-# 2系統に分かれる:
+# 2系統に分かれる (取得物はいずれも Worker が D1 articles に保存):
 #  - per_ticker: 銘柄が確定しているソース。watchlist.yaml の news_url を使う。
-#                取得物は data/queue/<ticker>/ に直接入る。route-news 不要。
-#  - macro:     横断ニュース(マクロ・業界全体)。data/inbox/ に入り、
-#                route-news が「どの銘柄に共通配信するか」を判断する。
+#  - macro:     横断ニュース(マクロ・業界全体)。Worker が aliases/keywords でどの銘柄に
+#                共通配信するかを判定する。
 #
 # 各サイトの robots.txt と利用規約を確認した上で利用する。
 # User-Agent は明示、間隔は最低 5 秒空ける。
@@ -26,8 +25,8 @@ per_ticker:
 # 一次情報は公式IRに最初に出るため、ラグなく拾うのが目的。
 # IRページは企業ごとにHTML構造が違うので、site ごとに専用パーサを持つ
 # (実装は worker/src/index.ts の parseList。ローカルの scripts/fetch-ir.ts は廃止済み)。
-# 取得物は per_ticker と同様 data/queue/<code>/ 相当 (D1 articles, source=ir:<site>:<code>) に入る
-# (route-news 不要、銘柄確定済み)。kioxia だけ記事本文HTMLが安定して取れるので本文も取得し、
+# 取得物は per_ticker と同様 D1 articles (source=ir:<site>:<code>) に入る (銘柄確定済み)。
+# kioxia だけ記事本文HTMLが安定して取れるので本文も取得し、
 # 他3社は記事リンクが PDF/カレンダーで本文HTMLが取れないため一覧の見出しを本文として保存する
 # (適時開示はタイトルで「何が起きたか」が分かる。disclosure.ts と同思想)。
 ir:
@@ -78,7 +77,7 @@ ir:
     encoding: "utf-8"
     note: "IRニュース RSS。pubDate は JST 暦日のまま正規化 (rfc822ToYmd)"
 
-# マクロ: 全銘柄横断のニュース。route-news が銘柄判定する。
+# マクロ: 全銘柄横断のニュース。Worker が aliases/keywords で銘柄判定する。
 # 株探にRSSは存在しないので、こちらもHTML一覧をスクレイプする。
 macro_html:
   - id: "kabutan-marketnews"
@@ -91,23 +90,23 @@ macro_html:
 # ロイターJP は RSS 廃止確認のため一旦外す。
 
 # 株価スナップショット: watchlist.yaml の全銘柄について現値・前日比・出来高を取得。
-# 5分毎の cron で叩かれ、結果は data/prices/<code>.jsonl に append される。
+# Worker が場中5分毎の cron で叩き、D1 prices に保存する (slot=5分丸めで冪等)。
 prices:
   - site: "kabutan"
     encoding: "utf-8"
     url_template: "https://kabutan.jp/stock/?code={code}"
     note: "株探 銘柄ページ。.si_i1_2 から現値/前日比、th(出来高)+td から出来高"
 
-# 日足: 直近~30営業日のOHLC+出来高。1日1回(引け後 16:00 想定)の cron で叩き、
-# data/daily/<code>.jsonl にその日の確定足を1行追記する(重複日付はスキップ)。
+# 日足: 直近~30営業日のOHLC+出来高。Worker が引け後 (eod cron) に叩き、
+# D1 daily にその日の確定足を保存する ((ticker,date) PK で重複日付はスキップ)。
 daily:
   - site: "kabutan"
     encoding: "utf-8"
     url_template: "https://kabutan.jp/stock/kabuka?code={code}"
     note: "株探 日々株価ページ。table.stock_kabuka0(本日) と table.stock_kabuka_dwm(過去)"
 
-# ファンダ指標: 今期予想PER・予想EPS・直近実績EPS。1日1回(引け後)程度の cron で叩き、
-# data/fundamentals/<code>.jsonl に1行追記する。valuation.ts が逆算に使う。
+# ファンダ指標: 今期予想PER・予想EPS・直近実績EPS。Worker が引け後 (eod cron) に叩き
+# D1 fundamentals に保存する。scripts/valuation.ts が /latest 経由で逆算に使う。
 # 予想EPS/PER が未開示の銘柄(例: キオクシア)では値は null になる。
 fundamentals:
   - site: "kabutan"
@@ -116,8 +115,8 @@ fundamentals:
     note: "株探 銘柄ページ。PERテーブル(PER/PBR/利回り)と業績推移テーブル(「予」行=今期予想の1株益)"
 
 # 前夜マーケット(寄り前予測の地合い材料): 米国市場の前日終値と日経先物。
-# 平日朝8時頃の cron で1回叩き、 data/premarket/<date>.jsonl に1行追記する。
-# fetch-premarket.ts が使う。寄り付き前に「今日の地合い」を機械可読で残すのが目的。
+# Worker が寄り前 (intake cron) に1回叩き、D1 premarket_backdrop に保存する
+# (worker/src/lib/premarket.ts)。寄り付き前に「今日の地合い」を機械可読で残すのが目的。
 #
 # us.kabutan.jp の米国指数ページは、各ページの .text-3xl 親ブロックに
 #   "<現値> 前日比 <差> (<騰落率%>) NY時間 <日> <時刻> 日本時間 <日> <時刻>"

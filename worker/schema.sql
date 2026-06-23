@@ -191,6 +191,31 @@ CREATE TABLE IF NOT EXISTS margin (
 CREATE INDEX IF NOT EXISTS idx_margin_ticker_date
   ON margin (ticker, date DESC);
 
+-- ── 強制決済スコア (追証売り=買い方のロスカット / 踏み上げ=売り方のロスカット) ───────
+-- 「他プレイヤーの強制的な売買フロー」を eod cron (daily/margin が揃った後) で決定論的に算出し保存する。
+-- 算出は LLM を介さず worker/src/lib/forced-liquidation.ts が indicators.ts の指標 + margin から行う。
+-- judge (signal-judge=LLM) には渡さない (daily 指標から自前で読めるので判断材料としては冗長)。
+-- post-signal.sh が投稿時に /latest?kind=forced で最新行を引き、stance!=none のとき観測行を本文末尾に貼る。
+--   direction long=投げ(買い方の追証) / short=踏み上げ(売り方の追証) / none=対象外
+--   stance    building=これから出る / exhausted=出尽くし(リバ買い場・戻り売り場) / none=対象外
+--   fuel/fire/exhaust は各 0..3 の3レイヤースコア。settle_warning_in_days は building のときだけ猶予営業日。
+-- 冪等キー = (ticker, date)。同日に複数回算出しても1行に収束し最新で上書き (INSERT OR REPLACE)。
+CREATE TABLE IF NOT EXISTS forced_liquidation (
+  ticker                  TEXT NOT NULL,  -- 銘柄コード
+  date                    TEXT NOT NULL,  -- 算出基準日 YYYY-MM-DD。冪等キー
+  direction               TEXT NOT NULL,  -- long | short | none
+  stance                  TEXT NOT NULL,  -- building | exhausted | none
+  fuel                    INTEGER NOT NULL, -- 燃料スコア 0..3
+  fire                    INTEGER NOT NULL, -- 着火スコア 0..3
+  exhaust                 INTEGER NOT NULL, -- 出尽くしスコア 0..3
+  settle_warning_in_days  INTEGER,        -- building のときだけ強制決済までの猶予営業日数
+  summary                 TEXT NOT NULL,  -- Slack/judge にそのまま載せられる1行平文
+  fetched_at              TEXT NOT NULL,  -- 算出時刻 (ISO8601)
+  PRIMARY KEY (ticker, date)
+);
+CREATE INDEX IF NOT EXISTS idx_forced_liquidation_ticker_date
+  ON forced_liquidation (ticker, date DESC);
+
 -- ── マクロイベント (FOMC / 日銀金融政策決定会合) ──────────────────────────
 -- SQ や指数リバランスのように規則計算できない「会合系」イベントの日程。従来は config/events.yaml に
 -- 人間が年1回手動転記していたが (README「イベントカレンダーメンテナンス」)、公式が年単位で先の全日程を

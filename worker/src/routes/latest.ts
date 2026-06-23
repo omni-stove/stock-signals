@@ -1,5 +1,5 @@
 // Cloudflare Worker: D1 から最新行を返す (動作確認/ローカル連携用)。
-//   /latest?kind=ir|prices|daily|fundamentals|margin|premarket|earnings|macro-events&code=285A&n=10
+//   /latest?kind=ir|prices|daily|fundamentals|margin|forced|premarket|earnings|macro-events&code=285A&n=10
 //   kind 省略時は ir。
 
 import { desc, eq, sql } from "drizzle-orm";
@@ -8,10 +8,12 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
+import { withMovingAverages } from "../lib/indicators";
 import {
 	articles,
 	daily,
 	earnings,
+	forcedLiquidation,
 	fundamentals,
 	macroEvents,
 	margin,
@@ -20,24 +22,6 @@ import {
 } from "../lib/schema";
 
 export const latest = new Hono<{ Bindings: Env }>();
-
-// daily 行 (date DESC = 新しい順) に終値の移動平均 ma5/ma25 を付与し、新しい順の最新 n 件を返す。
-// 各日について「その日を含む過去 w 日」の終値平均を出す。期間に満たない古い日は null。
-// D1 から切り離した純粋関数 (in-source test 対象)。入力 rows は破壊しない。
-function withMovingAverages(
-	rows: Record<string, unknown>[],
-	n: number,
-): Record<string, unknown>[] {
-	const asc = rows.slice().reverse(); // 古い順
-	const closes = asc.map((r) => Number(r.close));
-	const ma = (i: number, w: number): number | null => {
-		if (i + 1 < w) return null; // 期間に満たない古い日は null
-		const sum = closes.slice(i + 1 - w, i + 1).reduce((a, b) => a + b, 0);
-		return Math.round((sum / w) * 100) / 100;
-	};
-	const withMa = asc.map((r, i) => ({ ...r, ma5: ma(i, 5), ma25: ma(i, 25) }));
-	return withMa.reverse().slice(0, n); // 新しい順に戻し、要求件数へ
-}
 
 latest.get("/", async (c) => {
 	const env = c.env;
@@ -201,6 +185,23 @@ latest.get("/", async (c) => {
 				fetched_at: margin.fetchedAt,
 			},
 		},
+		// 強制決済スコア (eod cron 算出済み)。signal-judge が judge-context 経由で読む。date DESC 最新1件が通常。
+		forced: {
+			ticker: forcedLiquidation.ticker,
+			order: forcedLiquidation.date,
+			select: {
+				ticker: forcedLiquidation.ticker,
+				date: forcedLiquidation.date,
+				direction: forcedLiquidation.direction,
+				stance: forcedLiquidation.stance,
+				fuel: forcedLiquidation.fuel,
+				fire: forcedLiquidation.fire,
+				exhaust: forcedLiquidation.exhaust,
+				settle_warning_in_days: forcedLiquidation.settleWarningInDays,
+				summary: forcedLiquidation.summary,
+				fetched_at: forcedLiquidation.fetchedAt,
+			},
+		},
 	};
 	const q = LATEST[kind];
 	if (!q)
@@ -230,54 +231,3 @@ latest.get("/", async (c) => {
 
 	return c.json({ ok: true, kind, rows: results });
 });
-
-// in-source tests (本番ビルドでは tree-shake される。vitest.config.ts 参照)。
-// D1 を伴うハンドラ本体ではなく、切り出した MA 計算ロジックだけを検証する。
-if (import.meta.vitest) {
-	const { describe, it, expect } = import.meta.vitest;
-
-	describe("withMovingAverages", () => {
-		// date DESC (新しい順) の終値列を作る。close=1..N で新しいものほど大きい。
-		const rowsDesc = (n: number) =>
-			Array.from({ length: n }, (_, i) => ({
-				date: `d${n - i}`,
-				close: n - i,
-			}));
-
-		it("ma5 は直近5日の終値平均、満たない最古日は null", () => {
-			// close (古→新) = 1,2,3,4,5,6 → 新しい順 6,5,4,3,2,1
-			const out = withMovingAverages(rowsDesc(6), 6);
-			// 先頭 (最新, close=6) の ma5 = (2+3+4+5+6)/5 = 4
-			expect(out[0].ma5).toBe(4);
-			// close=5 の日 = (1+2+3+4+5)/5 = 3
-			expect(out[1].ma5).toBe(3);
-			// 最古 (close=1) は 5 日に満たないので null
-			expect(out[out.length - 1].ma5).toBeNull();
-		});
-
-		it("25日に満たないと ma25 は全行 null", () => {
-			const out = withMovingAverages(rowsDesc(10), 10);
-			expect(out.every((r) => r.ma25 === null)).toBe(true);
-		});
-
-		it("ma25 は 25 日揃った日から算出される", () => {
-			const out = withMovingAverages(rowsDesc(30), 30);
-			expect(out[0].ma25).not.toBeNull(); // 最新日は揃っている
-			expect(out[out.length - 1].ma25).toBeNull(); // 最古日は満たない
-		});
-
-		it("新しい順を保ち、要求件数 n に切り詰める", () => {
-			const out = withMovingAverages(rowsDesc(30), 5);
-			expect(out).toHaveLength(5);
-			expect(out[0].close).toBe(30); // 先頭が最新
-			expect(out[4].close).toBe(26);
-		});
-
-		it("入力配列を破壊しない", () => {
-			const input = rowsDesc(3);
-			const snapshot = JSON.stringify(input);
-			withMovingAverages(input, 3);
-			expect(JSON.stringify(input)).toBe(snapshot);
-		});
-	});
-}

@@ -143,6 +143,48 @@ export async function updateView(
 	}
 }
 
+// スレッドの会話履歴 (親 + 全返信) を ts 昇順で取得する (conversations.replies)。
+// slack-reply が返信に答えるための文脈。要 channels:history (public) / groups:history (private)。
+// 各メッセージは user / text / ts に正規化して返す (user 不明なら bot_id、それも無ければ "?")。
+// best-effort: トークン未設定・ok:false・例外はすべて空配列を返し、呼び出し側でフォールバックさせる。
+export async function fetchReplies(
+	env: Env,
+	args: { channel: string; thread_ts: string; limit?: number },
+): Promise<{ user: string; text: string; ts: string }[]> {
+	if (!env.SLACK_BOT_TOKEN) return [];
+	try {
+		const url = new URL("https://slack.com/api/conversations.replies");
+		url.searchParams.set("channel", args.channel);
+		url.searchParams.set("ts", args.thread_ts);
+		url.searchParams.set("limit", String(args.limit ?? 100));
+		const res = await fetch(url, {
+			headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}` },
+		});
+		const body = (await res.json()) as {
+			ok: boolean;
+			error?: string;
+			messages?: {
+				user?: string;
+				bot_id?: string;
+				text?: string;
+				ts: string;
+			}[];
+		};
+		if (!body.ok) {
+			console.error(`conversations.replies failed: ${body.error}`);
+			return [];
+		}
+		return (body.messages ?? []).map((m) => ({
+			user: m.user ?? m.bot_id ?? "?",
+			text: m.text ?? "",
+			ts: m.ts,
+		}));
+	} catch (e) {
+		console.error(`conversations.replies error: ${(e as Error).message}`);
+		return [];
+	}
+}
+
 export type NotifyItem = {
 	ticker: string;
 	title: string;

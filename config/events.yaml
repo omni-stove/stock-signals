@@ -1,14 +1,14 @@
 # マクロ/需給イベントカレンダー (手動メンテ)
 #
 # 個別銘柄の決算 (watchlist.yaml の next_earnings_date) とは別に、
-# 相場全体・需給に効くイベントの日付をここに並べる。
-# scripts/events.ts がこれを読み、「直近 N 日以内のイベント」を一覧表示し (人間の確認用)、
-# scripts/event-context.sh が judge/context-builder の起動時に近接イベントを 1 行に整形して
-# prompt に渡す。近接イベントがある日はシグナルの確信度を抑える材料にする。
+# 相場全体・需給に効くイベントの日付をここに並べる (人間が手動メンテする出所)。
+# 実行時はこの yaml ではなく Worker の worker/src/lib/event-context.ts が近接イベントを
+# 1 行に整形し、/judge-context・/market-context の event_context に同梱して prompt に渡す
+# (Worker は読み取り専用FSで yaml を読めないため、必要なイベントは event-context.ts に写経する)。
+# 近接イベントがある日はシグナルの確信度を抑える材料にする。
 #
-# ※SQ は event-context.sh が日付から計算で出す (日本=第2金 / 米=第3金 / 3・6・9・12月=メジャー)
-#   ため、この yaml に SQ を並べる必要はない。yaml 内の jp-sq/us-sq は二重計上回避のため
-#   event-context.sh では無視される (events.ts の人間向け一覧には出る)。
+# ※SQ は event-context.ts が日付から計算で出す (日本=第2金 / 米=第3金 / 3・6・9・12月=メジャー)
+#   ため、この yaml に SQ を並べる必要はない。
 #
 # 半導体 (285A/6857/6920) は金利感応度が高く FOMC で大きく振れる。
 # SQ (特にメジャーSQ) 前後は先物・オプションの清算で需給が歪み、

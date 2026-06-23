@@ -20,8 +20,8 @@ conversation so far and where to post back — `{ channel, thread_ts, kind, repl
 }, ...] }`. `kind` is the original analysis type (`signal-judge` / `crash-scenario`) so you know what
 the user is replying to. The last entry in `replies` is the new user message you must answer; the
 earlier ones are the original analysis post and any back-and-forth. The other file is the **numeric
-context** JSON from `scripts/judge-context.sh` (earnings/premarket/daily/prices/margin, already
-fetched & normalized — **read it**).
+context** JSON from the Worker `/judge-context` endpoint (earnings/premarket/daily/prices/margin +
+`context_body` + `event_context`, already fetched & normalized — **read it**).
 
 In detail:
 

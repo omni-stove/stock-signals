@@ -37,10 +37,11 @@ indicator most worth watching this week.
 
 ## Inputs
 
-A `<ticker>` plus two files are passed: a one-line 需給イベント string (SQ + nearby macro; 特になし
-when none) and the **numeric context** JSON from `scripts/judge-context.sh`
-(earnings/premarket/daily/prices/margin, already fetched & normalized — **read it**). The numeric
-context is identical to signal-judge's, so the same `judge-context.sh` output feeds both.
+A `<ticker>` plus one file: the **numeric context** JSON from the Worker `/judge-context` endpoint
+(earnings/premarket/daily/prices/margin + `context_body` + `event_context`, already fetched &
+normalized — **read it**). Identical to signal-judge's input, so the same endpoint feeds both.
+`event_context` is a one-line 需給イベント string (SQ + 指数リバランス + nearby macro/peer; 特になし
+when none) — read it for unwind/binary-event triggers.
 
 1. **Metadata** — `<ticker>` in `config/watchlist.yaml` for `name`/`sector`/`sector_role`/
    `fair_per`. `fair_per` is the valuation anchor: a current PER far above it means a

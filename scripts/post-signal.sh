@@ -7,6 +7,10 @@
 #     channel 省略, 503=Bot未設定→stdout フォールバック) は決定論的なのでこのスクリプトが持つ。
 #     skill は「方向・水準・本文行」を引数で渡すだけ。
 #   - blocks は本文行 (改行区切り) を section に詰めるだけの素直な整形。装飾はしない。
+#   - 強制決済スコア (追証売り/踏み上げ) は eod cron が D1 に算出済み。判定 (judge=LLM) には
+#     一切渡さない (daily 指標から自前で読めるので判断材料としては冗長)。代わりにここで D1 から
+#     最新行を引き、stance!=none のときだけ「観測事実」として本文末尾に 1 行貼る。judge の方向判断
+#     とは独立した強制フローの観測を、投稿にだけ相乗りさせる。fetch 失敗/該当なしは何も足さない。
 #
 # 入力:
 #   $1 = ticker          (必須)
@@ -17,6 +21,7 @@
 # 出力 (stdout): "slack ok" または "slack skipped" の 1 行。skill の stdout 行はこれを使う。
 # テスト/オフライン用の注入口: POST_SIGNAL_DRYRUN=1 で curl を叩かず、組み立てた JSON
 #   ペイロードを stderr に "POST <url> <json>" 形式で出すだけにする (bats が blocks を検証できる)。
+#   FETCH_FORCED_JSON があれば /latest?kind=forced の curl を叩かずそれを使う (bats 用)。
 
 set -euo pipefail
 
@@ -25,6 +30,52 @@ HEADLINE="${2:?headline required}"
 BODY="${3:?body required}"
 
 : "${WORKER_URL:?WORKER_URL is required}"
+
+# --- 強制決済スコアの観測行を D1 から引く (judge には渡さない。投稿末尾に貼るだけ) -----
+# stance!=none の最新行があれば summary を取り出す。fetch 失敗・行なし・stance==none は空文字。
+# AUTH 配列は SYNC_TOKEN があるときだけ要素を持つ。空配列を "${A[@]}" 展開すると set -u で落ち、
+# "${A[@]:-}" だと空文字引数を curl に渡して blank-argument エラーになる。よって非空のときだけ展開する。
+AUTH=()
+[[ -n "${SYNC_TOKEN:-}" ]] && AUTH=(-H "Authorization: Bearer ${SYNC_TOKEN}")
+if [[ -n "${FETCH_FORCED_JSON:-}" ]]; then
+  FORCED_RAW="$FETCH_FORCED_JSON"
+elif [[ ${#AUTH[@]} -gt 0 ]]; then
+  FORCED_RAW="$(curl -sf "${AUTH[@]}" "${WORKER_URL%/}/latest?kind=forced&code=$TICKER&n=1" 2>/dev/null || true)"
+else
+  FORCED_RAW="$(curl -sf "${WORKER_URL%/}/latest?kind=forced&code=$TICKER&n=1" 2>/dev/null || true)"
+fi
+FORCED_LINE=""
+if printf '%s' "$FORCED_RAW" | jq -e . >/dev/null 2>&1; then
+  FORCED_LINE="$(printf '%s' "$FORCED_RAW" | jq -r '
+    (.rows[0] // {}) as $r |
+    if ($r.stance // "none") != "none" then ($r.summary // "") else "" end')"
+fi
+# body 末尾に観測行を足す (空なら何もしない)。judge 本文と視覚的に分けるため接頭辞を付ける。
+if [[ -n "$FORCED_LINE" ]]; then
+  BODY="${BODY}
+🧱 強制フロー観測: ${FORCED_LINE}"
+fi
+
+# --- 指数リバランス窓の観測行 (judge には渡さない。投稿末尾に貼るだけ) ----------
+# リバランスは「その日の値動きと無関係に引けへパッシブ売買が集中する」時間アノマリー。forced と同じく
+# 方向判断 (judge=LLM) には効かないので渡さず、窓に入っていれば観測事実として本文末尾に貼る。
+# 日付計算は Worker /index-rebalance (event-context.ts) が JST 今日で行う (bash の GNU date 依存を排除)。
+# テスト/オフライン用の注入口: FETCH_REBALANCE_JSON があれば curl を叩かずそれを使う。
+if [[ -n "${FETCH_REBALANCE_JSON:-}" ]]; then
+  REBAL_RAW="$FETCH_REBALANCE_JSON"
+elif [[ ${#AUTH[@]} -gt 0 ]]; then
+  REBAL_RAW="$(curl -sf "${AUTH[@]}" "${WORKER_URL%/}/index-rebalance" 2>/dev/null || true)"
+else
+  REBAL_RAW="$(curl -sf "${WORKER_URL%/}/index-rebalance" 2>/dev/null || true)"
+fi
+REBAL_LINE=""
+if printf '%s' "$REBAL_RAW" | jq -e . >/dev/null 2>&1; then
+  REBAL_LINE="$(printf '%s' "$REBAL_RAW" | jq -r '.note // ""')"
+fi
+if [[ -n "$REBAL_LINE" ]]; then
+  BODY="${BODY}
+📅 リバランス窓: ${REBAL_LINE}"
+fi
 
 # headline + 本文行を section blocks に組み立てる。本文は改行区切りで 1 行 1 section。
 # skill がリテラル "\n" (バックスラッシュ+n) を渡してくることがあるので、split の前に
@@ -49,9 +100,6 @@ if [[ "${POST_SIGNAL_DRYRUN:-}" == "1" ]]; then
   echo "slack skipped"
   exit 0
 fi
-
-AUTH=()
-[[ -n "${SYNC_TOKEN:-}" ]] && AUTH=(-H "Authorization: Bearer ${SYNC_TOKEN}")
 
 # /slack/post は SLACK_BOT_TOKEN 未設定なら 503 (スレッド機能オフ)。その場合は投稿せず
 # headline+本文を stdout に出して "slack skipped" を返す (判定自体は失わない)。

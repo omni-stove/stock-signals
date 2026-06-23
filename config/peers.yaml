@@ -9,7 +9,8 @@
 # データの流れ:
 #   Worker (eod cron) が Nasdaq から各社の次回決算日を取得 → D1 macro_events に
 #   kind=peer_earnings:<TICKER> で保存 (worker/src/lib/peer-earnings.ts)。
-#   scripts/event-context.sh が「今日以降5日以内」の peer 決算を拾って prompt に1行で埋め込む。
+#   worker/src/lib/event-context.ts が「今日以降5日以内」の peer 決算を拾い、/judge-context の
+#   event_context に同梱して prompt に1行で埋め込む。
 #
 # 重要: Worker は読み取り専用FSでこの yaml を読めない。実行時の真の出所は
 #   worker/src/lib/peer-earnings.ts の SOX_PEERS 定数。この yaml は人間が編集する出所であり、

@@ -10,11 +10,15 @@ import { runScheduled } from "./lib/cron";
 import type { Env } from "./lib/env";
 import { auth } from "./routes/auth";
 import { context } from "./routes/context";
+import { contextInput } from "./routes/context-input";
+import { judgeContext } from "./routes/judge-context";
 import { latest } from "./routes/latest";
+import { marketContext } from "./routes/market-context";
 import { misc } from "./routes/misc";
 import { pull } from "./routes/pull";
 import { run } from "./routes/run";
 import { slack } from "./routes/slack";
+import { threadContext } from "./routes/thread-context";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -34,11 +38,15 @@ app.route("/run", run);
 app.route("/latest", latest);
 app.route("/", pull); // /pull, /pull-news
 app.route("/", context); // /context (GET=read, POST=upsert)
+app.route("/", judgeContext); // /judge-context (signal-judge/crash/slack-reply 用バンドル)
+app.route("/", contextInput); // /context-input (context-builder 用バンドル)
+app.route("/", marketContext); // /market-context (market-check 用バンドル)
+app.route("/", threadContext); // /thread-context (slack-reply 用バンドル)
 app.route("/", misc); // /dispatch-test, /test-slack
 
 app.notFound((c) =>
 	c.text(
-		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /context?code= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
+		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /context?code= /judge-context?code=&now= /context-input?code= /market-context?now= /thread-context?channel=&thread_ts=&kind=&text= /index-rebalance?now= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
 		404,
 	),
 );

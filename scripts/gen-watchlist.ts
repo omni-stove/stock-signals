@@ -26,11 +26,18 @@ const read = (rel: string) => readFile(url(rel), "utf8");
 // ── 単一ソースを読む ──
 const yamlText = await read("../config/watchlist.yaml");
 const parsed = parseYaml(yamlText) as {
-	tickers?: { code?: string; name?: string }[];
+	tickers?: {
+		code?: string;
+		name?: string;
+		sector?: string | null;
+		sector_role?: string | null;
+	}[];
 };
 const tickers = (parsed.tickers ?? []).map((t) => ({
 	code: String(t.code ?? ""),
 	name: String(t.name ?? ""),
+	sector: t.sector ? String(t.sector) : null,
+	sector_role: t.sector_role ? String(t.sector_role) : null,
 }));
 if (tickers.length === 0) {
 	console.error("config/watchlist.yaml の tickers が空です");
@@ -49,15 +56,26 @@ for (const t of tickers) {
 function renderGenTs(): string {
 	const arr = tickers.map((t) => `"${t.code}"`).join(", ");
 	const names = tickers.map((t) => `\t"${t.code}": "${t.name}",`).join("\n");
+	// sector/sector_role を含む構造化メタ。Worker の sectors.ts (地合いのセクター集計) が使う。
+	// 値は null になりうるので JSON でそのまま埋める。このファイルは biome の対象外 (biome.json で
+	// 除外) なので、整形を気にせず読みやすい1行形式で出力してよい。
+	const meta = tickers
+		.map((t) => {
+			const sector = t.sector ? `"${t.sector}"` : "null";
+			const role = t.sector_role ? `"${t.sector_role}"` : "null";
+			return `\t{ code: "${t.code}", name: "${t.name}", sector: ${sector}, sector_role: ${role} },`;
+		})
+		.join("\n");
 	return `// 自動生成ファイル — 直接編集しないこと。
 //
 // 出所は config/watchlist.yaml。\`node scripts/gen-watchlist.ts\` (= npm run gen:watchlist)
-// が yaml の tickers[] から WATCHLIST / WATCHLIST_NAMES を生成してここに書き出す。
+// が yaml の tickers[] から WATCHLIST / WATCHLIST_NAMES / WATCHLIST_META を生成して書き出す。
 // 銘柄を増減するときは yaml を直して gen を走らせる (このファイルは手で触らない)。
 //
 // Worker は読み取り専用FSで yaml を読めないため、ビルド時に値を焼き込むのが目的。
 // timeseries.ts がこのファイルから re-export し、Worker 内の各モジュールは
 // 従来どおり timeseries から WATCHLIST / WATCHLIST_NAMES を import する。
+// WATCHLIST_META は sectors.ts (地合いのセクター集計) が sector / sector_role を読むために使う。
 
 // ローカル config/watchlist.yaml の tickers[].code と対応 (順序込み)。
 export const WATCHLIST: string[] = [${arr}];
@@ -66,6 +84,17 @@ export const WATCHLIST: string[] = [${arr}];
 export const WATCHLIST_NAMES: Record<string, string> = {
 ${names}
 };
+
+// 銘柄メタ (sector 集計用)。sector / sector_role は未設定なら null。
+export interface WatchlistMeta {
+	code: string;
+	name: string;
+	sector: string | null;
+	sector_role: string | null;
+}
+export const WATCHLIST_META: WatchlistMeta[] = [
+${meta}
+];
 `;
 }
 

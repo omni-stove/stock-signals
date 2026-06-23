@@ -57,21 +57,15 @@ jobs:
             echo "::error::unknown ticker: $TICKER"; exit 1
           fi
 
-      # SQ (日本/米メジャー)・指数リバランスは GNU date で計算し、FOMC/日銀は Worker
-      # /latest?kind=macro-events (D1) から取得して近接イベントを 1 行に整形し prompt に渡す。
-      # メジャーSQ unwind や near macro print は暴落シナリオの trigger になりうる。
-      - name: Build event context
-        id: events
-        run: echo "ctx=$(bash scripts/event-context.sh)" >> "$GITHUB_OUTPUT"
-        env:
-          WORKER_URL: ${{ vars.WORKER_URL }}
-          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
-
-      # Worker の数値データ (earnings/prices/daily/premarket/margin) を fetch + 正規化し、1 つの
-      # JSON にまとめて prompt に渡す。signal-judge と同じ judge-context.sh をそのまま使う
-      # (暴落プリモーテムも同じ数値=レンジ位置/MA乖離/信用残/days_to_earnings から fragility を読む)。
+      # 数値コンテキスト (earnings/prices/daily/premarket/margin/銘柄コンテキスト) と需給イベント文脈
+      # (event_context: SQ/指数リバランス/FOMC/日銀/ピア決算。メジャーSQ unwind や near macro print は
+      # 暴落の trigger になりうる) を Worker /judge-context が 1 call で正規化して返す。signal-judge と
+      # 同じエンドポイント (暴落プリモーテムも同じ数値=レンジ位置/MA乖離/信用残/days_to_earnings から
+      # fragility を読む)。skill は JSON を Read するだけ。
       - name: Build numeric context
-        run: bash scripts/judge-context.sh "$TICKER" > "$RUNNER_TEMP/numctx.json"
+        run: |
+          curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/judge-context?code=${TICKER}" > "$RUNNER_TEMP/numctx.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -85,9 +79,9 @@ jobs:
           # Worker (GitHub App "omnistove-internal-auth") 発の repository_dispatch の actor は
           # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
-          # 第2引数に需給イベント文脈 (SQ含む)、@ で始まる第3引数に数値コンテキスト JSON
-          # (コンテキスト本文同梱) のパスを渡す。skill は JSON を Read するだけ。
-          prompt: "/crash-scenario ${{ github.event.client_payload.ticker }} -- ${{ steps.events.outputs.ctx }} @${{ runner.temp }}/numctx.json"
+          # @ で始まる引数に数値コンテキスト JSON (event_context / context_body 同梱) のパスを渡す。
+          # skill は JSON を Read するだけ。
+          prompt: "/crash-scenario ${{ github.event.client_payload.ticker }} @${{ runner.temp }}/numctx.json"
           claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}

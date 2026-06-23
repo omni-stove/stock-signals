@@ -9,7 +9,7 @@ Update one ticker's *living context* (the Worker's D1 `/context` store). Do not 
 
 ## Inputs
 
-A `<ticker>` (the symbol this run owns) plus one input JSON from `scripts/context-input.sh` (the existing context body, the two cursors, and the newly-fetched IR/news pulled since each cursor).
+A `<ticker>` (the symbol this run owns) plus one input JSON from the Worker `/context-input` endpoint (the existing context body, the two cursors, and the newly-fetched IR/news pulled since each cursor).
 
 ## Steps
 
@@ -71,6 +71,11 @@ Body structure (Japanese; keep these headings stable — signal-judge reads them
 ## 証券会社レーティング
 <newest first: `- YYYY-MM-DD <機関>: <格付> 目標株価 <値> [信頼度: …]`. Keep while in ~12-month
  horizon; drop when the same 機関 issues a newer call. Empty if none.>
+
+## 決算の特色・クセ
+<structural reaction pattern of this name's earnings: focus metric, ガイダンス vs 実績 の効き方,
+ ピア連動. When empty, research it once (web / past IR) and fill. Otherwise revise only when fresh
+ `ir_items` carry a 決算/業績修正/ガイダンス item; else carry it forward verbatim.>
 
 ## 決算・ガイダンス
 <latest results vs expectations, current guidance, known next-earnings considerations — facts only>

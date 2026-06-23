@@ -49,17 +49,14 @@ jobs:
       # Action 実行時は CLAUDE.md / AGENTS.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
-      # 地合い JSON (premarket + 需給イベント + セクター内の値動きの広がり) を fetch + 正規化し、
-      # 1 つの JSON にまとめて prompt に渡す。鮮度判定・event 同梱・sectors 要約はここ (決定論的) で
-      # 行い、skill には curl/node を叩かせず数値解釈と地合い判定だけをさせる。JSON は複数行・特殊
-      # 文字を含むので prompt に直接埋めず、ファイルに書いて skill にパスを渡す。skill は Read するだけ。
-      # sector.ts (node) を叩くので Node をセットアップする。
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
+      # 地合い JSON (premarket + 需給イベント event_context + セクター内の値動きの広がり) を Worker
+      # /market-context が 1 call で正規化して返す。鮮度判定・event 同梱・sectors 集計は Worker 側
+      # (決定論的) で行い、skill には curl を叩かせず数値解釈と地合い判定だけをさせる。JSON は複数行・
+      # 特殊文字を含むので prompt に直接埋めず、ファイルに書いて skill にパスを渡す。skill は Read するだけ。
       - name: Build market context
-        run: bash scripts/market-context.sh > "$RUNNER_TEMP/marketctx.json"
+        run: |
+          curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/market-context" > "$RUNNER_TEMP/marketctx.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}

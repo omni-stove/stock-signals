@@ -1,25 +1,23 @@
-# 対象銘柄定義
-# - code: 証券コード (ディレクトリ名にも使う)
+# 対象銘柄定義 (銘柄一覧の唯一の真のソース)。
+# このファイルは人間が編集する出所で、Worker (読み取り専用FS) が実行時に読むのは
+# scripts/gen-watchlist.ts が生成する worker/src/lib/watchlist.gen.ts。銘柄追加は add-ticker skill。
+#
+# - code: 証券コード
 # - name: 表示名
-# - sector: セクター識別子 (scripts/sector.ts が同一 sector 内で相対強弱を比較)。
+# - sector: セクター識別子 (Worker の worker/src/lib/sectors.ts が同一 sector 内で相対強弱を比較)。
 #     semiconductor / ai-software / it-game など。
 # - sector_role: セクター内での位置づけメモ (memory/tester/inspection 等)。
-# - aliases: ニュース本文で銘柄判定に使う別名・略称 (マクロ記事の route-news 判定に使用)
-# - keywords: 銘柄関連と判断する文脈ワード (業界・製品など)
-# - ir_url: IR/プレスリリース一覧ページ (個別スクレイプ対象、将来用)
-# - news_url: 銘柄ページのニュース一覧。ここから取った記事は確定で
-#             data/queue/<ticker>/ に入れる (route-newsを介さない)。
+# - aliases: ニュース本文で銘柄判定に使う別名・略称。
+# - keywords: 銘柄関連と判断する文脈ワード (業界・製品など)。
+# - ir_url: IR/プレスリリース一覧ページ (個別スクレイプ対象)。
+# - news_url: 銘柄ページのニュース一覧 (Worker がスクレイプし D1 articles に保存)。
 # - next_earnings_date: 次回決算発表予定日 (YYYY-MM-DD、未確定なら null)。
-#     スイング判断の信頼度抑制に使う (analyze-ticker が参照)。
+#     スイング判断の信頼度抑制に使う (signal-judge が参照)。
 #     公式IRが正式日程を出していない時期は前年同期日付ベースの推定値を入れる
 #     (推定でも持ち越しガラの注意喚起には十分役立つ)。
-#     この値は scripts/fetch-earnings-date.ts が cron で自動更新する
-#     (kabutan の四半期テーブルから「前年同期の発表日 +1年」を推定し値だけ上書き。
-#      このコメントは保持される)。決算発表後は翌営業日の cron で自動的に繰り上がるので
-#     手動更新は原則不要。公式日程が出た等で手で直してもよいが、推定値と一致しなければ
-#     次回 cron 実行時に再度上書きされる点に注意。
-#     過去日が残ると analyze-ticker は days_to_earnings が負になり無視される
-#     (= 制約なし扱い)。
+#     実行時の値は Worker (eod cron) が D1 earnings テーブルに自動更新するので手動更新は原則不要
+#     (この yaml の値は人間向けの記録。公式日程が出たら手で直してもよい)。
+#     過去日が残ると days_to_earnings が負になり制約なし扱いになる。
 # - fair_per: この銘柄に対して「妥当」と判断する予想PER (倍)。手動設定。
 #     scripts/valuation.ts が逆算に使う:
 #       必要EPS = 現在株価 / fair_per
@@ -40,7 +38,7 @@ tickers:
     next_earnings_date: "2026-08-08"
     # 半導体メモリ。予想EPS未開示時期は逆算スキップ。市況依存が大きく仮に20倍。
     fair_per: 20
-    # セクター分析用 (scripts/sector.ts)。
+    # セクター分析用 (worker/src/lib/sectors.ts)。
     #  sector: 同一セクターでまとめる識別子。同じ sector の銘柄同士で相対強弱を比較する。
     #  sector_role: セクター内での位置づけ (メモ。memory/tester/inspection など)。
     sector: "semiconductor"

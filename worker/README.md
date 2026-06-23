@@ -11,17 +11,9 @@ LLM 判定を GitHub Actions に移した。**ローカル常駐プロセスも�
 
 ## エンドポイント
 
-| ルート | 用途 |
-|---|---|
-| `/health` | 疎通確認 (無認証) |
-| `/run?kind=ir\|news\|prices\|daily\|fundamentals\|earnings\|premarket&code=&[dispatch=1]` | 手動収集。`dispatch=1` で新規があれば context-builder 起動 |
-| `/pull?code=&since=&limit=` | IR だけ (source LIKE 'ir:%') を本文込み・fetched_at 昇順で返す |
-| `/pull-news?code=&since=&limit=` | per_ticker ニュースだけ (source LIKE 'kabutan:%') を本文込みで返す |
-| `/latest?kind=&code=&n=` | D1 から最新行 (prices/daily/fundamentals は時系列、premarket/earnings/ir も対応) |
-| `/context?code=` (GET) | 銘柄コンテキスト本文 + 2カーソル (ir/news) を返す。行なしは exists=false |
-| `/context` (POST) | `{code, body, ir_cursor?, news_cursor?}` で本文+カーソルを1行 upsert (全面上書き) |
-| `/dispatch-test?code=` | App認証→repository_dispatch の E2E 確認 (収集せず強制発火) |
-| `/test-slack` | Slack Webhook 疎通確認 |
+HTTP 層は `src/routes/` に分かれる。各ルートと用途はファイル冒頭コメントに書く
+(ルーティングの一覧は `src/index.ts`)。収集系 (`/run`)・skill 用バンドル
+(`/judge-context` `/context-input` `/market-context`)・Slack 連携 (`/slack/*`) などがある。
 
 `/health` 以外は本番では `SYNC_TOKEN` を要求する (`Authorization: Bearer <token>` ヘッダ、
 dev/未設定なら認証なし)。
@@ -33,12 +25,9 @@ Cloudflare の cron trigger 上限は **5個**。新規 cron は足せないの�
 `event.cron` により判別し種別を振り分ける (`CRON_KIND`)。昼(12:30)の IR intake は
 専用 cron を持たず prices ループに相乗りさせている (`event.scheduledTime` で昼スロットを判定)。
 
-| cron (UTC) | JST | 種別 | 内容 |
-|---|---|---|---|
-| `30 23 * * *` | 08:30 | intake | IR + ニュース + 地合い(寄り前) → 新規あれば context-builder |
-| `0 11 * * *` | 20:00 | intake | IR + ニュース → 新規あれば context-builder (決算・適時開示を当夜に拾う) |
-| `*/5 0-6 * * *` | 09:00-15:00 5分毎 | prices | prices + ニュース速報 → 新規ニュースで context-builder。12:30 相当スロットでは IR intake も相乗り |
-| `0 7 * * *` | 16:00 | eod | daily + fundamentals + earnings(次回決算予定日推定) |
+cron 式と JST の対応は `wrangler.toml [triggers]` のコメントに、種別ごとの収集内容は
+`cron.ts` (`CRON_KIND` の振り分け) に書く。intake (寄り前/引け後)・prices (場中5分毎)・
+eod (引け後) の3種で、寄り前は地合い、引け後は信用残や決算予定推定などを相乗りさせる。
 
 ## ローカル検証 (ログイン・デプロイ不要、課金なし)
 
@@ -87,15 +76,7 @@ pnpm exec wrangler deploy                                 # ★初回のみ手�
 
 ## D1 スキーマ (`schema.sql`)
 
-| テーブル | キー | 内容 |
-|---|---|---|
-| `articles` | url (PK) | IR + ニュースのメタ。source で振り分け (ir:.. / kabutan:..)。本文は R2 |
-| `prices` | (ticker, slot) | 5分枠スナップショット (slot=5分丸め冪等キー) |
-| `daily` | (ticker, date) | 日足 OHLC |
-| `fundamentals` | (ticker, date) | 予想PER/EPS・実績EPS |
-| `premarket_backdrop` | date (PK) | 前夜の地合い (SOX/Nasdaq/Dow/日経先物) |
-| `earnings` | ticker (PK) | 次回決算発表予定日の推定 (watchlist.yaml の代替 source of truth) |
-| `contexts` | ticker (PK) | 銘柄コンテキスト本文(markdown) + 2カーソル(ir/news の last_fetched_at)。本文とカーソルを1 upsert で原子的に前進 |
+全テーブルの定義は `schema.sql` を見る (各テーブルにコメント付き)。
 
 冪等性は複合 PRIMARY KEY が担保し、`INSERT OR IGNORE`/`OR REPLACE` で二重取得を弾く。
 watchlist (4銘柄) と URL テンプレートは各 src (`timeseries.ts` / `news.ts` / `earnings.ts` の
@@ -103,6 +84,9 @@ watchlist (4銘柄) と URL テンプレートは各 src (`timeseries.ts` / `new
 
 ## 確認用スクリプト (ローカル、読み取り専用)
 
-`scripts/valuation.ts` / `sector.ts` は Worker の `/latest` を叩いて表示する
-(要 `WORKER_URL` 環境変数)。`scripts/event-context.sh` は SQ/指数リバランスを計算し、FOMC/日銀は
-Worker `/latest?kind=macro-events` から読んで近接イベントを1行に整形する。常駐ではなく手動実行。
+`scripts/valuation.ts` は Worker の `/latest` を叩いて fair_per からの必要修正率を表示する
+(要 `WORKER_URL` 環境変数)。常駐ではなく手動実行。
+
+需給イベント (SQ/指数リバランス/FOMC/日銀/ピア決算)・セクター相対強弱・数値正規化といった
+決定論的な前処理はすべて Worker 側 (バンドルエンドポイントと `src/lib/`) に寄せてある。
+skill は curl 1 発で正規化済み JSON を受け取り、解釈だけを行う。

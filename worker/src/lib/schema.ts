@@ -159,6 +159,35 @@ export const margin = sqliteTable(
 	],
 );
 
+// ── forced_liquidation (強制決済スコア。冪等キー = (ticker, date)) ───────────
+// 「他プレイヤーの強制的な売買フロー」(追証売り=買い方のロスカット / 踏み上げ=売り方のロスカット)
+// を eod cron で決定論的に算出して保存する。judge (signal-judge=LLM) には渡さない (daily 指標から
+// 自前で読めるので判断材料としては冗長)。代わりに post-signal.sh が投稿時にここから最新行を引き、
+// stance!=none のとき観測行を本文末尾に貼る。direction は long(投げ)/short(踏み上げ)、
+// stance は building(これから出る)/exhausted(出尽くし)/none(対象外)。
+export const forcedLiquidation = sqliteTable(
+	"forced_liquidation",
+	{
+		ticker: text("ticker").notNull(),
+		date: text("date").notNull(),
+		direction: text("direction").notNull(), // long | short | none
+		stance: text("stance").notNull(), // building | exhausted | none
+		fuel: integer("fuel").notNull(), // 0..3
+		fire: integer("fire").notNull(), // 0..3
+		exhaust: integer("exhaust").notNull(), // 0..3
+		settleWarningInDays: integer("settle_warning_in_days"), // building のときだけ猶予営業日数
+		summary: text("summary").notNull(), // Slack/judge にそのまま載せられる1行平文
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.ticker, t.date] }),
+		index("idx_forced_liquidation_ticker_date").on(
+			t.ticker,
+			sql`${t.date} DESC`,
+		),
+	],
+);
+
 // ── macro_events (FOMC/日銀 会合日程。冪等キー = (date, kind)) ────────────────
 export const macroEvents = sqliteTable(
 	"macro_events",

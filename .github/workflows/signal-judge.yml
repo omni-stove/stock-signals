@@ -73,23 +73,15 @@ jobs:
             echo "::error::unknown ticker: $TICKER"; exit 1
           fi
 
-      # SQ (日本/米メジャー)・指数リバランスは GNU date で計算し、FOMC/日銀は Worker
-      # /latest?kind=macro-events (D1) から取得して近接イベントを 1 行に整形し prompt に渡す。
-      # skill 本体にはカレンダーを読ませない方針 (決定論的な算出は step 側で完結)。
-      # 起動経路 (dispatch / 手動) によらずここで毎回算出するので payload には依存しない。
-      - name: Build event context
-        run: bash scripts/event-context.sh > "$RUNNER_TEMP/eventctx.txt"
-        env:
-          WORKER_URL: ${{ vars.WORKER_URL }}
-          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
-
-      # Worker の数値データ (earnings/prices/daily/premarket/margin) と銘柄コンテキストを fetch +
-      # 正規化し、1 つの JSON にまとめて prompt に渡す。鮮度判定・20日レンジ位置・MA位置・出来高倍率・
-      # days_to_earnings はここ (決定論的) で計算し、コンテキスト本文は context_body として同梱する。
-      # skill には curl を叩かせず数値解釈と判断だけをさせる。JSON は複数行・特殊文字を含むので prompt に
-      # 直接埋めず、ファイルに書いて skill にパスを渡す。skill はそのファイルを Read するだけ。
+      # 数値コンテキスト (earnings/prices/daily/premarket/margin/銘柄コンテキスト) と需給イベント文脈
+      # (SQ/指数リバランス/FOMC/日銀/ピア決算) を Worker /judge-context が 1 call で正規化して返す。
+      # 鮮度判定・20日レンジ位置・MA位置・出来高倍率・days_to_earnings・market_phase・event_context は
+      # すべて Worker 側 (決定論的) で算出済み。skill には curl を叩かせず数値解釈と判断だけをさせる。
+      # JSON は複数行・特殊文字を含むので prompt に直接埋めず、ファイルに書いて skill にパスを渡す。
       - name: Build numeric context
-        run: bash scripts/judge-context.sh "$TICKER" > "$RUNNER_TEMP/numctx.json"
+        run: |
+          curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/judge-context?code=${TICKER}" > "$RUNNER_TEMP/numctx.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -107,10 +99,10 @@ jobs:
           # Slack スラッシュコマンド /signal 経由は Worker (GitHub App "omnistove-internal-auth")
           # 発の dispatch なので、その App の Bot も許可する (slack-reply.yml と同じ)。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
-          # 発火時は client_payload.ticker、手動実行時は inputs.ticker。@ で始まる 2 引数は
-          # 需給イベント文脈と数値コンテキスト(コンテキスト本文同梱)のファイルパス。skill は両方を
-          # Read するだけ。自由文字列を prompt に素埋めしないことで -- / @ の衝突を避ける。
-          prompt: "/signal-judge ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/eventctx.txt @${{ runner.temp }}/numctx.json"
+          # 発火時は client_payload.ticker、手動実行時は inputs.ticker。@ で始まる引数は数値
+          # コンテキスト (event_context / context_body 同梱) のファイルパス。skill は Read するだけ。
+          # 自由文字列を prompt に素埋めしないことで -- / @ の衝突を避ける。
+          prompt: "/signal-judge ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/numctx.json"
           # Actions の使い捨てサンドボックス内なので Bash を広く許可。numctx.json を read するため Read も許可。
           claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
         env:

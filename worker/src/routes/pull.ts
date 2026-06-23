@@ -16,13 +16,26 @@ import { articles } from "../lib/schema";
 
 export const pull = new Hono<{ Bindings: Env }>();
 
-// isNews=true のとき /pull-news (kabutan:% のみ)、false で /pull (ir/tdnet/rating)。
-async function handlePull(c: Context<{ Bindings: Env }>, isNews: boolean) {
-	const env = c.env;
-	const code = c.req.query("code") || "285A";
-	const since = c.req.query("since") ?? null;
-	const limit = parseInt(c.req.query("limit") || "20", 10);
+// 1 記事行 (R2 本文同梱)。/pull /pull-news と context-input が共有する返却形。
+export interface PullRow {
+	url: string;
+	title: string;
+	published_at: string | null;
+	ir_category: string | null;
+	fetched_at: string;
+	body: string | null;
+}
 
+// articles から「since 以降の未処理分 (本文 R2 同梱)」を fetched_at ASC で引く純粋ロジック。
+//   isNews=true → ニュース (kabutan:%)、false → IR一次情報 (ir:/tdnet:/rating:)。
+//   handlePull (ルート) と context-input ルートが共有する。HTTP には依存しない。
+export async function pullArticles(
+	env: Env,
+	code: string,
+	since: string | null,
+	limit: number,
+	isNews: boolean,
+): Promise<PullRow[]> {
 	// /pull-news はニュース (kabutan:%) のみ。/pull は「IR一次情報」として
 	// 公式IR (ir:%) と TDnet 適時開示 (tdnet:%) の両方を1本のカーソルで返す
 	// (いずれも銘柄の材料で、context-builder は同じ ir カーソルで読むため)。
@@ -66,7 +79,7 @@ async function handlePull(c: Context<{ Bindings: Env }>, isNews: boolean) {
 		.all();
 
 	// 各メタに R2 本文を同梱する。本文は判断に必須。R2 欠損は body=null で返す。
-	const rows = await Promise.all(
+	const rows: PullRow[] = await Promise.all(
 		(results as Record<string, unknown>[]).map(async (r) => {
 			let body: string | null = null;
 			try {
@@ -79,15 +92,24 @@ async function handlePull(c: Context<{ Bindings: Env }>, isNews: boolean) {
 				/* R2 欠損/壊れは body=null のまま (取得自体は止めない) */
 			}
 			return {
-				url: r.url,
-				title: r.title,
-				published_at: r.published_at,
-				ir_category: r.ir_category,
-				fetched_at: r.fetched_at,
+				url: r.url as string,
+				title: r.title as string,
+				published_at: r.published_at as string | null,
+				ir_category: r.ir_category as string | null,
+				fetched_at: r.fetched_at as string,
 				body,
 			};
 		}),
 	);
+	return rows;
+}
+
+// ルートハンドラ: クエリを読んで pullArticles を呼び、従来の {ok, code, since, count, rows} で返す。
+async function handlePull(c: Context<{ Bindings: Env }>, isNews: boolean) {
+	const code = c.req.query("code") || "285A";
+	const since = c.req.query("since") ?? null;
+	const limit = parseInt(c.req.query("limit") || "20", 10);
+	const rows = await pullArticles(c.env, code, since, limit, isNews);
 	return { ok: true, code, since, count: rows.length, rows };
 }
 

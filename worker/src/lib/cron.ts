@@ -4,6 +4,7 @@
 import { collectDisclosures } from "./disclosure";
 import { collectEarnings } from "./earnings";
 import type { Env } from "./env";
+import { collectForcedLiquidation } from "./forced-liquidation";
 import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
@@ -205,6 +206,14 @@ export async function runScheduled(
 				return null;
 			});
 		}
+		// 強制決済スコア (追証売り/踏み上げ) を当日 daily が確定した直後に算出して D1 に保存する。
+		// daily を上で収集済みなので最新足が揃っている。margin は intake で取得済みの最新行を読む。
+		// 夜の signal-judge が /latest?kind=forced で読むだけにするための事前計算。
+		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
+		const fl = await collectForcedLiquidation(env, null).catch((err) => {
+			console.error("forced-liquidation failed:", err);
+			return null;
+		});
 		console.log(
 			"scheduled eod done:",
 			JSON.stringify({
@@ -213,6 +222,7 @@ export async function runScheduled(
 				earnings: e,
 				...(pe ? { peerEarnings: pe } : {}),
 				...(macro ? { macroEvents: macro } : {}),
+				...(fl ? { forcedLiquidation: fl.results } : {}),
 			}),
 		);
 		return;

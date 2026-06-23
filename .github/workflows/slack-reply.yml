@@ -56,10 +56,12 @@ jobs:
             echo "::error::unknown ticker: $TICKER"; exit 1
           fi
 
-      # Worker の数値データ (earnings/prices/daily/premarket/margin) を fetch + 正規化し、1 つの
-      # JSON にまとめて prompt に渡す。signal-judge と同じ judge-context.sh をそのまま使う。
+      # 数値コンテキスト (earnings/prices/daily/premarket/margin/銘柄コンテキスト/event_context) を
+      # Worker /judge-context が 1 call で正規化して返す。signal-judge と同じエンドポイント。
       - name: Build numeric context
-        run: bash scripts/judge-context.sh "$TICKER" > "$RUNNER_TEMP/numctx.json"
+        run: |
+          curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/judge-context?code=${TICKER}" > "$RUNNER_TEMP/numctx.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -67,36 +69,25 @@ jobs:
           # (Slack ユーザーの自由入力が Worker 経由で透過してくるためインジェクション対策)。
           TICKER: ${{ github.event.client_payload.ticker }}
 
-      # Slack スレッドの会話履歴を conversations.replies で丸ごと取得し、skill に渡す JSON に整形する。
-      # 返信本文 (client_payload.text) は履歴の末尾としても来るが、payload からも明示で渡す
-      # (Slack のイベント反映が遅延しても確実に最新の問いを skill が持てるように)。
+      # スレッド文脈 (会話履歴 + 返信先) を Worker /thread-context が 1 call で返す。
+      # conversations.replies の取得・整形・ok:false フォールバック・payload text の末尾追加は
+      # すべて Worker 側 (決定論的) で行い、skill には curl を叩かせず Read させるだけにする
+      # (judge-context / market-context / context-input と同じ方針)。出力は
+      # { channel, thread_ts, kind, replies: [{user,text,ts}, ...] }。
+      # payload 由来の値 (Slack ユーザーの自由入力が透過してくる) は --data-urlencode で
+      # クエリにエンコードして渡す (run/prompt への ${{ }} 生展開を排除)。
       - name: Build thread context
-        id: thread
         run: |
-          # conversations.replies: 親 + 全返信を ts 昇順で返す。channels:history スコープが要る。
-          curl -s "https://slack.com/api/conversations.replies?channel=${CHANNEL}&ts=${THREAD_TS}&limit=100" \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" > "$RUNNER_TEMP/replies.json"
-          # skill に渡す形に整形: { channel, thread_ts, kind, replies: [{user,text,ts}, ...] }。
-          # conversations.replies が失敗 (ok:false) した場合も channel/thread_ts/kind は payload から
-          # 必ず埋め、replies は空配列でフォールバック (skill は payload の text を末尾とみなして答える)。
-          jq -n \
-            --arg channel "$CHANNEL" \
-            --arg thread_ts "$THREAD_TS" \
-            --arg kind "$KIND" \
-            --arg text "$TEXT" \
-            --slurpfile r "$RUNNER_TEMP/replies.json" '
-            ($r[0].messages // []) as $msgs
-            | {
-                channel: $channel,
-                thread_ts: $thread_ts,
-                kind: $kind,
-                replies: ( [ $msgs[] | { user: (.user // .bot_id // "?"), text: (.text // ""), ts: .ts } ]
-                           + ( if ($msgs | map(.text) | index($text)) == null
-                               then [ { user: "user", text: $text, ts: $thread_ts } ] else [] end ) )
-              }' > "$RUNNER_TEMP/thread.json"
+          curl -fsS -G "${WORKER_URL%/}/thread-context" \
+            -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            --data-urlencode "channel=${CHANNEL}" \
+            --data-urlencode "thread_ts=${THREAD_TS}" \
+            --data-urlencode "kind=${KIND}" \
+            --data-urlencode "text=${TEXT}" > "$RUNNER_TEMP/thread.json"
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          # payload 由来の値はすべて env 経由で渡す (run/jq への ${{ }} 生展開を排除)。
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # payload 由来の値はすべて env 経由で渡す (run への ${{ }} 生展開を排除)。
           CHANNEL: ${{ github.event.client_payload.channel }}
           THREAD_TS: ${{ github.event.client_payload.thread_ts }}
           KIND: ${{ github.event.client_payload.kind }}

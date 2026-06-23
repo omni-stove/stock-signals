@@ -10,15 +10,17 @@ living context and the current market picture, decide, and post to Slack. This i
 notes below say where the traps are; they don't give you the answer. Trust the read and commit to
 one side.
 
-**Judge only on what you can see now** — the living context, the numbers, the event string. Never
+**Judge only on what you can see now** — the living context, the numbers, the `event_context`. Never
 lean on hindsight-only ideas ("priced in," "unexplained" volume, a top being "in"); where there is
 a real effect, the notes below restate it as something visible — use that.
 
 ## Inputs
 
-Two files are passed: a one-line 需給イベント string (特になし when none) and the numeric context
-JSON. Read both. The JSON is self-describing — what isn't obvious from the fields:
+One file is passed: the numeric context JSON. Read it. The JSON is self-describing — what isn't
+obvious from the fields:
 
+- **`event_context`** is a one-line 需給イベント string (特になし when none): SQ週/SQ明け, 指数リバランス,
+  FOMC/日銀, 海外SOX系ピア決算. Read it for near-term 需給 distortion and binary-event risk.
 - **`context_body` is your primary fundamental input** — read it in full. 直近の重大トピック is
   freshest and usually the heart of the call; older structural context tells you whether a move
   continues or reverses; 証券会社レーティング is a 6–12mo view that corroborates (weight by 発行日 /
@@ -48,7 +50,8 @@ against the sector when `atr_pct_baseline` is null.)
 
 - **Margin (需給) is subordinate** — moves the 水準, never the direction. Contradicts the context →
   keep direction, soften the 水準 one step.
-- **Earnings near** argues for getting out, unless the freshest context *is* that release.
+- **Earnings near** argues for getting out, unless the freshest context *is* that release. Near or
+  just-out, **## 決算の特色・クセ** says what this name's earnings move on — use it to read the reaction.
 - **Event context** — SQ週/メジャーSQ unwind distorts the tape (treat the move as noise, fall back
   to fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX, so discount it.
   A near 海外SOX系ピア決算 (MU/NVDA/AMAT 等, shown as 「あとX日で…決算→SOX変動リスク」) is a

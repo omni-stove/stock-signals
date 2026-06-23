@@ -63,14 +63,26 @@ function parseKabutanArticle(html: string): {
 	published_at: string;
 } {
 	const $ = cheerio.load(html);
-	const title = $("h2").first().text().trim() || $("title").text().trim();
+	// 記事タイトルは本文ブロックの h1.pdbt0。ページ上部の h2 は銘柄名 (「6857 アドバンテスト」)
+	// なので拾わない。見つからなければ h1 全般 → <title> の順にフォールバック。
+	const title =
+		$("h1.pdbt0").first().text().trim() ||
+		$("#news_contents h1").first().text().trim() ||
+		$("h1").first().text().trim() ||
+		$("title").text().trim();
 	const body =
 		$("#shijyo_news_text").text().trim() ||
 		$(".news_body").text().trim() ||
+		$("#news_contents .body").text().trim() ||
 		$("article").text().trim() ||
 		$("main").text().trim();
+	// 公開日は記事の datePublished (time.s_news_date[itemprop=datePublished])。
+	// $("time").first() はページ上部の株価更新時刻 (class="close") を拾ってしまい、
+	// 記事と無関係の「現在日」になるため使わない (これが publised_at 化けの原因だった)。
 	const published_at =
-		$("time").first().attr("datetime") || $("time").first().text().trim();
+		$("time.s_news_date").first().attr("datetime") ||
+		$('time[itemprop="datePublished"]').first().attr("datetime") ||
+		$("time.s_news_date").first().text().trim();
 	return { title, body: body.replace(/\s+\n/g, "\n").trim(), published_at };
 }
 
@@ -223,16 +235,36 @@ if (import.meta.vitest) {
 	});
 
 	describe("parseKabutanArticle", () => {
-		it("見出しと本文を抽出する", () => {
+		it("見出し (h1.pdbt0) と本文を抽出する", () => {
 			const html =
-				"<h2>テスト見出し</h2><div id='shijyo_news_text'>  本文テキスト  </div>";
+				"<h1 class='pdbt0'>テスト見出し</h1><div id='shijyo_news_text'>  本文テキスト  </div>";
 			const r = parseKabutanArticle(html);
 			expect(r.title).toBe("テスト見出し");
 			expect(r.body).toBe("本文テキスト");
 		});
-		it("本文の優先順 (#shijyo_news_text → .news_body → article → main)", () => {
-			const html = "<h2>T</h2><div class='news_body'>fallback本文</div>";
+		it("本文の優先順 (#shijyo_news_text → .news_body → #news_contents .body → article → main)", () => {
+			const html =
+				"<h1 class='pdbt0'>T</h1><div class='news_body'>fallback本文</div>";
 			expect(parseKabutanArticle(html).body).toBe("fallback本文");
+		});
+		it("ページ上部の銘柄名 h2 や株価更新時刻 time は拾わず、記事の datePublished を取る", () => {
+			// kabutan の実構造: 上部に銘柄名 h2 と株価更新時刻 (time.close=現在日) があり、
+			// その後に記事の time.s_news_date[itemprop=datePublished] と h1.pdbt0 が来る。
+			// 旧実装は h2 と time.first() を拾って「銘柄名」「現在日」に化けていた (回帰防止)。
+			const html = [
+				"<h2>6857　アドバンテスト</h2>",
+				'<time class="close" datetime="2026-06-23T09:08+09:00">09:08</time>',
+				'<div id="news_contents">',
+				'<time class="s_news_date" datetime="2026-06-19T09:06:00+09:00" itemprop="datePublished">26/06/19</time>',
+				'<h1 class="pdbt0">アドバンテストが上値追い</h1>',
+				'<div class="body">記事本文ここ</div>',
+				"</div>",
+			].join("");
+			const r = parseKabutanArticle(html);
+			expect(r.title).toBe("アドバンテストが上値追い");
+			expect(r.published_at).toBe("2026-06-19T09:06:00+09:00");
+			expect(normDate(r.published_at)).toBe("2026-06-19");
+			expect(r.body).toContain("記事本文ここ");
 		});
 	});
 

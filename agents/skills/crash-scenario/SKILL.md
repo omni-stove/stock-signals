@@ -1,6 +1,6 @@
 ---
 name: crash-scenario
-description: For a single ticker given as argument, read that ticker's living context together with current price/daily/premarket/earnings/margin data from the Worker, then enumerate the concrete ways this name could crash — both ticker-specific (earnings miss, demand air-pocket, competition, regulation) and macro (SOX rout, rates, risk-off) — each with a trigger, leading indicators, an estimated drop, and a defensive move, and post the set to Slack. It is a pre-mortem, not a buy/sell call; it does NOT modify the context. One-shot; run manually or on a schedule.
+description: For a single ticker given as argument, read that ticker's living context together with current price/daily/premarket/earnings/margin data from the Worker, then enumerate the concrete ways this name could crash — both ticker-specific (earnings miss, demand air-pocket, competition, regulation) and macro (SOX rout, rates, risk-off) — each with a trigger, leading indicators, an estimated drop, and a defensive move, and post the set to Slack. It is a pre-mortem, not a buy/sell call; it does NOT modify the context. One-shot; fired by the Slack slash command `/crash`.
 ---
 
 # crash-scenario
@@ -35,19 +35,12 @@ Each scenario is one block:
 End with a **総括**: which 1–2 scenarios actually dominate the risk right now, and the single
 indicator most worth watching this week.
 
-## Invocation
-
-```
-/crash-scenario <ticker> -- <event-context> @<numeric-context.json>
-```
-
-After `--`: the **event context** (one-line 需給イベント string — SQ + nearby macro; missing →
-特になし), and `@<path>`, the **numeric context** JSON from `scripts/judge-context.sh`
-(earnings/premarket/daily/prices/margin, already fetched & normalized — **read it**). The
-numeric context is identical to signal-judge's, so the same `judge-context.sh` output feeds both.
-Run manually or on a schedule.
-
 ## Inputs
+
+A `<ticker>` plus two files are passed: a one-line 需給イベント string (SQ + nearby macro; 特になし
+when none) and the **numeric context** JSON from `scripts/judge-context.sh`
+(earnings/premarket/daily/prices/margin, already fetched & normalized — **read it**). The numeric
+context is identical to signal-judge's, so the same `judge-context.sh` output feeds both.
 
 1. **Metadata** — `<ticker>` in `config/watchlist.yaml` for `name`/`sector`/`sector_role`/
    `fair_per`. `fair_per` is the valuation anchor: a current PER far above it means a
@@ -92,6 +85,9 @@ Calibration traps:
   (memory glut, capex freeze, end-demand air-pocket). Name the channel.
 - **Event context** — a メジャーSQ unwind can *be* the trigger for a near-term gap (real, if
   short-lived); a near high-impact macro print is a scheduled risk-off catalyst.
+  A near 海外SOX系ピア決算 (MU/NVDA/AMAT 等, shown as 「あとX日で…決算→SOX変動リスク」) is a
+  concrete trigger for the macro (SOX rout) scenario: peer miss / guidance cut → SOX 急落 →
+  この銘柄 gaps down. Stand it up as a scenario with premarket.sox_change_pct as the leading sign.
 
 ## Post to Slack (only output)
 

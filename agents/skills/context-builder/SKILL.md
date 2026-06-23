@@ -1,19 +1,15 @@
 ---
 name: context-builder
-description: For a single ticker given as argument, pull newly-fetched IR AND per-ticker news from the Worker (each since its own cursor), then update that ticker's *living context* stored in D1 (Worker /context) — business shape, product lineup / tech roadmap, capital & management decisions, and a rolling summary of the latest material topics. It does NOT decide buy/sell. After updating the context it posts the full body to a Slack channel and fires the signal-judge workflow. One-shot; designed for GitHub Actions, fired by the Worker on new IR or news.
+description: For a single ticker given as argument, pull newly-fetched IR AND per-ticker news from the Worker (each since its own cursor), then update that ticker's *living context* stored in D1 (Worker /context) — business shape, product lineup / tech roadmap, capital & management decisions, and a rolling summary of the latest material topics. It does NOT decide buy/sell. After updating the context it posts the full body to a Slack channel. Firing the signal-judge workflow is done by the workflow itself (unconditionally, even on a no-update day), not by this skill. One-shot; designed for GitHub Actions, fired by the Worker on new IR or news.
 ---
 
 # context-builder
 
 Update one ticker's *living context* (the Worker's D1 `/context` store). Do not decide buy/sell. Write the context for a SWING-trading horizon (holding several days to a few weeks).
 
-## Invocation
+## Inputs
 
-```
-/context-builder 285A @/path/to/ctxin.json
-```
-
-First arg `<ticker>` is the symbol this run owns. Second arg `@<path>` is the input JSON from `scripts/context-input.sh` (the existing context body, the two cursors, and the newly-fetched IR/news pulled since each cursor).
+A `<ticker>` (the symbol this run owns) plus one input JSON from `scripts/context-input.sh` (the existing context body, the two cursors, and the newly-fetched IR/news pulled since each cursor).
 
 ## Steps
 
@@ -25,7 +21,7 @@ Read the `<ticker>` entry from `config/watchlist.yaml`; take `name` / `fair_per`
 
 Read the `@<path>` JSON.
 
-- `status: "no-update"` → print `<ticker> ir=0 news=0 (no update)` and exit. Skip the Slack post and signal-judge.
+- `status: "no-update"` → print `<ticker> ir=0 news=0 (no update)` and exit. Skip the context rewrite and the Slack post (nothing material changed). Do NOT fire signal-judge yourself — the workflow fires it unconditionally after this skill runs, so a name with no fresh IR/news still gets judged on price/tape moves each session.
 - `status: "ok"` → continue to step 3.
 
 `ir_items` are IR (official IR + TDnet + `rating`); `news_items` are per-ticker news. Both are already filtered to since each cursor and ordered oldest-first. Empty `context_body` means first run — build the body from scratch (step 4). Pass `cursors.*.next` verbatim to the script in step 5.
@@ -80,9 +76,9 @@ Body structure (Japanese; keep these headings stable — signal-judge reads them
 <latest results vs expectations, current guidance, known next-earnings considerations — facts only>
 ```
 
-### 5. Commit the body: upsert, post to Slack, fire signal-judge
+### 5. Commit the body: upsert and post to Slack
 
-Pass the body file and the advanced cursors (`cursors.ir.next` / `cursors.news.next`, verbatim). The script upserts the context to the Worker, posts the full body to `$SLACK_CONTEXT_CHANNEL` (skipped if empty), and fires the signal-judge workflow.
+Pass the body file and the advanced cursors (`cursors.ir.next` / `cursors.news.next`, verbatim). The script upserts the context to the Worker and posts the full body to `$SLACK_CONTEXT_CHANNEL` (skipped if empty). It does NOT fire signal-judge — the workflow does that unconditionally after this skill, so judging runs even on a no-update day.
 
 ```
 bash scripts/post-context.sh <ticker> /tmp/<ticker>-context.md "<cursors.ir.next>" "<cursors.news.next>"

@@ -13,21 +13,17 @@ analysis unless they ask for it; don't change your earlier direction just to ple
 data still says what it said, hold the line and explain why. Be concise (this is a chat reply, not
 a report). Match the user's language (they'll usually write 日本語).
 
-## Invocation
-
-```
-/slack-reply <ticker> -- <thread-json> @<numeric-context.json>
-```
-
-After `--`: `<thread-json>` is a path-or-inline JSON with the conversation so far and where to post
-back — `{ channel, thread_ts, kind, replies: [{ user, text, ts }, ...] }`. `kind` is the original
-analysis type (`signal-judge` / `crash-scenario`) so you know what the user is replying to. The last
-entry in `replies` is the new user message you must answer; the earlier ones are the original
-analysis post and any back-and-forth. `@<path>` is the **numeric context** JSON from
-`scripts/judge-context.sh` (earnings/premarket/daily/prices/margin, already fetched & normalized —
-**read it**).
-
 ## Inputs
+
+A `<ticker>` plus two files are passed. `<thread-json>` is a path-or-inline JSON with the
+conversation so far and where to post back — `{ channel, thread_ts, kind, replies: [{ user, text, ts
+}, ...] }`. `kind` is the original analysis type (`signal-judge` / `crash-scenario`) so you know what
+the user is replying to. The last entry in `replies` is the new user message you must answer; the
+earlier ones are the original analysis post and any back-and-forth. The other file is the **numeric
+context** JSON from `scripts/judge-context.sh` (earnings/premarket/daily/prices/margin, already
+fetched & normalized — **read it**).
+
+In detail:
 
 1. **The Slack thread** — read every message. The first is your original analysis (the call /
    the pre-mortem); the rest is the conversation. The user's latest message is the question.

@@ -1,5 +1,5 @@
 // Cloudflare Worker: 手動起動 (dev検証/オンデマンド) ルート。
-//   /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket&code=285A[&limit=N]
+//   /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|margin|premarket&code=285A[&limit=N]
 //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
 //   premarket は地合い (米国指数+日経先物) を1回取得して D1 premarket_backdrop に書く。
 //   通常は寄り前 intake cron が自動取得するが、手動/dev 検証用に残す。
@@ -16,6 +16,7 @@ import { collectAll } from "../lib/ir-collect";
 import { DEFAULT_LIMIT } from "../lib/ir-sources";
 import { collectMargin } from "../lib/margin";
 import { collectNews } from "../lib/news";
+import { collectPeerEarnings } from "../lib/peer-earnings";
 import { collectBackdrop } from "../lib/premarket";
 import { collectRatings } from "../lib/ratings";
 import { collectTimeseries } from "../lib/timeseries";
@@ -62,6 +63,12 @@ run.get("/", async (c) => {
 	if (kind === "earnings") {
 		// 次回決算予定日の推定 → D1 earnings に保存。
 		const result = await collectEarnings(env, code);
+		return c.json({ ok: true, kind, result });
+	}
+	if (kind === "peer-earnings") {
+		// 海外SOX系ピア (MU/NVDA/AMAT 等) の次回決算日を Nasdaq から取得 → D1 macro_events に保存。
+		// code をティッカーフィルタとして渡せる (例: ?kind=peer-earnings&code=NVDA)。
+		const result = await collectPeerEarnings(env, code);
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "margin") {

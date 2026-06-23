@@ -34,11 +34,14 @@ on:
         required: true
         type: choice
         # config/watchlist.yaml の tickers と同期させる。
+        # 下の options は `npm run gen:watchlist` が自動生成する (手で編集しないこと)。
         options:
+          # GEN:watchlist:start
           - "285A"  # キオクシアホールディングス
           - "6857"  # アドバンテスト
           - "6920"  # レーザーテック
           - "6981"  # 村田製作所
+          # GEN:watchlist:end
 
 # 銘柄ごとに同時実行を1本に抑え、走行中に同じ銘柄の新しい judge 要求が来たら古いジョブをキャンセルする。
 # signal-judge は Slack に出すだけで状態を持たない (Issueを書かない) ので、キャンセルしても整合は崩れない。

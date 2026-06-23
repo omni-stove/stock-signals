@@ -1,13 +1,15 @@
 #!/usr/bin/env bats
 # scripts/post-context.bats
-# post-context.sh の後処理 3 つ (D1 upsert / Slack 投稿 / signal-judge dispatch) の
-# 分岐と、組み立てる JSON ペイロードを検証する。
+# post-context.sh の後処理 2 つ (D1 upsert / Slack 投稿) の分岐と、組み立てる JSON
+# ペイロードを検証する。signal-judge の発火は post-context.sh から切り離したので
+# (scripts/dispatch-judge.sh / dispatch-judge.bats を参照)、ここでは「judge を撃たない」
+# ことだけ確認する。
 #
 # 実行: pnpm run test:sh
 #
 # 設計:
-#   - 外部呼び出し (curl/gh) は POST_CONTEXT_DRYRUN=1 で叩かず、組み立てた payload を
-#     stderr に "POST <url> <json>" / "GH <args>" 形式で出すだけにする (注入口)。
+#   - 外部呼び出し (curl) は POST_CONTEXT_DRYRUN=1 で叩かず、組み立てた payload を
+#     stderr に "POST <url> <json>" 形式で出すだけにする (注入口)。
 #   - run は stderr も $output に混ぜる (2>&1) ので、stdout の状態行と stderr の
 #     payload を同じ $output から jq / grep で突き合わせる。
 #   - WORKER_URL は必須チェックがあるのでダミー値を渡す (dryrun なので curl は走らない)。
@@ -107,22 +109,12 @@ payload_for() {
   [ -z "$(payload_for "/slack/post")" ]
 }
 
-# === 3. signal-judge dispatch ===============================================
+# === 3. signal-judge は撃たない (発火は dispatch-judge.sh に一本化した) ========
 
-# GITHUB_REPOSITORY があれば repository_dispatch で signal-judge を起動する
-@test "dispatch: fires signal-judge with ticker payload when repo set" {
+# GITHUB_REPOSITORY が設定されていても post-context.sh は judge を発火しない
+@test "dispatch: post-context never fires signal-judge (moved to dispatch-judge.sh)" {
   GITHUB_REPOSITORY="foo/bar" run_pc 285A "$BODY" "" ""
   [ "$status" -eq 0 ]
-  printf '%s\n' "$output" | grep -q "GH api repos/foo/bar/dispatches"
-  printf '%s\n' "$output" | grep -q "event_type=signal-judge"
-  printf '%s\n' "$output" | grep -q "client_payload\[ticker\]=285A"
-  printf '%s\n' "$output" | grep -q "signal-judge dispatched"
-}
-
-# GITHUB_REPOSITORY が無ければ dispatch しない (ローカル等)
-@test "dispatch: skipped when GITHUB_REPOSITORY unset" {
-  GITHUB_REPOSITORY="" run_pc 285A "$BODY" "" ""
-  [ "$status" -eq 0 ]
-  printf '%s\n' "$output" | grep -q "signal-judge skipped (no GITHUB_REPOSITORY)"
-  printf '%s\n' "$output" | grep -vq "^GH "
+  printf '%s\n' "$output" | grep -vq "signal-judge"
+  printf '%s\n' "$output" | grep -vq "dispatches"
 }

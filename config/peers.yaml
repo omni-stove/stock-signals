@@ -1,0 +1,43 @@
+# 海外SOX系ピア決算カレンダー定義
+#
+# 監視4銘柄 (config/watchlist.yaml) はいずれも半導体で、SOX (フィラデルフィア半導体指数) 経由で
+# 海外ピアの決算に強く連動する。MU/NVDA/AMAT 等の大物が決算を出すと、結果次第で翌日の SOX が振れ、
+# 日本の半導体株がギャップで寄る。これは「いつ起きるか先に分かる」スケジュール型イベントなので、
+# FOMC/日銀と同じく事前にカレンダー化して signal-judge / crash-scenario の prompt に
+# 「あとX日でMU決算→SOX変動リスク」を載せる。
+#
+# データの流れ:
+#   Worker (eod cron) が Nasdaq から各社の次回決算日を取得 → D1 macro_events に
+#   kind=peer_earnings:<TICKER> で保存 (worker/src/lib/peer-earnings.ts)。
+#   scripts/event-context.sh が「今日以降5日以内」の peer 決算を拾って prompt に1行で埋め込む。
+#
+# 重要: Worker は読み取り専用FSでこの yaml を読めない。実行時の真の出所は
+#   worker/src/lib/peer-earnings.ts の SOX_PEERS 定数。この yaml は人間が編集する出所であり、
+#   ピアを増減するときは「この yaml」と「SOX_PEERS 定数」の両方を一致させて直すこと。
+#
+# - ticker: Nasdaq のティッカー (US 上場 / 非US は ADR。例: TSMC=TSM, ASML=ASML)
+# - name:   prompt に出す日本語通称
+# - role:   セクター内での位置づけ (メモリ/前工程装置/検査装置/露光装置/ファウンドリ/GPU)
+
+peers:
+  - ticker: "MU"
+    name: "マイクロン"
+    role: "メモリ"
+  - ticker: "NVDA"
+    name: "エヌビディア"
+    role: "GPU"
+  - ticker: "AMAT"
+    name: "アプライド"
+    role: "前工程装置"
+  - ticker: "LRCX"
+    name: "ラムリサーチ"
+    role: "前工程装置"
+  - ticker: "KLAC"
+    name: "KLA"
+    role: "検査装置"
+  - ticker: "ASML"
+    name: "ASML"
+    role: "露光装置"
+  - ticker: "TSM"
+    name: "TSMC"
+    role: "ファウンドリ"

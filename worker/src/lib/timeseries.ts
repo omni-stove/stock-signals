@@ -4,14 +4,17 @@
 // 同じ kabutan パーサを Worker に移植したもの。結果は jsonl ではなく D1 テーブル
 // (prices / daily / fundamentals) に INSERT OR IGNORE / REPLACE で冪等に書く。
 //
-// watchlist と URL テンプレートはローカル config/watchlist.yaml・sources.yaml の
-// 該当部分をここに写している (Worker は読み取り専用 FS で yaml を持てないため)。
-// 銘柄追加時は WATCHLIST を更新する。
+// URL テンプレートはローカル config/sources.yaml の該当部分をここに写している。
+// 銘柄リスト (WATCHLIST / WATCHLIST_NAMES) は config/watchlist.yaml を出所に
+// `npm run gen:watchlist` が watchlist.gen.ts へ生成し、ここで re-export する
+// (Worker は読み取り専用 FS で yaml を持てないため、ビルド時に値を焼き込む)。
+// 銘柄を増減するときは yaml を直して gen を走らせるだけでよい。
 
 import * as cheerio from "cheerio";
 import { db } from "./db";
 import { daily, fundamentals, prices } from "./schema";
 import { fetchHtml, sleep } from "./utils";
+import { WATCHLIST, WATCHLIST_NAMES } from "./watchlist.gen";
 
 export interface TimeseriesEnv {
 	DB: D1Database;
@@ -19,19 +22,10 @@ export interface TimeseriesEnv {
 	MIN_INTERVAL_MS: string;
 }
 
-// ローカル config/watchlist.yaml の tickers と対応。Worker 内の全モジュールが
-// この定義を import して使う唯一の出所 (銘柄追加時はここ + watchlist.yaml だけ直す)。
-export const WATCHLIST: string[] = ["285A", "6857", "6920", "6981"];
-
-// コード → 表示名 (watchlist.yaml の name と対応)。Slack の銘柄ピッカーで
-// コードだけだと判別できないので会社名を出すために持つ。WATCHLIST と同じく
-// yaml の写経先で、check:watchlist が name のドリフトも検証する。
-export const WATCHLIST_NAMES: Record<string, string> = {
-	"285A": "キオクシアホールディングス",
-	"6857": "アドバンテスト",
-	"6920": "レーザーテック",
-	"6981": "村田製作所",
-};
+// 銘柄リストの唯一の出所。Worker 内の全モジュールは従来どおり timeseries から
+// import するが、実体は watchlist.gen.ts (config/watchlist.yaml から自動生成)。
+// 同一モジュール内でも使うので import した上で re-export する。
+export { WATCHLIST, WATCHLIST_NAMES };
 
 // ローカル config/sources.yaml の url_template と対応。
 const URL_PRICES = (code: string) => `https://kabutan.jp/stock/?code=${code}`;

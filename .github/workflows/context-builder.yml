@@ -36,11 +36,14 @@ on:
         required: true
         type: choice
         # config/watchlist.yaml の tickers と同期させる。
+        # 下の options は `npm run gen:watchlist` が自動生成する (手で編集しないこと)。
         options:
+          # GEN:watchlist:start
           - "285A"  # キオクシアホールディングス
           - "6857"  # アドバンテスト
           - "6920"  # レーザーテック
           - "6981"  # 村田製作所
+          # GEN:watchlist:end
 
 # 銘柄ごとに同時実行を1本に抑え、走行中に同じ銘柄の新着が来たら古いジョブをキャンセルして
 # 新しい材料を含むジョブだけ走らせる。skill は最後に D1 を一括上書き (本文+カーソルを原子的に) するので、
@@ -112,3 +115,18 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           # context-builder が D1 更新後に living document 全文を投稿する Slack チャンネル。
           SLACK_CONTEXT_CHANNEL: ${{ vars.SLACK_CONTEXT_CHANNEL }}
+
+      # 新規 IR/ニュースの有無によらず、skill 実行後は必ず signal-judge を 1 回発火する。
+      # 発火を skill (post-context.sh = 新規があったときだけ走る) から切り離してここに一本化したのは、
+      # 新規が無い銘柄でも価格/地合いの変化を毎営業日ひろって判定を回したいため
+      # (出来高/話題の薄い銘柄が「新規ニュース 0 = 判定も来ない」状態に陥っていた)。
+      # if: always() で skill が失敗・キャンセルされても判定だけは回す。
+      # Worker 側 intake cron も新規有無によらず全銘柄を signal-update する (cron.ts) ので、
+      # 寄り前/引け後ごとに全銘柄が確実に judge される。
+      - name: Dispatch signal-judge (unconditional)
+        if: always()
+        run: bash scripts/dispatch-judge.sh "$TICKER"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}

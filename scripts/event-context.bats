@@ -194,3 +194,50 @@ JSON
     run_ctx 2026-07-30
   [[ "$output" != *"遠いイベント"* ]]
 }
+
+# --- 海外SOX系ピア決算 (kind=peer_earnings:<TICKER>) -------------------------
+
+# ピア決算が近接 (3日後) なら「あとX日で<社名>決算→SOX変動リスク」を出す。
+# 決算日 2026-06-24 / jst_effect 2026-06-25 を基準日 2026-06-22 から見ると 3 日後。
+@test "peer: SOX peer earnings shows X-days SOX risk note" {
+  MACRO_EVENTS_JSON='{"rows":[{"date":"2026-06-24","kind":"peer_earnings:MU","label":"マイクロン(MU) 決算","impact":"high","jst_effect_date":"2026-06-25"}]}' \
+    run_ctx 2026-06-22
+  [[ "$output" == *"あと3日でマイクロン(MU) 決算"* ]]
+  [[ "$output" == *"SOX変動リスク"* ]]
+  # ピアは PEER_NOTE で出すので、マクロ用の "(日付/N日後)[impact]" 体裁では出さない。
+  [[ "$output" != *"マイクロン(MU) 決算(2026"* ]]
+}
+
+# ピア決算が波及日 (jst_effect_date) 当日なら「本日」文言を出す。
+@test "peer: SOX peer earnings on effect day shows today wording" {
+  MACRO_EVENTS_JSON='{"rows":[{"date":"2026-06-24","kind":"peer_earnings:MU","label":"マイクロン(MU) 決算","impact":"high","jst_effect_date":"2026-06-25"}]}' \
+    run_ctx 2026-06-25
+  [[ "$output" == *"本日マイクロン(MU) 決算→SOX変動リスク"* ]]
+}
+
+# 同じ日に複数社が決算でも (kind がティッカーで分かれ衝突しない) 両方出る。
+@test "peer: two peers on the same date both appear" {
+  MACRO_EVENTS_JSON='{"rows":[
+    {"date":"2026-08-13","kind":"peer_earnings:NVDA","label":"エヌビディア(NVDA) 決算","impact":"high","jst_effect_date":"2026-08-14"},
+    {"date":"2026-08-13","kind":"peer_earnings:AMAT","label":"アプライド(AMAT) 決算","impact":"high","jst_effect_date":"2026-08-14"}
+  ]}' run_ctx 2026-08-12
+  [[ "$output" == *"エヌビディア(NVDA) 決算"* ]]
+  [[ "$output" == *"アプライド(AMAT) 決算"* ]]
+}
+
+# 近接窓 (DAYS=5) の外のピア決算は拾わない (10日後)。
+@test "peer: peer earnings beyond the horizon window is not picked up" {
+  MACRO_EVENTS_JSON='{"rows":[{"date":"2026-08-09","kind":"peer_earnings:MU","label":"マイクロン(MU) 決算","impact":"high","jst_effect_date":"2026-08-10"}]}' \
+    run_ctx 2026-07-30
+  [[ "$output" != *"マイクロン(MU)"* ]]
+}
+
+# FOMC とピア決算が同時に近接していても、それぞれ別枠で正しく出る。
+@test "peer: macro and peer coexist in one line" {
+  MACRO_EVENTS_JSON='{"rows":[
+    {"date":"2026-07-29","kind":"fomc","label":"FOMC 政策金利発表 (7月会合)","impact":"high","jst_effect_date":"2026-07-30"},
+    {"date":"2026-07-31","kind":"peer_earnings:MU","label":"マイクロン(MU) 決算","impact":"high","jst_effect_date":"2026-08-01"}
+  ]}' run_ctx 2026-07-30
+  [[ "$output" == *"FOMC 政策金利発表 (7月会合)(2026-07-30/本日)[high]"* ]]
+  [[ "$output" == *"あと2日でマイクロン(MU) 決算→SOX変動リスク"* ]]
+}

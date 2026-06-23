@@ -236,10 +236,13 @@ fetch_macro_events_json() {
     "${WORKER_URL%/}/latest?kind=macro-events&all=1" 2>/dev/null || return 0
 }
 
-# 取得した macro-events を近接 (TODAY 〜 TODAY+DAYS) で絞り、MACRO_NOTE に積む。
+# 取得した macro-events を近接 (TODAY 〜 TODAY+DAYS) で絞り、note に積む。
 # effect_date = jst_effect_date があればそれ、無ければ date。SQ/指数リバランスは計算側で
-# 出すのでここには無い (D1 には fomc/boj のみ保存される)。
+# 出すのでここには無い。D1 の macro_events には fomc/boj に加え、海外SOX系ピア決算
+# (kind=peer_earnings:<TICKER>) も同居する。kind の peer_earnings: プレフィックスで見分け、
+# ピア決算は「あとX日で<社名>決算→SOX変動リスク」として別枠 (PEER_NOTE) に出す。
 MACRO_NOTE=""
+PEER_NOTE=""
 collect_macro_events() {
   command -v jq >/dev/null 2>&1 || { echo "event-context: jq 不在のためマクロイベントをスキップ" >&2; return 0; }
   local json; json="$(fetch_macro_events_json)"
@@ -247,10 +250,10 @@ collect_macro_events() {
   local today_epoch; today_epoch="$("$DATE" -d "$TODAY" +%s)"
   local horizon_epoch; horizon_epoch="$("$DATE" -d "$TODAY +$DAYS days" +%s)"
 
-  # rows[] を "effect_date<TAB>label<TAB>impact" の行に展開 (effect_date は coalesce)。
+  # rows[] を "effect_date<TAB>label<TAB>impact<TAB>kind" の行に展開 (effect_date は coalesce)。
   # 非JSON や rows 欠落は jq が空を返すのでループは回らない。
-  local line eff label impact
-  while IFS=$'\t' read -r eff label impact; do
+  local line eff label impact kind
+  while IFS=$'\t' read -r eff label impact kind; do
     [[ -n "$eff" ]] || continue
     local eff_epoch
     if ! eff_epoch="$("$DATE" -d "$eff" +%s 2>/dev/null)"; then
@@ -260,12 +263,21 @@ collect_macro_events() {
     if [[ "$eff_epoch" -ge "$today_epoch" && "$eff_epoch" -le "$horizon_epoch" ]]; then
       local days_until=$(( (eff_epoch - today_epoch) / 86400 ))
       local when; if [[ "$days_until" -eq 0 ]]; then when="本日"; else when="${days_until}日後"; fi
-      local imp=""; [[ -n "$impact" && "$impact" != "null" ]] && imp="[${impact}]"
-      MACRO_NOTE+="${label}(${eff}/${when})${imp}; "
+      if [[ "$kind" == peer_earnings:* ]]; then
+        # 海外ピア決算: 結果が翌日 SOX を振らせ日本の半導体株に波及する近接リスクとして出す。
+        if [[ "$days_until" -eq 0 ]]; then
+          PEER_NOTE+="本日${label}→SOX変動リスク(波及=${eff}); "
+        else
+          PEER_NOTE+="あと${days_until}日で${label}→SOX変動リスク(波及=${eff}); "
+        fi
+      else
+        local imp=""; [[ -n "$impact" && "$impact" != "null" ]] && imp="[${impact}]"
+        MACRO_NOTE+="${label}(${eff}/${when})${imp}; "
+      fi
     fi
   done < <(printf '%s' "$json" | jq -r '
     (.rows // [])[]
-    | [ (.jst_effect_date // .date), .label, (.impact // "") ]
+    | [ (.jst_effect_date // .date), .label, (.impact // ""), (.kind // "") ]
     | @tsv' 2>/dev/null)
 }
 
@@ -278,7 +290,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   check_index_rebalance "$TODAY"
   collect_macro_events
 
-  OUT="${SQ_NOTE}${INDEX_NOTE}${MACRO_NOTE}"
+  OUT="${SQ_NOTE}${INDEX_NOTE}${MACRO_NOTE}${PEER_NOTE}"
   OUT="$(echo "$OUT" | sed 's/; *$//')"   # 末尾の "; " を除去
   if [[ -z "$OUT" ]]; then
     echo "需給イベント(${TODAY}): 特になし"

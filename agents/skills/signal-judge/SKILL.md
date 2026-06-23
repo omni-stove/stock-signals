@@ -51,6 +51,9 @@ against the sector when `atr_pct_baseline` is null.)
 - **Earnings near** argues for getting out, unless the freshest context *is* that release.
 - **Event context** — SQ週/メジャーSQ unwind distorts the tape (treat the move as noise, fall back
   to fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX, so discount it.
+  A near 海外SOX系ピア決算 (MU/NVDA/AMAT 等, shown as 「あとX日で…決算→SOX変動リスク」) is a
+  scheduled event whose result swings SOX next day and reaches this name via the sector — soften
+  確信度 one step while it is pending; the actual result lands in premarket.sox_change_pct.
 
 ## Output
 

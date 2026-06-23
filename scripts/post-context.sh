@@ -1,29 +1,28 @@
 #!/usr/bin/env bash
 # scripts/post-context.sh
-# context-builder が再生成した本文を確定させる後処理 3 つを 1 本にまとめる。
+# context-builder が再生成した本文を確定させる後処理 2 つを 1 本にまとめる。
 #
 # 設計 (post-signal.sh / context-input.sh と同じ思想):
-#   - skill 本体に curl/gh/jq を叩かせない。本文を再生成しファイルに書いた後の
-#     決定論的な後処理 (Worker /context へ upsert、context チャンネルへ全文投稿、
-#     signal-judge を repository_dispatch で発火) はこのスクリプトが持つ。
-#     skill は ticker・本文ファイル・次カーソル 2 つを引数で渡すだけ。
-#   - 3 つは「保存したら → Slack に流して → signal-judge を発火」という一連の
-#     決定論的フロー。順序と各経路 (Bearer 認証、空カーソルは null、channel 明示、
-#     SLACK_CONTEXT_CHANNEL 空ならスキップ) を 1 か所に閉じ込める。
+#   - skill 本体に curl/jq を叩かせない。本文を再生成しファイルに書いた後の
+#     決定論的な後処理 (Worker /context へ upsert、context チャンネルへ全文投稿) は
+#     このスクリプトが持つ。skill は ticker・本文ファイル・次カーソル 2 つを渡すだけ。
+#   - 「保存したら → Slack に全文を流す」という決定論的フロー。各経路 (Bearer 認証、
+#     空カーソルは null、channel 明示、SLACK_CONTEXT_CHANNEL 空ならスキップ) を 1 か所に閉じ込める。
+#   - signal-judge の発火はここでは行わない。新規 0 (no-update) の日でも判定だけは毎営業日
+#     回せるよう、発火は context-builder ワークフローの独立ステップ (scripts/dispatch-judge.sh)
+#     に一本化した。post-context.sh は「新規があったときのコンテキスト確定」だけに責務を絞る。
 #
 # 入力:
 #   $1 = ticker          (必須)
 #   $2 = body-file       (必須。再生成済み本文のパス。例 /tmp/285A-context.md)
 #   $3 = ir-cursor-next  (任意。空文字なら null として送る)
 #   $4 = news-cursor-next(任意。空文字なら null として送る)
-# 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意), SLACK_CONTEXT_CHANNEL (任意),
-#           GITHUB_REPOSITORY (signal-judge 発火に必要。未設定なら dispatch スキップ)。
+# 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意), SLACK_CONTEXT_CHANNEL (任意)。
 #
-# 出力 (stdout): 各ステップの状態を 1 行ずつ (context posted / slack ok|skipped /
-#   signal-judge dispatched|skipped)。
-# テスト/オフライン用の注入口: POST_CONTEXT_DRYRUN=1 で curl/gh を叩かず、組み立てた
-#   JSON ペイロードを stderr に "POST <url> <json>" / "GH <args>" 形式で出すだけにする。
-#   curl/gh 単体を差し替えたいときは POST_CONTEXT_CURL / POST_CONTEXT_GH も使える。
+# 出力 (stdout): 各ステップの状態を 1 行ずつ (context posted / slack ok|skipped)。
+# テスト/オフライン用の注入口: POST_CONTEXT_DRYRUN=1 で curl を叩かず、組み立てた
+#   JSON ペイロードを stderr に "POST <url> <json>" 形式で出すだけにする。
+#   curl を差し替えたいときは POST_CONTEXT_CURL も使える。
 
 set -euo pipefail
 
@@ -40,14 +39,12 @@ NEWS_CURSOR="${4:-}"
 AUTH=(-H 'Content-Type: application/json')
 [[ -n "${SYNC_TOKEN:-}" ]] && AUTH=(-H "Authorization: Bearer ${SYNC_TOKEN}" "${AUTH[@]}")
 
-# curl / gh はテストから差し替えられるよう変数化する (注入口)。
-# POST_CONTEXT_DRYRUN=1 のとき: curl/gh を叩かず、組み立てた JSON ペイロードを stderr に
+# curl はテストから差し替えられるよう変数化する (注入口)。
+# POST_CONTEXT_DRYRUN=1 のとき: curl を叩かず、組み立てた JSON ペイロードを stderr に
 # 出すだけにする (bats がペイロードを検証できる)。本物の呼び出しでは実コマンドを使う。
 CURL="${POST_CONTEXT_CURL:-curl}"
-GH="${POST_CONTEXT_GH:-gh}"
 if [[ "${POST_CONTEXT_DRYRUN:-}" == "1" ]]; then
   CURL="dryrun_curl"
-  GH="dryrun_gh"
 fi
 # data @<(...) で渡る JSON を取り出して "POST <url> <payload>" 形式で stderr に出す。
 dryrun_curl() {
@@ -62,7 +59,6 @@ dryrun_curl() {
   # payload は 1 行に潰して出す (bats が 1 行で grep/jq できるように)。
   printf 'POST %s %s\n' "$url" "$(jq -c . "$data_file")" >&2
 }
-dryrun_gh() { printf 'GH %s\n' "$*" >&2; }
 
 # --- 1. Worker /context へ upsert (本文 + 進めたカーソル) ----------------------
 # 空カーソルは null として送る (初回 backlog を引いた後など)。
@@ -87,13 +83,5 @@ else
   echo "slack skipped (no channel)"
 fi
 
-# --- 3. signal-judge を発火 --------------------------------------------------
-# repository_dispatch。GITHUB_REPOSITORY 未設定 (ローカル等) なら発火しない。
-if [[ -n "${GITHUB_REPOSITORY:-}" ]]; then
-  "$GH" api "repos/${GITHUB_REPOSITORY}/dispatches" \
-    -f event_type=signal-judge \
-    -F "client_payload[ticker]=${TICKER}" \
-    && echo "signal-judge dispatched" || echo "signal-judge dispatch failed"
-else
-  echo "signal-judge skipped (no GITHUB_REPOSITORY)"
-fi
+# signal-judge の発火はここでは行わない (scripts/dispatch-judge.sh に一本化)。
+# 理由はファイル冒頭の設計コメントを参照。

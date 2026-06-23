@@ -1,0 +1,81 @@
+# 地合い (market regime) チェック → Claude Code Action で リスクオン/中立/リスクオフ判定 → Slack通知。
+#
+# 銘柄非依存の市場全体スキル。signal-judge (個別の buy/sell) や crash-scenario (個別の下落経路)
+# の前段ゲートとして、「今日そもそもエントリーしてよい地合いか」を 1 本のスコアで出す。
+#
+# 起動経路は 2 つ:
+#   - repository_dispatch (event_type=market-check) … Worker の寄り前 intake cron (JST 08:30) が
+#       premarket (SOX/NASDAQ/Dow/日経先物) を D1 に取得した「直後」に発火する (worker/src/lib/cron.ts)。
+#       地合いは個別 signal-judge の前段ゲートなので、同じ寄り前 intake で後段の signal-judge を撃つ
+#       より「先」に発火させる必要がある (schedule cron で別に撃つと後段より遅れて本末転倒)。
+#       JST 土日は cron.ts の isJstWeekend ガードで intake 自体がスキップされるので発火しない。
+#       premarket が stale なら skill 側が demote する。
+#   - workflow_dispatch … 手動実行 (検証用)。引数なし。
+#
+# 起動後は .claude/skills/market-check が scripts/market-context.sh の出した地合い JSON
+# (premarket + 需給イベント + セクター内の値動きの広がり) を読み、リスクオン/中立/リスクオフと
+# 今日の売買可否 (拾い場/様子見/守り) を 1 本にまとめて Slack に通知する。
+# **このワークフローはコンテキストを一切書き換えない** (出力は Slack のみ)。
+#
+# 認証・Secret は signal-judge.yml と同じ:
+#   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
+#   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
+#   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+# 投稿は skill が Worker /slack/post に投げる (Bot 投稿)。SLACK_BOT_TOKEN 未設定 (503) なら投稿スキップ。
+
+name: market-check
+
+on:
+  repository_dispatch:
+    types: [market-check]    # Worker の寄り前 intake (JST 08:30) が premarket 取得直後に発火する。
+  workflow_dispatch: {}      # 手動実行 (検証用)。引数なし。
+
+# 同時実行は 1 本に抑え、走行中に新しい market-check が来たら古いジョブをキャンセルする。
+# 地合いは Slack に出すだけで状態を持たないのでキャンセルしても整合は崩れない。
+concurrency:
+  group: market-check
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
+
+jobs:
+  market-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Action 実行時は CLAUDE.md / AGENTS.md の指示が判定の邪魔になりうるので退避する (共通アクション)。
+      - uses: ./.github/actions/stash-claude-md
+
+      # 地合い JSON (premarket + 需給イベント + セクター内の値動きの広がり) を fetch + 正規化し、
+      # 1 つの JSON にまとめて prompt に渡す。鮮度判定・event 同梱・sectors 要約はここ (決定論的) で
+      # 行い、skill には curl/node を叩かせず数値解釈と地合い判定だけをさせる。JSON は複数行・特殊
+      # 文字を含むので prompt に直接埋めず、ファイルに書いて skill にパスを渡す。skill は Read するだけ。
+      # sector.ts (node) を叩くので Node をセットアップする。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build market context
+        run: bash scripts/market-context.sh > "$RUNNER_TEMP/marketctx.json"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Run market-check skill
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # 起動 actor: repository_dispatch は Worker の GitHub App (omnistove-internal-auth)、
+          # 手動 workflow_dispatch は github-actions[bot]。既定では Bot 起動を Action が弾くので両方許可する。
+          allowed_bots: "omnistove-internal-auth,github-actions[bot]"
+          # @ で始まる引数は地合い数値コンテキストのファイルパス。skill は Read するだけ。
+          prompt: "/market-check @${{ runner.temp }}/marketctx.json"
+          # 使い捨てサンドボックス内なので Bash を広く許可。marketctx.json を read するため Read も許可。
+          claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 30"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}

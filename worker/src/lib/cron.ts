@@ -4,15 +4,16 @@
 import { collectDisclosures } from "./disclosure";
 import { collectEarnings } from "./earnings";
 import type { Env } from "./env";
-import { dispatchSignalUpdate } from "./github-dispatch";
+import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
 import { collectMacroEvents } from "./macro-events";
 import { collectMargin } from "./margin";
 import { collectNews } from "./news";
+import { collectPeerEarnings } from "./peer-earnings";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
-import { collectTimeseries } from "./timeseries";
+import { collectTimeseries, WATCHLIST } from "./timeseries";
 
 // 発火した cron 式 → 取得種別。wrangler.toml の [triggers] crons と対応させること。
 // Cloudflare の cron trigger 上限は5個。新規 cron は足せないので、複数ソースの収集は
@@ -84,10 +85,20 @@ export async function runScheduled(
 		// intake cron (8:30/12:30/18:30) では IR とニュースを両方収集する。
 		// 寄り前(8:30)のときだけ先に当日の地合いを D1 に取る。直後に発火する signal-judge が
 		// pre-open weighting で当日 premarket 行を読めるようにするため (失敗しても収集は続行)。
+		// premarket が揃った直後に market-check (地合いゲート) も kick する。地合いは前段ゲート
+		// なので、下で発火する個別 signal-judge より「先」に Slack へ出す必要がある。schedule cron
+		// で別に撃つと signal-judge より後ろにずれるため、ここで premarket 取得後すぐに発火する。
 		if (event.cron === "30 23 * * *") {
 			await collectBackdrop(env).catch((e) =>
 				console.error("backdrop failed:", e),
 			);
+			// 銘柄非依存なので client_payload は空。App 認証が無ければ no-op (false)。
+			await dispatchEventPayload(
+				env,
+				"market-check",
+				{},
+				event.scheduledTime,
+			).catch((e) => console.error("market-check dispatch failed:", e));
 		}
 		// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) のいずれかに新規があった
 		// 銘柄をまとめて signal-report を起動する。適時開示は /pull の ir カーソルに合流する。
@@ -130,7 +141,13 @@ export async function runScheduled(
 			"fresh:",
 			fresh.join(","),
 		);
-		await dispatchSignalUpdate(env, fresh);
+		// intake (寄り前 8:30 / 引け後 20:00) は新規の有無によらず全銘柄を signal-update する。
+		// fresh だけを撃つと、出来高/話題の薄い銘柄 (例: 6857 が数日ニュース 0) が一度も判定されず
+		// 取り残されるため。context-builder は新規 0 なら no-update でコンテキストを触らないが、
+		// signal-judge はワークフロー側で無条件に発火する (context-builder.yml の dispatch ステップ)
+		// ので、価格/地合いの変化だけは寄り前/引け後ごとに必ず拾える。
+		// 場中 (prices, 5分毎) は LLM コストを抑えるため従来どおり新規ベース (下の分岐)。
+		await dispatchSignalUpdate(env, WATCHLIST);
 		return;
 	}
 	if (kind === "prices") {
@@ -172,6 +189,13 @@ export async function runScheduled(
 		const d = await collectTimeseries(env, "daily", null);
 		const f = await collectTimeseries(env, "fundamentals", null);
 		const e = await collectEarnings(env, null);
+		// 海外SOX系ピア (MU/NVDA 等) の次回決算日も毎 eod 取得する。次回日は決算ごとに繰り上がる
+		// ため月初1回では最大1ヶ月古くなる。watchlist の earnings と同頻度・同思想 (毎日上書き)。
+		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
+		const pe = await collectPeerEarnings(env, null).catch((err) => {
+			console.error("peer-earnings failed:", err);
+			return null;
+		});
 		// マクロイベント (FOMC/日銀) は月初スロットでだけ相乗り収集する。会合は年8回・先の日程が
 		// 確定公表されており月1で十分。失敗しても eod の主収集は壊さない (catch でログのみ)。
 		let macro: Record<string, unknown> | null = null;
@@ -187,6 +211,7 @@ export async function runScheduled(
 				daily: d,
 				fundamentals: f,
 				earnings: e,
+				...(pe ? { peerEarnings: pe } : {}),
 				...(macro ? { macroEvents: macro } : {}),
 			}),
 		);

@@ -79,7 +79,7 @@ flowchart TB
         REPLYWF["slack-reply.yml<br/>(スレッド返信に応答)"]
         REPLYSKILL["skill: slack-reply<br/>(Claude Code / LLM)<br/>@path (数値+context_body) +スレッド履歴を読み同スレッドへ返答"]
         SLACK["Slack"]
-        MKTWF --> MKTSKILL -->|地合いスコア (前段ゲート)| SLACK
+        MKTWF --> MKTSKILL -->|地合いスコア（前段ゲート）| SLACK
         CTXWF --> CTXIN --> CTXSKILL -->|POST /context で本文+カーソルを更新| API
         CTXSKILL -->|更新後 dispatch| JUDGEDISP --> JUDGEWF --> JUDGECTX --> JUDGESKILL
         CTXSKILL -.->|本文全文を投稿| SLACK

@@ -50,6 +50,12 @@ app.route("/", misc); // /dispatch-test, /test-slack
 // 同じ { ok:false, error } JSON 形に揃える (デフォルトのプレーンテキスト 500 を避ける)。
 app.onError((err, c) => {
 	if (err instanceof HTTPException) return err.getResponse();
+	// 5xx は tail で原因を追えるよう message + stack をログに出す (best-effort)。
+	console.error(
+		`unhandled error on ${c.req.method} ${c.req.path}: ${
+			err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)
+		}`,
+	);
 	return c.json(
 		{ ok: false, error: err instanceof Error ? err.message : String(err) },
 		500,

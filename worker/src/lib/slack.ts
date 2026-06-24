@@ -102,9 +102,15 @@ export async function openView(
 			},
 			body: JSON.stringify({ trigger_id: args.trigger_id, view: args.view }),
 		});
-		const body = (await res.json()) as { ok: boolean; error?: string };
+		const body = (await res.json()) as {
+			ok: boolean;
+			error?: string;
+			response_metadata?: { messages?: string[] };
+		};
 		if (!body.ok) {
-			console.error(`views.open failed: ${body.error}`);
+			// invalid_arguments 等は response_metadata.messages に不正フィールドの詳細が入る。
+			const detail = body.response_metadata?.messages?.join(" | ") ?? "";
+			console.error(`views.open failed: ${body.error}${detail ? ` (${detail})` : ""}`);
 			return false;
 		}
 		return true;

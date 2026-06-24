@@ -23,14 +23,14 @@ import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
 import { slackThreads } from "../lib/schema";
-import { addReaction, openView, updateView } from "../lib/slack";
+import { addReaction, openView } from "../lib/slack";
 import {
 	ACTION_ID,
+	BLOCK_ID,
 	COMMANDS,
 	type Command,
 	ephemeral,
 	pickerView,
-	resultView,
 	type SlackEventEnvelope,
 	shouldHandleReply,
 } from "../lib/slack-command";
@@ -181,8 +181,13 @@ slack.post("/slack/events", async (c) => {
 	return c.body(null, 200);
 });
 
-// POST /slack/interact : modal 内の static_select で銘柄を選んだときに飛んでくる
-// (block_actions)。payload= に JSON が URL エンコードで入る。view.id でその modal を引ける。
+// POST /slack/interact : 銘柄ピッカー modal の Submit (実行) を押したときに飛んでくる
+// (view_submission)。payload= に JSON が URL エンコードで入る。
+//   - どの解析か   : view.callback_id "<PICKER_CALLBACK_ID>:<cmd>" から復元する。
+//   - どの銘柄か   : view.state.values[BLOCK_ID][ACTION_ID].selected_option.value から取る。
+// dispatch (GitHub App JWT 取得を含む) は3秒制約に収まるので await し、成否で応答を分ける:
+//   成功 → response_action: "clear" で modal が自動で閉じる (起動結果は数分後にチャンネルへ届く)。
+//   失敗 → response_action: "errors" で入力欄にエラーを出す (modal は閉じず押し直せる)。
 slack.post("/slack/interact", async (c) => {
 	const v = await verified(c);
 	if ("err" in v) return v.err;
@@ -190,44 +195,42 @@ slack.post("/slack/interact", async (c) => {
 	const form = new URLSearchParams(v.raw);
 	const payload = JSON.parse(form.get("payload") ?? "{}") as {
 		type?: string;
-		view?: { id?: string };
-		// 銘柄ピッカーはボタン (button → value を直に持つ)。selected_option は使わない。
-		actions?: { action_id?: string; value?: string }[];
+		view?: {
+			callback_id?: string;
+			state?: {
+				values?: Record<
+					string,
+					Record<string, { selected_option?: { value?: string } }>
+				>;
+			};
+		};
 	};
 
-	if (payload.type !== "block_actions") return c.body(null, 200);
-	const action = payload.actions?.find((a) => a.action_id === ACTION_ID);
-	// value は command 側で埋めた "<cmd>:<code>"。分解してコマンドと銘柄を復元する。
-	const [cmdKey, ticker] = (action?.value ?? "").split(":");
-	const cmd = COMMANDS[cmdKey ?? ""];
-	const viewId = payload.view?.id ?? "";
-	// 不正値: modal をエラー文へ差し替える (閉じずに理由を見せる)。
-	if (!cmd || !WATCHLIST.includes(ticker ?? "")) {
-		if (viewId)
-			c.executionCtx.waitUntil(
-				updateView(c.env, {
-					view_id: viewId,
-					view: resultView("銘柄が取得できませんでした。"),
-				}),
-			);
-		return c.body(null, 200);
+	if (payload.type !== "view_submission") return c.body(null, 200);
+
+	// callback_id "<PICKER_CALLBACK_ID>:<cmd>" の cmd 部だけ取り出す。
+	const cmdKey = (payload.view?.callback_id ?? "").split(":")[1] ?? "";
+	const cmd = COMMANDS[cmdKey];
+	const ticker =
+		payload.view?.state?.values?.[BLOCK_ID]?.[ACTION_ID]?.selected_option
+			?.value ?? "";
+
+	// 不正値: 入力欄にエラーを出して modal は閉じない (押し直せるように)。
+	if (!cmd || !WATCHLIST.includes(ticker)) {
+		return c.json({
+			response_action: "errors",
+			errors: { [BLOCK_ID]: "銘柄が取得できませんでした。選び直してください。" },
+		});
 	}
 
-	// 選択した瞬間に発火し、modal は自動で閉じる。dispatch (GitHub App JWT 取得を含む) は
-	// 3秒制約に収まるので await し、成否を確かめてから応答を決める:
-	//   成功 → response_action: clear で modal を閉じる (起動結果は数分後にチャンネルへ届く)。
-	//   失敗 → modal を閉じず resultView で失敗理由を見せる (押し直せるように)。
 	const ok = await dispatchEvent(c.env, cmd.eventType, ticker, Date.now());
 	if (ok) {
-		// block_actions への JSON 応答。clear で modal スタックを全て閉じる。
+		// clear で modal を閉じる (起動結果は数分後にチャンネルへ届く)。
 		return c.json({ response_action: "clear" });
 	}
-	if (viewId)
-		c.executionCtx.waitUntil(
-			updateView(c.env, {
-				view_id: viewId,
-				view: resultView(cmd.failed(ticker)),
-			}),
-		);
-	return c.body(null, 200);
+	// dispatch 失敗時は入力欄にエラーを出して閉じない。
+	return c.json({
+		response_action: "errors",
+		errors: { [BLOCK_ID]: cmd.failed(ticker) },
+	});
 });

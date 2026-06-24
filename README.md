@@ -15,10 +15,10 @@
 - **記事系は1つに合流**。公式IR・銘柄ニュース・適時開示(TDnet)・証券会社レーティングはすべて同じ記事ストアに保存され、収集元が増えても context-builder は無改修で読む。レーティングは目標株価が中期(6〜12ヶ月)ビューなので、context-builder がコンテキストの専用セクションに畳み込む(直近トピックの30日ルールの例外)。
 - **補助: 暴落プリモーテム**。`crash-scenario` skill は signal-judge と同じインプット (コンテキスト + 数値) を読み、その銘柄が崩れる道筋を銘柄固有/マクロの両面で3〜5本列挙して Slack に流す。buy/sell 判定とは別物 (リスクの事前棚卸し)。起動は **Slack スラッシュコマンド `/crash` 専用**: `/crash 285A` なら即発火 / 引数なしなら watchlist から銘柄ピッカーが出る。GitHub 画面からの手動実行は持たない。
 - **手動 buy/sell 判定**。`signal-judge` は通常 context-builder のあとに自動で走るが、**Slack スラッシュコマンド `/signal` でも任意のタイミングで起動できる**: `/signal 285A` なら即発火 / 引数なしなら銘柄ピッカー (`/crash` と同じ口を共有)。
-- **補助: 地合い前段ゲート**。`market-check` skill は **銘柄非依存の市場全体スキル**。前夜マーケット(SOX/NASDAQ/Dow/日経先物)+ 当日の需給イベント文字列 + watchlist のセクター内の値動きの広がり(breadth)を読み、`リスクオン / 中立 / リスクオフ` の地合いを1本にまとめ、今日の売買可否の含意(`拾い場 / 様子見 / 守り`)を添えて Slack に流す。signal-judge(個別 buy/sell)や crash-scenario(個別の下落経路)の**前に「今日そもそもエントリーしてよい地合いか」を出すゲート**で、コンテキストは一切書き換えない(出力は Slack のみ)。起動は **Worker の寄り前 intake (JST 08:30) が premarket 取得直後に `repository_dispatch (market-check)` で撃つ**(後段の signal-judge を撃つより先に発火させ、ゲートが個別判定より先に Slack へ出るようにする)。`workflow_dispatch` の手動実行もできる。
+- **補助: 地合い前段ゲート**。`market-check` skill は **銘柄非依存の市場全体スキル**。前夜マーケット(SOX/NASDAQ/Dow/日経先物)+ 当日の需給イベント文字列 + watchlist のセクター内の値動きの広がり(breadth)を読み、`リスクオン / 中立 / リスクオフ` の地合いを1本にまとめ、今日の売買可否の含意(`拾い場 / 様子見 / 守り`)を添えて Slack に流す。signal-judge(個別 buy/sell)や crash-scenario(個別の下落経路)の**前に「今日そもそもエントリーしてよい地合いか」を出すゲート**で、銘柄コンテキストは書き換えない。地合いコールは Slack に出すと同時に D1 にも控え、後段の個別判定が `/judge-context` 経由で当日分を読む — **リスクオフの日は個別判定の水準が押し目に格下げされ追いが封じられる**。起動は **Worker の寄り前 intake (JST 08:30) が premarket 取得直後に `repository_dispatch (market-check)` で撃つ**(後段の signal-judge を撃つより先に発火させる)。`workflow_dispatch` の手動実行もできる。
 - **補助: 強制フロー観測 (追証売り / 踏み上げ)**。「ルール・資金繰りで機械的に出る売買」(信用買い方の追証=投げ / 売り方の追証=踏み上げ) を Worker(eod cron)が **LLM を介さず**価格指標+信用残から算出し D1 `forced_liquidation` に保存する(`worker/src/lib/forced-liquidation.ts`)。judge には渡さず(daily 指標から自前で読めるので冗長)、`scripts/post-signal.sh` が投稿時にこれと指数リバランス窓を引いて、観測事実として判定本文の末尾に1行貼るだけ(方向判断とは別物)。設計の考え方は `docs/forced-flow-strategy.md`。
 - **補助: SOX系ピア決算カレンダー**。監視4銘柄はすべて半導体で SOX 経由で海外ピア(MU/NVDA/AMAT 等)の決算に強く連動する。Worker(eod cron)が Nasdaq から各社の次回決算日を取得し D1 `macro_events` に `kind=peer_earnings:<TICKER>` で保存(`worker/src/lib/peer-earnings.ts`)、Worker の `event-context.ts`(`/judge-context` に同梱される `event_context`)が「今日以降5日以内」の peer 決算を拾って signal-judge / crash-scenario の prompt に「あとX日でMU決算→SOX変動リスク」を1行で埋める。FOMC/日銀と同じ**スケジュール型イベント**。ピア定義の人間向け出所は `config/peers.yaml`(実行時の真の出所は `peer-earnings.ts` の `SOX_PEERS` 定数)。
-- **銘柄追加**。watchlist に銘柄を1つ足すときは `add-ticker` skill(`/add-ticker 7203` 等)。銘柄リストの唯一の真のソースは `config/watchlist.yaml` で、写経先(Worker の `watchlist.gen.ts`〔`timeseries.ts` がここから re-export する〕、context-builder / signal-judge の workflow_dispatch options)は `scripts/gen-watchlist.ts` が yaml から生成する。設定の編集だけで、価格取得・context 構築・Slack 投稿はしない(初回データは次の cron / workflow が拾う)。
+- **銘柄追加**。watchlist に銘柄を1つ足すときは `add-ticker` skill(`/add-ticker 7203` 等)。銘柄リストの唯一の真のソースは `worker/src/lib/watchlist.ts` の `TICKERS`(`WATCHLIST` / `WATCHLIST_NAMES` / `WATCHLIST_META` / `IR_SOURCES` はここから導出)。Worker は直接 import する。唯一の写経先は context-builder / signal-judge の workflow_dispatch options で、`scripts/gen-watchlist.ts` が `watchlist.ts` から生成する。設定の編集だけで、価格取得・context 構築・Slack 投稿はしない(初回データは次の cron / workflow が拾う)。
 
 ## 対象銘柄 (watchlist)
 
@@ -29,7 +29,7 @@
 | 6920 | レーザーテック | 半導体検査装置             |
 | 6981 | 村田製作所     | 電子部品(MLCC)             |
 
-詳細とキーワード/IRソースは `config/watchlist.yaml` 参照(銘柄一覧の唯一の真のソース)。
+詳細とキーワード/IRソースは `worker/src/lib/watchlist.ts` の `TICKERS` 参照(銘柄一覧の唯一の真のソース)。
 
 ## 全体構成
 
@@ -49,7 +49,7 @@ flowchart TB
         direction TB
         CRON_CF["Cron Triggers<br/>intake(IR+news+開示+レーティング+寄り前は地合い)/prices/eod(daily+fundamentals+earnings)"]
         WORKER["Worker<br/>routes/(HTTP層) + lib/(Cron配線/スクレイプ/IR収集/dispatch発火)"]
-        D1[("D1 (SQLite)<br/>prices/daily/fundamentals/margin(信用残)<br/>articles(IR+news+開示+レーティング)メタ<br/>contexts(銘柄コンテキスト+2カーソル)<br/>premarket/earnings/intraday_dispatch/slack_threads<br/>forced_liquidation(強制決済スコア)<br/>macro_events(FOMC/日銀/SOX系ピア決算)")]
+        D1[("D1 (SQLite)<br/>prices/daily/fundamentals/margin(信用残)<br/>articles(IR+news+開示+レーティング)メタ<br/>contexts(銘柄コンテキスト+2カーソル)<br/>premarket/earnings/intraday_dispatch/slack_threads<br/>market_regime(当日の地合いゲート)<br/>forced_liquidation(強制決済スコア)<br/>macro_events(FOMC/日銀/SOX系ピア決算)")]
         R2[("R2<br/>記事本文JSON")]
         API((HTTP API<br/>/run /pull /pull-news /latest /context<br/>/context-input /judge-context /market-context<br/>/index-rebalance — 前処理バンドル))
         SLACKAPI((Slack HTTP<br/>/slack/command /slack/interact<br/>/slack/events /slack/post))
@@ -72,7 +72,7 @@ flowchart TB
         CTXSKILL["skill: context-builder<br/>(Claude Code / LLM)<br/>@path を読み銘柄コンテキストに反映"]
         JUDGEDISP{{"signal-judge<br/>イベント<br/>(repository_dispatch)"}}
         JUDGEWF["signal-judge.yml<br/>(concurrency: 銘柄ごと cancel-in-progress)"]
-        JUDGECTX["step: curl /judge-context<br/>(数値+コンテキスト本文+需給イベント event_context<br/>+market_phase を Worker が正規化/同梱)"]
+        JUDGECTX["step: curl /judge-context<br/>(数値+コンテキスト本文+需給イベント event_context<br/>+market_phase+当日の market_regime を Worker が正規化/同梱)"]
         JUDGESKILL["skill: signal-judge<br/>(Claude Code / LLM)<br/>@path (数値+context_body) を読み buy/sell を判定"]
         CRASHWF["crash-scenario.yml<br/>(/crash 起動)"]
         CRASHSKILL["skill: crash-scenario<br/>(Claude Code / LLM)<br/>暴落シナリオを列挙 (コンテキストは更新しない)"]
@@ -108,14 +108,14 @@ flowchart TB
     %% Actions → Worker (材料引きは workflow step が代行し skill へ @path で渡す)
     %% 縦積みを崩さぬよう横断する戻り参照は破線 (重み低)
     API -.->|/context-input（本文+カーソル+新規IR/news を 1 call で）| CTXIN
-    API -.->|/judge-context（数値+本文+event_context+market_phase を 1 call で）| JUDGECTX
+    API -.->|/judge-context（数値+本文+event_context+market_phase+当日 market_regime を 1 call で）| JUDGECTX
     API -.->|/market-context（premarket+需給イベント+セクター breadth を 1 call で）| MKTSKILL
 
     %% Slack 連携 (双方向)
     SLACK -.->|/crash・/signal・スレッド返信| SLACKAPI
     JUDGESKILL -.->|/slack/post Bot| SLACKAPI
     CRASHSKILL -.->|/slack/post Bot| SLACKAPI
-    MKTSKILL -.->|/slack/post Bot| SLACKAPI
+    MKTSKILL -.->|/slack/post Bot<br/>(地合いを D1 にも控え)| SLACKAPI
     REPLYSKILL -.->|/slack/post thread_ts| SLACKAPI
     WORKER -.->|新規IR通知<br/>Incoming Webhook| SLACK
 
@@ -256,8 +256,9 @@ sequenceDiagram
   強制フロー観測 (追証売り/踏み上げ) と指数リバランス窓が観測事実として相乗りする (判定とは独立)。
 - **Slack (地合い)**: `market-check` が寄り前 (JST 08:30 の premarket 取得直後、個別判定より先) に
   `リスクオン / 中立 / リスクオフ` + 当日の売買可否 (`拾い場 / 様子見 / 守り`) を1本で出す。個別
-  buy/sell の前に「今日エントリーしてよい地合いか」を見るゲート。`workflow_dispatch` で任意の
-  タイミングにも出せる。
+  buy/sell の前に「今日エントリーしてよい地合いか」を見るゲート。後続の signal-judge /
+  crash-scenario が当日の地合いを読み、**リスクオフの日は個別判定の水準が押し目に格下げされ追いが
+  封じられる**。`workflow_dispatch` で任意のタイミングにも出せる。
 - **Slack (新規IR)**: Worker が新着IRを通知する。判定とは別チャンネルに分けることもできる。
 - **Slack (暴落プリモーテム)**: スラッシュコマンド `/crash 285A` で即起動、`/crash` 単独なら
   銘柄ピッカーが出る。結果は判定と同じチャンネルに暴落シナリオ3〜5本が届く。

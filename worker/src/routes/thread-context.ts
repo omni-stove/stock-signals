@@ -15,7 +15,7 @@
 
 import { type Context, Hono } from "hono";
 import type { Env } from "../lib/env";
-import { fetchReplies } from "../lib/slack";
+import { appendUserReply, fetchReplies } from "../lib/slack";
 
 export const threadContext = new Hono<{ Bindings: Env }>();
 
@@ -32,10 +32,8 @@ threadContext.get("/thread-context", async (c: Context<{ Bindings: Env }>) => {
 		thread_ts: threadTs,
 	});
 
-	// ユーザーの最新返信 (text) が履歴に未反映なら末尾に足す。既にあれば二重化しない。
-	if (text && !replies.some((r) => r.text === text)) {
-		replies.push({ user: "user", text, ts: threadTs });
-	}
+	// ユーザーの最新返信 (text) が履歴に未反映なら末尾に足す (マージは lib/slack に集約)。
+	const merged = appendUserReply(replies, text, threadTs);
 
-	return c.json({ channel, thread_ts: threadTs, kind, replies });
+	return c.json({ channel, thread_ts: threadTs, kind, replies: merged });
 });

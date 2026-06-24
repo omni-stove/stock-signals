@@ -6,7 +6,7 @@
 // 読むだけ・計算するだけの確認用スクリプト。LLM 不使用。append もしない。
 //   - Worker /latest?kind=prices&code=<code>&n=1 の rows[0] → 現在株価
 //   - Worker /latest?kind=fundamentals&code=<code>&n=1 の rows[0] → 予想PER / 予想EPS / 実績EPS
-//   - config/watchlist.yaml の fair_per → 適正PERの基準
+//   - worker/src/lib/watchlist.ts の fair_per → 適正PERの基準
 //
 // データ取得元は Cloudflare Worker。環境変数 WORKER_URL が必須 (未設定なら exit 1)。
 // SYNC_TOKEN があれば Authorization: Bearer で付ける (未設定なら無害)。
@@ -21,12 +21,7 @@
 // 実行: `WORKER_URL=https://... node scripts/valuation.ts`
 //       `WORKER_URL=https://... node scripts/valuation.ts --json`  (機械可読なJSONで出す)
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { parse as parseYaml } from "yaml";
-
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
+import { TICKERS } from "../worker/src/lib/watchlist.ts";
 
 const WORKER_URL = process.env.WORKER_URL;
 // vitest (in-source test) は CLI ではないので環境変数ガードを通さない。
@@ -58,10 +53,6 @@ async function fetchLatest<T>(
 	}
 }
 
-type Watchlist = {
-	tickers: { code: string; name: string; fair_per?: number | null }[];
-};
-
 type PriceSnapshot = {
 	price: number | null;
 	quote_time: string | null;
@@ -89,10 +80,6 @@ type Row = {
 	fair_price: number | null;
 	note: string;
 };
-
-async function loadYaml<T>(path: string): Promise<T> {
-	return parseYaml(await readFile(path, "utf8")) as T;
-}
 
 function round(n: number | null, digits = 1): number | null {
 	if (n === null || !Number.isFinite(n)) return null;
@@ -208,11 +195,8 @@ function printTable(rows: Row[]) {
 
 async function main() {
 	const asJson = process.argv.includes("--json");
-	const watchlist = await loadYaml<Watchlist>(
-		join(ROOT, "config/watchlist.yaml"),
-	);
 	const rows: Row[] = [];
-	for (const t of watchlist.tickers) {
+	for (const t of TICKERS) {
 		rows.push(await buildRow(t));
 	}
 

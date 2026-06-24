@@ -257,3 +257,19 @@ CREATE TABLE IF NOT EXISTS contexts (
   news_last_fetched_at TEXT,               -- news カーソル (次回 /pull-news の since)。未確立は NULL
   updated_at           TEXT NOT NULL       -- 最終更新時刻 (ISO8601)
 );
+
+-- ── 地合い (market regime) ───────────────────────────────────────────────────
+-- market-check skill が寄り前 (JST 08:30 intake 直後) に出す当日の地合いコールを D1 に控える。
+-- これを judge-context が当日分だけ読み、signal-judge / crash-scenario の入力に market_regime
+-- として同梱する (前段ゲート)。market-check は Slack に出すだけだったので、後段の個別判定に
+-- 地合いを届ける経路がこのテーブル。1 日 1 行 (PK=JST暦日, INSERT OR REPLACE で当日分を上書き)。
+--   regime  = リスクオン / 中立 / リスクオフ
+--   stance  = 拾い場 / 様子見 / 守り (売買可否の含意)
+--   headline = market-check が書いた 1 行目 (Slack ヘッドラインそのまま。人間向けの控え)
+CREATE TABLE IF NOT EXISTS market_regime (
+  date       TEXT PRIMARY KEY,   -- JST 暦日 YYYY-MM-DD
+  regime     TEXT NOT NULL,      -- リスクオン / 中立 / リスクオフ
+  stance     TEXT NOT NULL,      -- 拾い場 / 様子見 / 守り
+  headline   TEXT NOT NULL,      -- market-check の 1 行目 (控え)
+  fetched_at TEXT NOT NULL       -- 記録時刻 (ISO8601)
+);

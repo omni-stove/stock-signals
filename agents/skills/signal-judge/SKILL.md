@@ -5,10 +5,7 @@ description: For a single ticker given as argument, read its living context toge
 
 # signal-judge
 
-You are a swing trader (horizon: days to a few weeks) making one call on one ticker. Read the
-living context and the current market picture, decide, and post to Slack. This is judgment — the
-notes below say where the traps are; they don't give you the answer. Trust the read and commit to
-one side.
+The notes below say where the traps are; commit to one side.
 
 **Judge only on what you can see now** — the living context, the numbers, the `event_context`. Never
 lean on hindsight-only ideas ("priced in," "unexplained" volume, a top being "in"); where there is
@@ -16,11 +13,18 @@ a real effect, the notes below restate it as something visible — use that.
 
 ## Inputs
 
-One file is passed: the numeric context JSON. Read it. The JSON is self-describing — what isn't
-obvious from the fields:
+Two paths are passed: the numeric context JSON to **read**, and an `out=<path>` file to **write**
+your call to. Do not post to Slack; do not run any script — write the call to `out` and stop.
 
-- **`event_context`** is a one-line 需給イベント string (特になし when none): SQ週/SQ明け, 指数リバランス,
-  FOMC/日銀, 海外SOX系ピア決算. Read it for near-term 需給 distortion and binary-event risk.
+What isn't obvious from the JSON fields:
+
+- **`market_regime`** (top level, object `{ regime, stance, headline }` or null) is today's
+  market-check call, the pre-open 地合い gate. Apply it; do not merely weigh it. It moves the 水準,
+  never the direction. リスクオフ caps the 水準 at 押し目 — 追い is off the table and the 損切り is a
+  floor you never loosen. 中立 grants no boost. リスクオン permits the fuller 水準, 追い included.
+  Null → the gate didn't run; judge on the name alone. Name in the body how the gate moved the 水準.
+- **`event_context`** is a one-line 需給イベント string (特になし when none). Read it for near-term
+  需給 distortion and binary-event risk.
 - **`context_body` is your primary fundamental input** — read it in full. 直近の重大トピック is
   freshest and usually the heart of the call; older structural context tells you whether a move
   continues or reverses; 証券会社レーティング is a 6–12mo view that corroborates (weight by 発行日 /
@@ -31,7 +35,7 @@ obvious from the fields:
   same stale tape, but `premarket` (pre-open, digesting overnight NY → lead on `premarket`/context)
   vs `closed` (after close → react to the close + tonight's NY setup) changes what the level means.
 - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.
-- `<ticker>`'s `name`/`sector` are in `config/watchlist.yaml`.
+- `<ticker>`'s `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
 ## Forming the call
 
@@ -40,10 +44,12 @@ These are the forces in play; weigh them into one call, don't match them to a la
 **Context sets direction; price sets how aggressive the 水準 is.** Fresh, corroborating topics (or a
 just-released earnings/guidance) make the strongest call; a thin single line still picks a side,
 noted as thin; nothing materially new weakens the long case. The further the move has already run
-when the context arrives, the worse the entry and the more it pulls toward selling.
+when the context arrives, the worse the entry and the more it pulls toward selling. Weigh
+`fair_per` (`worker/src/lib/watchlist.ts`) as a tilt on the 水準, never the direction — well above it渋く
+the 水準, below it supports a deeper `押し目`; it never overrides fresh context.
 
 **Overbought works on the 水準, not the direction.** A top is only confirmed after it breaks —
-strong trends stay overbought for days, so it argues against adding, not against holding. It turns
+strong trends stay overbought for days; overbought argues against adding, not against holding. It turns
 toward exiting only once the move has *cracked* — high in the range *and* `vol_x_20d` thinning, not
 merely high — or the driving topic drops out of 直近の重大トピック. (Read `atr_pct` cross-sectionally
 against the sector when `atr_pct_baseline` is null.)
@@ -53,10 +59,10 @@ against the sector when `atr_pct_baseline` is null.)
 - **Earnings near** argues for getting out, unless the freshest context *is* that release. Near or
   just-out, **## 決算の特色・クセ** says what this name's earnings move on — use it to read the reaction.
 - **Event context** — SQ週/メジャーSQ unwind distorts the tape (treat the move as noise, fall back
-  to fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX, so discount it.
-  A near 海外SOX系ピア決算 (MU/NVDA/AMAT 等, shown as 「あとX日で…決算→SOX変動リスク」) is a
-  scheduled event whose result swings SOX next day and reaches this name via the sector — soften
-  確信度 one step while it is pending; the actual result lands in premarket.sox_change_pct.
+  to fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX — discount.
+  A near 海外SOX系ピア決算 is a scheduled event whose result swings SOX next day and reaches this
+  name via the sector — soften the 水準 one step while it is pending; the actual result lands in
+  premarket.sox_change_pct.
 
 ## Output
 
@@ -65,18 +71,17 @@ names what kind of entry/exit this is: `押し目` (entry into a dip), `追い` 
 up), `利確` (taking profit), `逃げ` (getting out). Which one follows from the call above, not from a
 fixed rule.
 
-Post to Slack (below), then write one line to stdout — no narration:
+Give the risk frame: a 損切り level (a price or MA/range line) and a one-word リスクリワード read
+(良/可/薄) from upside-to-損切り.
+
+Write the call to the `out=<path>` file:
+
+- Line 1: `🧭 <ticker> <name> signal: <signal>・<qualifier>`
+- Lines 2+: 1–3 body lines — driving topics, the price/backdrop/earnings tilt, why this 水準 (a 需給
+  line if 信用残 mattered), and the 損切り/RR line.
+
+Then one stdout line, no narration:
 
 ```
-<ticker> → <signal>・<qualifier> (driving topics, price/MA cue) backdrop <SOX/event tilt>, <slack ok|skipped>
+<ticker> → <signal>・<qualifier> (driving topics, price/MA cue; 損切り/RR) backdrop <SOX/event tilt>
 ```
-
-## Post to Slack (only output)
-
-```
-bash scripts/post-signal.sh <ticker> "🧭 <ticker> <name> signal: <signal>・<qualifier>" "<body>"
-```
-
-`<body>` is 1–3 lines (`\n`-separated): driving topics, the price/backdrop/earnings tilt, and why
-this 水準 (a 需給 line if 信用残 mattered). The script prints `slack ok` or `slack skipped` — use
-that for the stdout line.

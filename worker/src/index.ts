@@ -6,6 +6,7 @@
 // HTTP ルーティングは routes/ に、cron 配線は cron.ts に分離してある。ここは配線だけ持つ。
 
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { runScheduled } from "./lib/cron";
 import type { Env } from "./lib/env";
 import { auth } from "./routes/auth";
@@ -43,6 +44,17 @@ app.route("/", contextInput); // /context-input (context-builder 用バンドル
 app.route("/", marketContext); // /market-context (market-check 用バンドル)
 app.route("/", threadContext); // /thread-context (slack-reply 用バンドル)
 app.route("/", misc); // /dispatch-test, /test-slack
+
+// 未捕捉例外を一元処理する。各ルートが投げる HTTPException (res に Response.json を載せている)
+// はその res をそのまま返す。それ以外の素の Error (collect 系のネットワーク失敗等) は 500 で
+// 同じ { ok:false, error } JSON 形に揃える (デフォルトのプレーンテキスト 500 を避ける)。
+app.onError((err, c) => {
+	if (err instanceof HTTPException) return err.getResponse();
+	return c.json(
+		{ ok: false, error: err instanceof Error ? err.message : String(err) },
+		500,
+	);
+});
 
 app.notFound((c) =>
 	c.text(

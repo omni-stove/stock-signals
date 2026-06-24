@@ -8,7 +8,8 @@ import type { Env } from "../lib/env";
 import { checkIndexRebalance } from "../lib/event-context";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
 import { resolveMarketPhase } from "../lib/market-phase";
-import { slackThreads } from "../lib/schema";
+import { parseMarketRegime } from "../lib/market-regime";
+import { marketRegime, slackThreads } from "../lib/schema";
 import { notifySlack, postMessage } from "../lib/slack";
 
 export const misc = new Hono<{ Bindings: Env }>();
@@ -120,6 +121,35 @@ misc.post("/slack/post", async (c) => {
 				{ status: 502 },
 			),
 		});
+	}
+
+	// market-check の地合いコールは market_regime に当日分を控える (judge-context が前段ゲートに使う)。
+	// b.text = ヘッドライン (`🌐 地合い: <regime>・<stance>`)。3 値が読めた時だけ書く。
+	if (b.kind === "market-check" && b.text) {
+		const parsed = parseMarketRegime(b.text);
+		if (parsed) {
+			const nowIso = new Date().toISOString();
+			const { today } = resolveMarketPhase(null, Date.now());
+			await db(env.DB)
+				.insert(marketRegime)
+				.values({
+					date: today,
+					regime: parsed.regime,
+					stance: parsed.stance,
+					headline: b.text,
+					fetchedAt: nowIso,
+				})
+				.onConflictDoUpdate({
+					target: marketRegime.date,
+					set: {
+						regime: parsed.regime,
+						stance: parsed.stance,
+						headline: b.text,
+						fetchedAt: nowIso,
+					},
+				})
+				.run();
+		}
 	}
 
 	// 解析結果 (親投稿) のみ slack_threads に控える。返答 (thread_ts 有り) は記録しない。

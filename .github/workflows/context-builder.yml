@@ -36,7 +36,7 @@ on:
         description: 対象銘柄コード
         required: true
         type: choice
-        # config/watchlist.yaml の tickers と同期させる。
+        # worker/src/lib/watchlist.ts の TICKERS と同期させる。
         # 下の options は `npm run gen:watchlist` が自動生成する (手で編集しないこと)。
         options:
           # GEN:watchlist:start
@@ -73,7 +73,7 @@ jobs:
         env:
           TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
         run: |
-          if ! grep -qE "^[[:space:]]*-[[:space:]]*code:[[:space:]]*\"?${TICKER}\"?[[:space:]]*$" config/watchlist.yaml; then
+          if ! grep -qE "^[[:space:]]*code:[[:space:]]*\"${TICKER}\",[[:space:]]*$" worker/src/lib/watchlist.ts; then
             echo "::error::unknown ticker: $TICKER"; exit 1
           fi
 
@@ -101,19 +101,31 @@ jobs:
           # 既定では Bot起動のワークフローを Action が弾くため。bot名は [bot] サフィックス付き。
           allowed_bots: "omnistove-internal-auth[bot]"
           # 第1引数=対象銘柄 (Worker発火時 client_payload.ticker / 手動時 inputs.ticker)。
-          # @ で始まる第2引数=入力コンテキスト JSON (context-input.sh 出力) のパス。
-          # skill は JSON を Read し、新規があれば本文を再生成してファイルに書き、POST /context で
-          # D1 を上書き → 全文を Slack に投稿 → signal-judge を dispatch する。入力の fetch はしない。
-          prompt: "/context-builder ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/ctxin.json"
-          # Actions の使い捨てサンドボックス内なので Bash を広く許可 (パイプ/heredoc/tmpfile書き込みが
-          # 細かい Bash(gh:*) 指定だと弾かれ、リトライでターンを浪費して失敗していたため)。
-          # ctxin.json を read するため Read も許可。
-          claude_args: "--allowedTools Bash,Write,Read,Edit --max-turns 50"
+          # @ で始まる第2引数=入力コンテキスト JSON (context-input.sh 出力) のパス。skill は Read する。
+          # body= は再生成本文、cursors= は進めた 2 カーソルの出力先。新規があれば両方を Write し、
+          # no-update なら何も書かない。upsert と Slack 投稿は次ステップ (post-context.sh) が行う。
+          prompt: "/context-builder ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/ctxin.json body=${{ runner.temp }}/context.md cursors=${{ runner.temp }}/cursors.txt"
+          # LLM に curl/sh を叩かせない: upsert/投稿は次ステップが行うので Bash は渡さず Read,Write のみ許可。
+          claude_args: "--allowedTools Read,Write --max-turns 50"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+
+      # skill が body を書いた (= 新規あり) ときだけ D1 upsert + 全文 Slack 投稿。no-update では
+      # body ファイルが無いのでスキップする (post-context.sh には渡さず判定だけ次の dispatch で回す)。
+      - name: Upsert context and post to Slack
+        run: |
+          if [[ -f "$RUNNER_TEMP/context.md" ]]; then
+            bash scripts/post-context.sh "$TICKER" "$RUNNER_TEMP/context.md" "$RUNNER_TEMP/cursors.txt"
+          else
+            echo "$TICKER: no body written (no-update) — skip upsert/post"
+          fi
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
           # context-builder が D1 更新後に living document 全文を投稿する Slack チャンネル。
           SLACK_CONTEXT_CHANNEL: ${{ vars.SLACK_CONTEXT_CHANNEL }}
 

@@ -11,4 +11,6 @@ Hold only what the LLM must judge.
 - State what it must not do.
 - Grant judgment explicitly.
 - For a SKILL.md: push deterministic work into `scripts/*.sh` the skill calls in one line.
+- For a command the skill runs: name it and what it does in one line — never explain how it works inside.
+- Keep the frontmatter `description` to the trigger and the shape of the work, not the full procedure.
 - Edit skills at `agents/skills/<name>/SKILL.md` — `.claude/skills/` is a symlink, never edit there.

@@ -69,10 +69,18 @@ jobs:
           # 手動 workflow_dispatch は github-actions[bot]。既定では Bot 起動を Action が弾くので両方許可する。
           allowed_bots: "omnistove-internal-auth,github-actions[bot]"
           # @ で始まる引数は地合い数値コンテキストのファイルパス。skill は Read するだけ。
-          prompt: "/market-check @${{ runner.temp }}/marketctx.json"
-          # 使い捨てサンドボックス内なので Bash を広く許可。marketctx.json を read するため Read も許可。
-          claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 30"
+          # out= は地合い判定の出力先 (1 行目 headline + 本文)。skill はここに Write するだけで投稿しない。
+          prompt: "/market-check @${{ runner.temp }}/marketctx.json out=${{ runner.temp }}/market.out"
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash は渡さず Read,Write のみ許可。
+          claude_args: "--model opus --effort high --allowedTools Read,Write --max-turns 30"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
+
+      # skill が書いた地合いファイルを読んで Slack に投稿する (curl/jq/フォールバックは script が持つ)。
+      - name: Post market-check to Slack
+        run: bash scripts/post-market.sh "$RUNNER_TEMP/market.out"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}

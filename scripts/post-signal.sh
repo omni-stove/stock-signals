@@ -14,8 +14,9 @@
 #
 # 入力:
 #   $1 = ticker          (必須)
-#   $2 = headline        (必須。例 "🧭 285A キオクシア signal: buy・押し目")
-#   $3 = body            (必須。Slack 本文。改行で複数行可)
+#   $2 = body-file       (必須。skill が書いた出力ファイルのパス。1 行目 = headline、
+#                         2 行目以降 = Slack 本文。skill は curl を一切叩かず、判定結果を
+#                         このファイルに書くだけ。投稿はこのスクリプト = workflow の後続ステップが行う)
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意)。
 #
 # 出力 (stdout): "slack ok" または "slack skipped" の 1 行。skill の stdout 行はこれを使う。
@@ -25,11 +26,16 @@
 
 set -euo pipefail
 
-TICKER="${1:?usage: post-signal.sh <ticker> <headline> <body>}"
-HEADLINE="${2:?headline required}"
-BODY="${3:?body required}"
+TICKER="${1:?usage: post-signal.sh <ticker> <body-file>}"
+BODY_FILE="${2:?body-file required}"
 
 : "${WORKER_URL:?WORKER_URL is required}"
+[[ -f "$BODY_FILE" ]] || { echo "post-signal.sh: body-file not found: $BODY_FILE" >&2; exit 1; }
+
+# 1 行目 = headline、2 行目以降 = 本文。skill が curl を叩かず書いたファイルをここで読む。
+HEADLINE="$(head -n1 "$BODY_FILE")"
+BODY="$(tail -n +2 "$BODY_FILE")"
+[[ -n "$HEADLINE" ]] || { echo "post-signal.sh: empty headline (line 1) in $BODY_FILE" >&2; exit 1; }
 
 # --- 強制決済スコアの観測行を D1 から引く (judge には渡さない。投稿末尾に貼るだけ) -----
 # stance!=none の最新行があれば summary を取り出す。fetch 失敗・行なし・stance==none は空文字。

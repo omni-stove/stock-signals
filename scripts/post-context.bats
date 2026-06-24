@@ -23,15 +23,19 @@ setup() {
 }
 
 # dryrun で post-context.sh を実行。stderr も取り込む。
-# 引数: $1=ticker $2=body-file $3=ir-cursor $4=news-cursor。env は呼び出し側で上書き可。
+# 引数: $1=ticker $2=body-file $3=ir-cursor $4=news-cursor。ir/news は cursor-file
+# (1 行目 ir、2 行目 news) に書き、script には <ticker> <body-file> <cursor-file> を渡す。
 run_pc() {
+  local ticker="$1" body="$2" ir="$3" news="$4"
+  local cf="$BATS_TEST_TMPDIR/cursors.txt"
+  printf '%s\n%s\n' "$ir" "$news" >"$cf"
   run env \
     WORKER_URL="http://test.invalid" \
     SYNC_TOKEN="${SYNC_TOKEN:-}" \
     SLACK_CONTEXT_CHANNEL="${SLACK_CONTEXT_CHANNEL:-}" \
     GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}" \
     POST_CONTEXT_DRYRUN=1 \
-    bash "$SCRIPT" "$@" 2>&1
+    bash "$SCRIPT" "$ticker" "$body" "$cf" 2>&1
 }
 
 # stderr に出た "POST <url> <json>" 行のうち、url 末尾が $1 のものの JSON を返す。

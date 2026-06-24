@@ -6,7 +6,7 @@
 # (.claude/skills/crash-scenario)。**Issue は一切書き換えない**(出力は Slack のみ)。
 #
 # 起動は Slack 専用。GitHub 画面からの手動実行 (workflow_dispatch) は持たない
-# (= config/watchlist.yaml の写経先を増やさない。Slack の銘柄ピッカーは Worker が WATCHLIST から
+# (= config/watchlist.ts の写経先を増やさない。Slack の銘柄ピッカーは Worker が WATCHLIST から
 #  動的生成するので写経不要)。
 #
 # 認証は Claude サブスク (OAuth): signal-judge.yml と同じ CLAUDE_CODE_OAUTH_TOKEN。
@@ -53,7 +53,7 @@ jobs:
         env:
           TICKER: ${{ github.event.client_payload.ticker }}
         run: |
-          if ! grep -qE "^[[:space:]]*-[[:space:]]*code:[[:space:]]*\"?${TICKER}\"?[[:space:]]*$" config/watchlist.yaml; then
+          if ! grep -qE "^[[:space:]]*code:[[:space:]]*\"${TICKER}\",[[:space:]]*$" worker/src/lib/watchlist.ts; then
             echo "::error::unknown ticker: $TICKER"; exit 1
           fi
 
@@ -80,11 +80,27 @@ jobs:
           # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
           # @ で始まる引数に数値コンテキスト JSON (event_context / context_body 同梱) のパスを渡す。
-          # skill は JSON を Read するだけ。
-          prompt: "/crash-scenario ${{ github.event.client_payload.ticker }} @${{ runner.temp }}/numctx.json"
-          claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
+          # skill は JSON を Read するだけ。out= は scenario blocks 配列 JSON の出力先。
+          # skill はここに Write するだけで投稿しない。
+          prompt: "/crash-scenario ${{ github.event.client_payload.ticker }} @${{ runner.temp }}/numctx.json out=${{ runner.temp }}/crash.out"
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash は渡さず Read,Write のみ許可。
+          claude_args: "--model opus --effort high --allowedTools Read,Write --max-turns 40"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
+
+      # skill が書いた blocks ファイルを読んで Slack に投稿する (ヘッダ生成/curl は script が持つ)。
+      # name は watchlist.ts から引く (該当 code の直後の name: 行。TS は `name: "...",` 書式)。
+      - name: Post crash-scenario to Slack
+        run: |
+          NAME="$(awk -v c="$TICKER" '
+            $0 ~ "code:[[:space:]]*\""c"\"," {f=1; next}
+            f && $1=="name:" { sub(/^[[:space:]]*name:[[:space:]]*"/,""); sub(/",[[:space:]]*$/,""); print; exit }
+          ' worker/src/lib/watchlist.ts)"
+          bash scripts/post-reply.sh crash "$TICKER" "$NAME" "$RUNNER_TEMP/crash.out"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          TICKER: ${{ github.event.client_payload.ticker }}

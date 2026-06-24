@@ -1,94 +1,77 @@
 ---
 name: add-ticker
-description: Add a new monitored ticker to the watchlist. Given a securities code (and optionally a name / sector / IR・news URLs), this skill writes one new entry into config/watchlist.yaml — the single source of truth — then runs `npm run gen:watchlist` to regenerate the mirrors (worker/src/lib/watchlist.gen.ts と context-builder.yml / signal-judge.yml の workflow_dispatch options). It edits config only — it does NOT fetch prices, build context, or post to Slack. One-shot; run manually when 監視対象を増やすとき.
+description: Add one monitored ticker to the watchlist from a securities code, then regenerate the workflow mirrors. It edits source only — it does NOT fetch prices, build context, or post to Slack. One-shot; run manually when adding a name to monitor.
 ---
 
 # add-ticker
 
-監視対象 (watchlist) に銘柄を 1 つ足す。銘柄リストは `config/watchlist.yaml` が**唯一の真のソース**。
-写経先 (Worker のコード・GitHub Actions の choice options) は **`npm run gen:watchlist` が yaml から
-自動生成する**ので、このSkillは yaml に 1 エントリ書いて gen を走らせるだけでよい。
+Add one entry to `TICKERS` in `worker/src/lib/watchlist.ts` — the single source of truth — then run
+`npm run gen:watchlist` to regenerate the GitHub Actions choice options. Edit only this file; never
+hand-edit the generated workflow options.
 
-このSkillは**設定の編集だけ**を行う。価格取得・context 構築・Slack 投稿は一切しない
-(それらは銘柄追加後、通常の cron / 各 workflow が拾う)。
+This skill edits source only. It does not fetch prices, build context, or post to Slack — the normal
+cron / workflows pick the name up after it is added.
+
+When a value is missing, do not stop to ask the user: research it via web / IR and fill it. Where a
+value can't be confirmed, enter an estimate and mark it in a line comment, matching the existing
+entries' comment style.
 
 ## Inputs
 
-第1引数 `<code>` は必須 (証券コード)。第2引数以降は任意 (会社名・`key=value` の上書き)。
-例: `7203` / `7203 トヨタ自動車` / `7203 トヨタ自動車 sector=auto`。
-情報が足りなければ**ユーザーに尋ねず、まず web/IR で調べて埋める**。確定できない値は
-推定値を入れ、その旨を yaml のコメントに残す (既存エントリのコメント運用に倣う)。
-
-## 仕組み (なぜ yaml だけ直せばいいか)
-
-`config/watchlist.yaml` の `tickers[]` が真のソース。これを写経している箇所は、Worker が
-読み取り専用FSで yaml を読めない制約と、`workflow_dispatch` の `choice` が動的生成できない
-制約のため必要だが、`scripts/gen-watchlist.ts` (= `npm run gen:watchlist`) が yaml から自動生成する:
-
-- **`worker/src/lib/watchlist.gen.ts`** — `WATCHLIST` 配列 + `WATCHLIST_NAMES` マップ。
-  `timeseries.ts` がここから import & re-export するので Worker 各所の `import` は不変。
-- **`.github/workflows/context-builder.yml`** / **`signal-judge.yml`** —
-  `# GEN:watchlist:start` 〜 `# GEN:watchlist:end` で囲った options 領域だけ差し替える。
-
-> crash-scenario / slack-reply の workflow には choice options が無いので対象外。
-> `npm run check:watchlist` (= `gen:watchlist --check`) が verify で「yaml と生成物のズレ」を検知する。
+`<code>` (securities code) is required. Further args are optional: a company name, or `key=value`
+overrides.
 
 ## Steps
 
-### 1. 既存エントリを 1 つ読み、フォーマットを掴む
+### 1. Read one existing entry to learn the format
 
-`config/watchlist.yaml` の既存銘柄 (例: `6857` アドバンテスト) を読み、フィールド・コメントの
-書き方をそのまま踏襲する。冒頭の長いフィールド解説コメントは**触らない**。
+Read an existing `TICKERS` entry and follow its fields, types, and comment style. Leave the long
+field-explanation comment block at the top untouched.
 
-### 2. 新銘柄の値を確定する
+### 2. Fix the new ticker's values
 
-必須・推奨フィールド (既存エントリと同じ粒度で埋める):
+Fill these to the same granularity as the existing entries:
 
-- `code` / `name` — 必須。name が未指定なら web で正式社名を引く。
-- `aliases` — ニュース本文での銘柄判定に使う別名・略称・英名。
-- `keywords` — 業界・製品など、その銘柄の文脈ワード。
-- `ir_url` — 公式IR/プレスリリース一覧ページ。
-- `news_url` — 株探の銘柄ニュース: `https://kabutan.jp/stock/news?code=<code>`。
-- `next_earnings_date` — 次回決算予定日 (YYYY-MM-DD)。公式日程が無ければ**前年同期発表日ベースの推定**を入れ、
-  その根拠を行コメントに書く (例: `# 前年Q1=2025-08-08 ベースの推定`)。`scripts/fetch-earnings-date.ts`
-  が cron で後から自動上書きするので、推定で十分。
-- `fair_per` — その銘柄に妥当と見る予想PER (主観値)。業種水準を踏まえて入れる。逆算不要なら `null`。
-- `sector` / `sector_role` — セクター識別子 (現状は全銘柄 `semiconductor`) とその中での位置づけメモ。
-  半導体以外を足すなら新しい sector 名を付けてよい (同一 sector 内でのみ相対強弱が比較される)。
+- `code` / `name` — required. If name is unspecified, look up the formal company name on the web.
+- `sector` / `sector_role` — sector identifier and the name's position within it. A new sector name
+  is fine for non-semiconductor names (relative strength is compared only within a sector).
+- `aliases` — alternate names / abbreviations / English names used to match the ticker in news text.
+- `keywords` — context words for this name (industry, products).
+- `ir_url` — official IR / press-release index page (human-facing reference).
+- `ir` — official-IR scrape definition `{ site, list_url }`. Set it only when an existing parser in
+  `worker/src/lib/ir-sources.ts` (`parseList`) already handles the site's list structure; otherwise
+  omit `ir` (the name is then excluded from IR scraping). Adding a new site needs a new parser there
+  — do not invent a `site` value with no parser.
+- `news_url` — kabutan ticker news: `https://kabutan.jp/stock/news?code=<code>`.
+- `next_earnings_date` — next scheduled earnings (YYYY-MM-DD). With no official date, estimate from
+  the prior-year same-quarter date; the eod cron overwrites it later.
+- `fair_per` — the forward PER you judge fair for this name (subjective). `null` if none.
 
-不明値は推定 + コメント。**ユーザーへの確認で止めない**。
+### 3. Insert into TICKERS
 
-### 3. yaml に追記する
+Insert into `TICKERS[]` in its natural sort order, matching the surrounding indentation and comment
+style. Edit only `watchlist.ts` — never hand-edit the generated workflow options.
 
-`tickers[]` の自然な並び順に従って挿入する (既存4銘柄は `285A` → `6857` → `6920` → `6981` の
-英数・数値昇順)。前後の銘柄と同じインデント・空行・コメント様式で書く。
-**編集するのはこの yaml だけ。写経先は手で触らない。**
-
-### 4. 生成を走らせる
+### 4. Regenerate workflow options
 
 ```
 npm run gen:watchlist
 ```
 
-`watchlist.gen.ts` と 2 つの workflow yml の options が yaml から再生成される。
-更新されたファイルが `updated ...` で表示される。
-
-### 5. 検証する
+### 5. Verify
 
 ```
 npm run check:watchlist
 ```
 
-「watchlist 生成物は config/watchlist.yaml と一致しています。」が出ればOK。
-ズレが出たら gen を再実行する (通常は手で yaml 以外を触ったときだけ起きる)。
+### 6. Report in one line
 
-### 6. 結果を 1 行で報告する
-
-stdout に narration 抜きで:
+stdout, no narration:
 
 ```
-add-ticker <code> (<name>) → watchlist.yaml + gen mirrors, check:watchlist <ok|FAIL>
+add-ticker <code> (<name>) → watchlist.ts + gen mirrors, check:watchlist <ok|FAIL>
 ```
 
-推定値を入れた場合 (next_earnings_date / fair_per など) はその 1 点だけ併記する。
-価格・context・Slack には触れていないこと、初回データは次の cron / workflow が拾うことを添える。
+If any value was estimated (next_earnings_date / fair_per), or `ir` was omitted for lack of a parser,
+note that one point. Add that prices / context / Slack were not touched and the next cron / workflow
+picks up the first data.

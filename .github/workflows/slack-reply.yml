@@ -7,7 +7,7 @@
 # ticker / kind(元の解析種別) / channel / thread_ts / text(ユーザーの返信本文) が入る。
 # このワークフローは Issue を一切書き換えない (出力は Slack スレッドのみ)。
 #
-# 起動は Slack 専用 (GitHub 画面からの手動実行は持たない = watchlist.yaml の写経先を増やさない)。
+# 起動は Slack 専用 (GitHub 画面からの手動実行は持たない = watchlist.ts の写経先を増やさない)。
 #
 # 認証は Claude サブスク (OAuth): signal-judge.yml と同じ CLAUDE_CODE_OAUTH_TOKEN。
 #
@@ -52,7 +52,7 @@ jobs:
         env:
           TICKER: ${{ github.event.client_payload.ticker }}
         run: |
-          if ! grep -qE "^[[:space:]]*-[[:space:]]*code:[[:space:]]*\"?${TICKER}\"?[[:space:]]*$" config/watchlist.yaml; then
+          if ! grep -qE "^[[:space:]]*code:[[:space:]]*\"${TICKER}\",[[:space:]]*$" worker/src/lib/watchlist.ts; then
             echo "::error::unknown ticker: $TICKER"; exit 1
           fi
 
@@ -101,10 +101,19 @@ jobs:
           # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
           # @ で始まる第2引数にスレッドJSON、第3引数に数値コンテキスト JSON (コンテキスト本文同梱) の
-          # パスを渡す。skill は両 JSON を Read するだけ。返答は /slack/post で同スレッドへ。
-          prompt: "/slack-reply ${{ github.event.client_payload.ticker }} -- @${{ runner.temp }}/thread.json @${{ runner.temp }}/numctx.json"
-          claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
+          # パスを渡す。skill は両 JSON を Read するだけ。out= は返信本文の出力先。
+          # skill はここに Write するだけで投稿しない。投稿は次ステップが同スレッドへ行う。
+          prompt: "/slack-reply ${{ github.event.client_payload.ticker }} -- @${{ runner.temp }}/thread.json @${{ runner.temp }}/numctx.json out=${{ runner.temp }}/reply.out"
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash は渡さず Read,Write のみ許可。
+          claude_args: "--model opus --effort high --allowedTools Read,Write --max-turns 40"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
+
+      # skill が書いた返信本文を読んで同スレッドへ投稿する (channel/thread_ts は thread.json から)。
+      - name: Post reply to thread
+        run: bash scripts/post-reply.sh reply "$RUNNER_TEMP/thread.json" "$RUNNER_TEMP/reply.out"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}

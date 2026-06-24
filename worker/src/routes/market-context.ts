@@ -15,13 +15,14 @@ import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
 import { resolveMarketPhase } from "../lib/market-phase";
+import { buildPremarketBlock, parseUsIndexes } from "../lib/premarket";
 import { daily, macroEvents, premarketBackdrop } from "../lib/schema";
 import {
 	buildSectors,
 	type DailyBar,
 	type PremarketLine,
 } from "../lib/sectors";
-import { WATCHLIST_META } from "../lib/watchlist.gen";
+import { WATCHLIST_META } from "../lib/watchlist";
 
 export const marketContext = new Hono<{ Bindings: Env }>();
 
@@ -47,20 +48,13 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 		.limit(1)
 		.get();
 
-	let usIndexes: PremarketLine["us_indexes"] = [];
-	if (pmRow?.us_indexes_json) {
-		try {
-			usIndexes = JSON.parse(
-				pmRow.us_indexes_json,
-			) as PremarketLine["us_indexes"];
-		} catch {
-			usIndexes = [];
-		}
-	}
+	const usIndexes = parseUsIndexes(
+		pmRow?.us_indexes_json,
+	) as PremarketLine["us_indexes"];
 
-	// premarket ブロック (旧 market-context.sh と同じ鮮度判定: age>20h で stale)。
-	// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は null。旧 sh も同じく null だった。
-	let premarketBlock: Record<string, unknown>;
+	// premarket ブロック (鮮度判定 age>20h で stale)。整形は lib/premarket に集約。
+	// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は常に null (旧 sh と一致)。
+	const premarketBlock = buildPremarketBlock(pmRow ?? null, epochNow);
 	const premarketLine: PremarketLine | null = pmRow
 		? {
 				date: null,
@@ -71,24 +65,6 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 				us_indexes: usIndexes,
 			}
 		: null;
-	if (pmRow?.fetched_at) {
-		const ageH = Math.floor(
-			(epochNow - new Date(pmRow.fetched_at).getTime()) / 3600_000,
-		);
-		premarketBlock = {
-			status: ageH > 20 ? "stale" : "ok",
-			age_hours: ageH,
-			date: null,
-			sox_change_pct: pmRow.sox_change_pct ?? null,
-			nasdaq_change_pct: pmRow.nasdaq_change_pct ?? null,
-			dow_change_pct: pmRow.dow_change_pct ?? null,
-			nikkei_futures_price: pmRow.nikkei_futures_price ?? null,
-			nikkei_contract: pmRow.nikkei_contract ?? null,
-			us_indexes: usIndexes,
-		};
-	} else {
-		premarketBlock = { status: "unavailable" };
-	}
 
 	// sectors: watchlist 各銘柄の daily を 20 本ずつ引いて集計する。
 	const barsByCode: Record<string, DailyBar[]> = {};

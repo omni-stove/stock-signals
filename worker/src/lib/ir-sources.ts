@@ -1,40 +1,20 @@
 // Cloudflare Worker: 公式IRページの site 別一覧パーサ群。
 //
-// ir定義 (ローカルの config/sources.yaml の ir 相当。PoC ではコードに直書き)。
 // site ごとに一覧の構造が違うので parseList() で振り分ける。kioxia だけ記事本文HTMLが
 // 安定して取れるので本文取得する (collectOne の fetchBody 相当)。他3社の記事リンクは
 // IRカレンダー/PDFラッパーで本文HTMLが取れないため、disclosure.ts と同様「一覧のタイトル」を
 // 本文として保存する。適時開示はタイトルだけで「何が起きたか」は判定材料になる。
+//
+// IR_SOURCES (どの銘柄を・どの URL で・どの site パーサで読むか) の定義は watchlist.ts に集約済み。
+// ここからは re-export するだけ。新しい site を足すときは下記パーサを追加し、watchlist.ts の
+// ticker.ir.site をそのキーにする。
 
 import * as cheerio from "cheerio";
+import { IR_SOURCES, type IrSourceEntry } from "./watchlist";
 
-export const IR_SOURCES = [
-	{
-		code: "285A",
-		site: "kioxia",
-		list_url: "https://www.kioxia.com/ja-jp/news.html",
-	},
-	{
-		code: "6857",
-		site: "advantest",
-		list_url: "https://www.advantest.com/ja/news/",
-	},
-	{
-		code: "6920",
-		site: "lasertec",
-		list_url: "https://www.lasertec.co.jp/news/",
-	},
-	{
-		code: "6981",
-		site: "murata",
-		// IRニュース専用 RSS (最も堅牢)。link/title/pubDate を持つ。
-		list_url:
-			"https://corporate.murata.com/ja-jp/newsroom/news/irnews/irnews/rssfeed",
-	},
-];
-
-// IR_SOURCES の1要素。collectOne の引数型に使う。
-export type IrSource = (typeof IR_SOURCES)[number];
+// 銘柄ごとの IR スクレイプ定義 (code/site/list_url)。collectOne の引数型に使う。
+export { IR_SOURCES };
+export type IrSource = IrSourceEntry;
 
 export const DEFAULT_LIMIT = 20;
 

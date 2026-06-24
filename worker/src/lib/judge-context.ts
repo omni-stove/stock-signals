@@ -60,7 +60,7 @@ export function buildPremarket(
 	row: PremarketRow | null | undefined,
 	epochNow: number,
 ): Record<string, unknown> {
-	if (!row || !row.fetched_at) return { status: "unavailable" };
+	if (!row?.fetched_at) return { status: "unavailable" };
 	const ageH = Math.floor(
 		(epochNow - new Date(row.fetched_at).getTime()) / 3600_000,
 	);

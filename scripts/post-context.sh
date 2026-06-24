@@ -15,8 +15,10 @@
 # 入力:
 #   $1 = ticker          (必須)
 #   $2 = body-file       (必須。再生成済み本文のパス。例 /tmp/285A-context.md)
-#   $3 = ir-cursor-next  (任意。空文字なら null として送る)
-#   $4 = news-cursor-next(任意。空文字なら null として送る)
+#   $3 = cursor-file     (任意。skill が書いた進めたカーソルのファイル。1 行目 = ir-cursor-next、
+#                         2 行目 = news-cursor-next。各行が空 (または file 自体が無い) なら
+#                         そのカーソルは null として送る。skill は curl を叩かず本文とこのファイルを
+#                         書くだけで、upsert と Slack 投稿はこのスクリプト = workflow の後続ステップが行う)
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意), SLACK_CONTEXT_CHANNEL (任意)。
 #
 # 出力 (stdout): 各ステップの状態を 1 行ずつ (context posted / slack ok|skipped)。
@@ -26,13 +28,21 @@
 
 set -euo pipefail
 
-TICKER="${1:?usage: post-context.sh <ticker> <body-file> <ir-cursor-next> <news-cursor-next>}"
+TICKER="${1:?usage: post-context.sh <ticker> <body-file> <cursor-file>}"
 BODY_FILE="${2:?body-file required}"
-IR_CURSOR="${3:-}"
-NEWS_CURSOR="${4:-}"
+CURSOR_FILE="${3:-}"
 
 : "${WORKER_URL:?WORKER_URL is required}"
 [[ -f "$BODY_FILE" ]] || { echo "post-context.sh: body-file not found: $BODY_FILE" >&2; exit 1; }
+
+# 進めたカーソルを skill が書いたファイルから読む。1 行目 = ir-next、2 行目 = news-next。
+# ファイルが無い・行が空ならそのカーソルは空文字 (後段で null に変換) のまま。
+IR_CURSOR=""
+NEWS_CURSOR=""
+if [[ -n "$CURSOR_FILE" && -f "$CURSOR_FILE" ]]; then
+  IR_CURSOR="$(sed -n '1p' "$CURSOR_FILE")"
+  NEWS_CURSOR="$(sed -n '2p' "$CURSOR_FILE")"
+fi
 
 # SYNC_TOKEN があれば Bearer ヘッダを足す。無ければ Content-Type だけ。
 # (空配列 "${AUTH[@]}" は bash 3.2 + set -u で unbound になるため、必ず 1 要素以上持たせる。)

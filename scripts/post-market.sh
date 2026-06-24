@@ -10,8 +10,9 @@
 #     ここでは取らない。blocks は本文行 (改行区切り) を section に詰めるだけ (post-signal.sh と同じ)。
 #
 # 入力:
-#   $1 = headline  (必須。例 "🌐 地合い: リスクオフ・様子見")
-#   $2 = body      (必須。Slack 本文。改行で複数行可)
+#   $1 = body-file  (必須。skill が書いた出力ファイルのパス。1 行目 = headline、
+#                    2 行目以降 = Slack 本文。skill は curl を一切叩かず判定結果をこのファイルに
+#                    書くだけ。投稿はこのスクリプト = workflow の後続ステップが行う)
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意)。
 #
 # 出力 (stdout): "slack ok" または "slack skipped" の 1 行。skill の stdout 行はこれを使う。
@@ -20,10 +21,15 @@
 
 set -euo pipefail
 
-HEADLINE="${1:?usage: post-market.sh <headline> <body>}"
-BODY="${2:?body required}"
+BODY_FILE="${1:?usage: post-market.sh <body-file>}"
 
 : "${WORKER_URL:?WORKER_URL is required}"
+[[ -f "$BODY_FILE" ]] || { echo "post-market.sh: body-file not found: $BODY_FILE" >&2; exit 1; }
+
+# 1 行目 = headline、2 行目以降 = 本文。skill が curl を叩かず書いたファイルをここで読む。
+HEADLINE="$(head -n1 "$BODY_FILE")"
+BODY="$(tail -n +2 "$BODY_FILE")"
+[[ -n "$HEADLINE" ]] || { echo "post-market.sh: empty headline (line 1) in $BODY_FILE" >&2; exit 1; }
 
 # headline + 本文行を section blocks に組み立てる (post-signal.sh と同一)。リテラル "\n" も実改行も
 # どちらで渡されても同じになるよう gsub で正規化してから split する。

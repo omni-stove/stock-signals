@@ -9,6 +9,7 @@ import { HTTPException } from "hono/http-exception";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { withMovingAverages } from "../lib/indicators";
+import { expandPremarketRows } from "../lib/premarket";
 import {
 	articles,
 	daily,
@@ -48,16 +49,7 @@ latest.get("/", async (c) => {
 			.orderBy(desc(premarketBackdrop.fetchedAt))
 			.limit(n)
 			.all();
-		const rows = (results as Record<string, unknown>[]).map((r) => {
-			const { us_indexes_json, ...rest } = r;
-			let us_indexes: unknown = [];
-			try {
-				us_indexes = JSON.parse((us_indexes_json as string) || "[]");
-			} catch {
-				us_indexes = [];
-			}
-			return { ...rest, us_indexes };
-		});
+		const rows = expandPremarketRows(results as Record<string, unknown>[]);
 		return c.json({ ok: true, kind, rows });
 	}
 

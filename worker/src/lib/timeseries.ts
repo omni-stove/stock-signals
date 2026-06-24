@@ -5,16 +5,14 @@
 // (prices / daily / fundamentals) に INSERT OR IGNORE / REPLACE で冪等に書く。
 //
 // URL テンプレートはローカル config/sources.yaml の該当部分をここに写している。
-// 銘柄リスト (WATCHLIST / WATCHLIST_NAMES) は config/watchlist.yaml を出所に
-// `npm run gen:watchlist` が watchlist.gen.ts へ生成し、ここで re-export する
-// (Worker は読み取り専用 FS で yaml を持てないため、ビルド時に値を焼き込む)。
-// 銘柄を増減するときは yaml を直して gen を走らせるだけでよい。
+// 銘柄リスト (WATCHLIST / WATCHLIST_NAMES) の出所は watchlist.ts (銘柄定義の唯一の真のソース)。
+// ここで re-export し、Worker 内の各モジュールは従来どおり timeseries から import する。
 
 import * as cheerio from "cheerio";
 import { db } from "./db";
 import { daily, fundamentals, prices } from "./schema";
 import { fetchHtml, sleep } from "./utils";
-import { WATCHLIST, WATCHLIST_NAMES } from "./watchlist.gen";
+import { WATCHLIST, WATCHLIST_NAMES } from "./watchlist";
 
 export interface TimeseriesEnv {
 	DB: D1Database;
@@ -22,8 +20,7 @@ export interface TimeseriesEnv {
 	MIN_INTERVAL_MS: string;
 }
 
-// 銘柄リストの唯一の出所。Worker 内の全モジュールは従来どおり timeseries から
-// import するが、実体は watchlist.gen.ts (config/watchlist.yaml から自動生成)。
+// Worker 内の全モジュールは従来どおり timeseries から import する。実体は watchlist.ts。
 // 同一モジュール内でも使うので import した上で re-export する。
 export { WATCHLIST, WATCHLIST_NAMES };
 

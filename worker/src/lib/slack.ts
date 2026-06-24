@@ -143,6 +143,21 @@ export async function updateView(
 	}
 }
 
+// スレッド1メッセージの正規化形 (user / text / ts)。thread-context が返す replies の要素。
+export type SlackReply = { user: string; text: string; ts: string };
+
+// ユーザーの最新返信 (text) が履歴 (replies) に未反映なら末尾に user メッセージとして足す。
+// Slack のイベント反映遅延で、最新の問いが conversations.replies にまだ来ていないケースの保険。
+// text が空、または既に同じ本文が履歴にあれば二重化せずそのまま返す (純粋関数・破壊しない)。
+export function appendUserReply(
+	replies: SlackReply[],
+	text: string,
+	ts: string,
+): SlackReply[] {
+	if (!text || replies.some((r) => r.text === text)) return replies;
+	return [...replies, { user: "user", text, ts }];
+}
+
 // スレッドの会話履歴 (親 + 全返信) を ts 昇順で取得する (conversations.replies)。
 // slack-reply が返信に答えるための文脈。要 channels:history (public) / groups:history (private)。
 // 各メッセージは user / text / ts に正規化して返す (user 不明なら bot_id、それも無ければ "?")。
@@ -150,7 +165,7 @@ export async function updateView(
 export async function fetchReplies(
 	env: Env,
 	args: { channel: string; thread_ts: string; limit?: number },
-): Promise<{ user: string; text: string; ts: string }[]> {
+): Promise<SlackReply[]> {
 	if (!env.SLACK_BOT_TOKEN) return [];
 	try {
 		const url = new URL("https://slack.com/api/conversations.replies");
@@ -266,4 +281,36 @@ export async function notifySlack(
 		// 通知失敗は収集を止めない (best-effort)。
 		console.error(`slack notify error: ${(e as Error).message}`);
 	}
+}
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+
+	describe("appendUserReply", () => {
+		const base: SlackReply[] = [
+			{ user: "u1", text: "親メッセージ", ts: "100" },
+			{ user: "u2", text: "既存返信", ts: "101" },
+		];
+
+		it("履歴に無い text を user メッセージとして末尾に足す", () => {
+			expect(appendUserReply(base, "新しい問い", "102")).toEqual([
+				...base,
+				{ user: "user", text: "新しい問い", ts: "102" },
+			]);
+		});
+
+		it("既に同じ本文があれば二重化しない", () => {
+			expect(appendUserReply(base, "既存返信", "102")).toBe(base);
+		});
+
+		it("text が空ならそのまま返す", () => {
+			expect(appendUserReply(base, "", "102")).toBe(base);
+		});
+
+		it("元配列を破壊しない", () => {
+			const copy = [...base];
+			appendUserReply(base, "x", "102");
+			expect(base).toEqual(copy);
+		});
+	});
 }

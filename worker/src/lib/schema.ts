@@ -216,3 +216,15 @@ export const contexts = sqliteTable("contexts", {
 	newsLastFetchedAt: text("news_last_fetched_at"),
 	updatedAt: text("updated_at").notNull(),
 });
+
+// ── market_regime (当日の地合いコール。PK = JST暦日) ─────────────────────────
+// market-check skill が寄り前に出す地合い (リスクオン/中立/リスクオフ + 拾い場/様子見/守り) を
+// 当日分1行で控える。judge-context が当日分を読み、signal-judge / crash-scenario の入力に
+// market_regime として同梱する (前段ゲート)。1日1行 (当日分を upsert で上書き)。
+export const marketRegime = sqliteTable("market_regime", {
+	date: text("date").primaryKey(),
+	regime: text("regime").notNull(),
+	stance: text("stance").notNull(),
+	headline: text("headline").notNull(),
+	fetchedAt: text("fetched_at").notNull(),
+});

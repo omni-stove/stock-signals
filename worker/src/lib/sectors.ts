@@ -7,7 +7,7 @@
 //   - 出力構造 (SectorReport) は旧 sector.ts --json と同一。market-check skill が読む。
 //   - 丸め/平均/tone 判定は sector.ts と同一にすること (sector.ts の in-source test を移植)。
 
-import type { WatchlistMeta } from "./watchlist.gen";
+import type { WatchlistMeta } from "./watchlist";
 
 export interface DailyBar {
 	date: string;

@@ -185,6 +185,63 @@ export async function collectBackdrop(
 	};
 }
 
+// ── 出力整形 (routes が D1 から引いた premarket 行を読み手向けに整える純粋ロジック) ──
+// 取得 (collectBackdrop) と読み出し整形を同じモジュールに置く。HTTP には依存しない。
+
+// us_indexes_json (JSON 文字列) を配列へパースする。壊れた/欠損 JSON は空配列にフォールバック
+// (寄り前ブリーフの読み手が落ちないように)。latest / market-context が共有する。
+export function parseUsIndexes(json: string | null | undefined): unknown {
+	if (!json) return [];
+	try {
+		return JSON.parse(json);
+	} catch {
+		return [];
+	}
+}
+
+// /latest?kind=premarket 用: 行配列の us_indexes_json を us_indexes に展開し、json キーは落とす。
+export function expandPremarketRows(
+	results: Record<string, unknown>[],
+): Record<string, unknown>[] {
+	return results.map((r) => {
+		const { us_indexes_json, ...rest } = r;
+		return { ...rest, us_indexes: parseUsIndexes(us_indexes_json as string) };
+	});
+}
+
+// /market-context 用 premarket ブロック。market-context.sh と同じ鮮度判定 (age>20h で stale)。
+// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は常に null (旧 sh と一致)。
+//   行なし → { status: "unavailable" }
+//   行あり → status (ok/stale) + age_hours + 各指数 + us_indexes
+export function buildPremarketBlock(
+	row: {
+		fetched_at?: string | null;
+		sox_change_pct?: number | null;
+		nasdaq_change_pct?: number | null;
+		dow_change_pct?: number | null;
+		nikkei_futures_price?: number | null;
+		nikkei_contract?: string | null;
+		us_indexes_json?: string | null;
+	} | null,
+	epochNow: number,
+): Record<string, unknown> {
+	if (!row?.fetched_at) return { status: "unavailable" };
+	const ageH = Math.floor(
+		(epochNow - new Date(row.fetched_at).getTime()) / 3600_000,
+	);
+	return {
+		status: ageH > 20 ? "stale" : "ok",
+		age_hours: ageH,
+		date: null,
+		sox_change_pct: row.sox_change_pct ?? null,
+		nasdaq_change_pct: row.nasdaq_change_pct ?? null,
+		dow_change_pct: row.dow_change_pct ?? null,
+		nikkei_futures_price: row.nikkei_futures_price ?? null,
+		nikkei_contract: row.nikkei_contract ?? null,
+		us_indexes: parseUsIndexes(row.us_indexes_json),
+	};
+}
+
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
 	const SOX = US_INDEXES[0];
@@ -253,6 +310,73 @@ if (import.meta.vitest) {
 				price: 65560,
 				contract: null,
 			});
+		});
+	});
+
+	describe("parseUsIndexes", () => {
+		it("JSON 配列をパースする", () => {
+			expect(parseUsIndexes('[{"key":"sox","change_pct":1.2}]')).toEqual([
+				{ key: "sox", change_pct: 1.2 },
+			]);
+		});
+		it("null/空文字/壊れた JSON は空配列", () => {
+			expect(parseUsIndexes(null)).toEqual([]);
+			expect(parseUsIndexes("")).toEqual([]);
+			expect(parseUsIndexes("{not json")).toEqual([]);
+		});
+	});
+
+	describe("expandPremarketRows", () => {
+		it("us_indexes_json を us_indexes に展開し json キーは落とす", () => {
+			const out = expandPremarketRows([
+				{ fetched_at: "t", us_indexes_json: "[1]" },
+			]);
+			expect(out).toEqual([{ fetched_at: "t", us_indexes: [1] }]);
+			expect(out[0]).not.toHaveProperty("us_indexes_json");
+		});
+		it("複数行を各行独立に展開 (壊れ行は空配列)", () => {
+			const out = expandPremarketRows([
+				{ us_indexes_json: "[1]" },
+				{ us_indexes_json: "broken" },
+			]);
+			expect(out[0].us_indexes).toEqual([1]);
+			expect(out[1].us_indexes).toEqual([]);
+		});
+	});
+
+	describe("buildPremarketBlock", () => {
+		const NOW = new Date("2026-06-24T00:00:00Z").getTime();
+
+		it("行が無ければ unavailable", () => {
+			expect(buildPremarketBlock(null, NOW)).toEqual({ status: "unavailable" });
+			expect(buildPremarketBlock({ fetched_at: null }, NOW)).toEqual({
+				status: "unavailable",
+			});
+		});
+		it("age<=20h は ok、各指数と us_indexes を展開", () => {
+			const row = {
+				fetched_at: new Date(NOW - 5 * 3600_000).toISOString(),
+				sox_change_pct: 1.5,
+				nikkei_futures_price: 38000,
+				us_indexes_json: '[{"key":"sox"}]',
+			};
+			const b = buildPremarketBlock(row, NOW);
+			expect(b.status).toBe("ok");
+			expect(b.age_hours).toBe(5);
+			expect(b.date).toBeNull();
+			expect(b.sox_change_pct).toBe(1.5);
+			expect(b.us_indexes).toEqual([{ key: "sox" }]);
+		});
+		it("age>20h は stale", () => {
+			const row = { fetched_at: new Date(NOW - 21 * 3600_000).toISOString() };
+			expect(buildPremarketBlock(row, NOW).status).toBe("stale");
+		});
+		it("欠損フィールドは null 埋め", () => {
+			const row = { fetched_at: new Date(NOW).toISOString() };
+			const b = buildPremarketBlock(row, NOW);
+			expect(b.sox_change_pct).toBeNull();
+			expect(b.nikkei_contract).toBeNull();
+			expect(b.us_indexes).toEqual([]);
 		});
 	});
 }

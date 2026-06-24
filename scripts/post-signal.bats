@@ -21,15 +21,21 @@ setup() {
 }
 
 # dryrun で post-signal.sh を実行。stderr も取り込む。
-# 引数: $1=ticker $2=headline $3=body。env は呼び出し側で上書き可。
+# 引数: $1=ticker $2=headline $3=body。headline+body を 1 ファイル (1 行目 headline、
+# 2 行目以降 body) に書き、script には <ticker> <body-file> を渡す。リテラル "\n" は
+# 実改行へ展開してから書く (script 側の gsub 正規化と等価な入力をテストに与えるため
+# ではなく、複数行ファイルとして渡すため)。
 run_ps() {
+  local ticker="$1" headline="$2" body="$3"
+  local f="$BATS_TEST_TMPDIR/signal.out"
+  { printf '%s\n' "$headline"; printf '%b' "${body//\\n/$'\n'}"; printf '\n'; } > "$f"
   run env \
     WORKER_URL="http://test.invalid" \
     SYNC_TOKEN="${SYNC_TOKEN:-}" \
     POST_SIGNAL_DRYRUN=1 \
     FETCH_FORCED_JSON="${FETCH_FORCED_JSON:-}" \
     FETCH_REBALANCE_JSON="${FETCH_REBALANCE_JSON:-}" \
-    bash "$SCRIPT" "$@" 2>&1
+    bash "$SCRIPT" "$ticker" "$f" 2>&1
 }
 
 # stderr に出た "POST <url> <json>" 行のうち、url 末尾が $1 のものの JSON を返す。
@@ -45,13 +51,19 @@ payload_for() {
   [ "$status" -ne 0 ]
 }
 
-@test "args: missing body fails" {
-  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A "HEAD"
+@test "args: missing body-file fails" {
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A
+  [ "$status" -ne 0 ]
+}
+
+@test "args: nonexistent body-file fails" {
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A "$BATS_TEST_TMPDIR/nope.out"
   [ "$status" -ne 0 ]
 }
 
 @test "args: missing WORKER_URL fails" {
-  run env POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A "HEAD" "body"
+  printf 'HEAD\nbody\n' > "$BATS_TEST_TMPDIR/m.out"
+  run env POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A "$BATS_TEST_TMPDIR/m.out"
   [ "$status" -ne 0 ]
 }
 

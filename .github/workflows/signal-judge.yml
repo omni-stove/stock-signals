@@ -33,7 +33,7 @@ on:
         description: 対象銘柄コード
         required: true
         type: choice
-        # config/watchlist.yaml の tickers と同期させる。
+        # worker/src/lib/watchlist.ts の TICKERS と同期させる。
         # 下の options は `npm run gen:watchlist` が自動生成する (手で編集しないこと)。
         options:
           # GEN:watchlist:start
@@ -69,7 +69,7 @@ jobs:
         env:
           TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
         run: |
-          if ! grep -qE "^[[:space:]]*-[[:space:]]*code:[[:space:]]*\"?${TICKER}\"?[[:space:]]*$" config/watchlist.yaml; then
+          if ! grep -qE "^[[:space:]]*code:[[:space:]]*\"${TICKER}\",[[:space:]]*$" worker/src/lib/watchlist.ts; then
             echo "::error::unknown ticker: $TICKER"; exit 1
           fi
 
@@ -101,11 +101,20 @@ jobs:
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
           # 発火時は client_payload.ticker、手動実行時は inputs.ticker。@ で始まる引数は数値
           # コンテキスト (event_context / context_body 同梱) のファイルパス。skill は Read するだけ。
+          # out= は判定の出力先 (1 行目 headline + 本文)。skill はここに Write するだけで投稿しない。
           # 自由文字列を prompt に素埋めしないことで -- / @ の衝突を避ける。
-          prompt: "/signal-judge ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/numctx.json"
-          # Actions の使い捨てサンドボックス内なので Bash を広く許可。numctx.json を read するため Read も許可。
-          claude_args: "--model opus --effort high --allowedTools Bash,Read --max-turns 40"
+          prompt: "/signal-judge ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/numctx.json out=${{ runner.temp }}/signal.out"
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash は渡さず Read,Write のみ許可。
+          claude_args: "--model opus --effort high --allowedTools Read,Write --max-turns 40"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
+
+      # skill が書いた判定ファイルを読んで Slack に投稿する (curl/jq/フォールバックは script が持つ)。
+      - name: Post signal to Slack
+        run: bash scripts/post-signal.sh "$TICKER" "$RUNNER_TEMP/signal.out"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}

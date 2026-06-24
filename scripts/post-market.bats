@@ -18,12 +18,17 @@ setup() {
 }
 
 # dryrun で post-market.sh を実行。stderr も取り込む。引数: $1=headline $2=body。
+# headline+body を 1 ファイル (1 行目 headline、2 行目以降 body) に書き、script には
+# <body-file> を渡す。リテラル "\n" は実改行へ展開して複数行ファイルにする。
 run_pm() {
+  local headline="$1" body="$2"
+  local f="$BATS_TEST_TMPDIR/market.out"
+  { printf '%s\n' "$headline"; printf '%b' "${body//\\n/$'\n'}"; printf '\n'; } > "$f"
   run env \
     WORKER_URL="http://test.invalid" \
     SYNC_TOKEN="${SYNC_TOKEN:-}" \
     POST_MARKET_DRYRUN=1 \
-    bash "$SCRIPT" "$@" 2>&1
+    bash "$SCRIPT" "$f" 2>&1
 }
 
 # stderr に出た "POST <url> <json>" 行の JSON を返す。
@@ -33,18 +38,19 @@ payload() {
 
 # === 引数 / 前提チェック ====================================================
 
-@test "args: missing headline fails with usage" {
+@test "args: missing body-file fails with usage" {
   run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT"
   [ "$status" -ne 0 ]
 }
 
-@test "args: missing body fails" {
-  run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT" "HEAD"
+@test "args: nonexistent body-file fails" {
+  run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$BATS_TEST_TMPDIR/nope.out"
   [ "$status" -ne 0 ]
 }
 
 @test "args: missing WORKER_URL fails" {
-  run env POST_MARKET_DRYRUN=1 bash "$SCRIPT" "HEAD" "body"
+  printf 'HEAD\nbody\n' > "$BATS_TEST_TMPDIR/m.out"
+  run env POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$BATS_TEST_TMPDIR/m.out"
   [ "$status" -ne 0 ]
 }
 

@@ -93,7 +93,6 @@ function nthBusinessDay(ym: string, n: number): string {
 // --- SQ 算出 ----------------------------------------------------------------
 // SQ 日が today の属する週 (月〜金) なら "week"、その翌週なら "post"、それ以外 ""。
 function sqPhase(
-	today: string,
 	sq: string,
 	monday: string,
 	friday: string,
@@ -126,7 +125,7 @@ function checkSq(today: string): string[] {
 	];
 
 	for (const { sq, mkt } of candidates) {
-		const phase = sqPhase(today, sq, monday, friday);
+		const phase = sqPhase(sq, monday, friday);
 		if (!phase) continue;
 		const sqMonth = Number(sq.slice(5, 7)); // 1..12
 		const isMajor = [3, 6, 9, 12].includes(sqMonth);

@@ -1,39 +1,33 @@
 ---
 name: market-check
-description: Read the current market backdrop (premarket SOX/NASDAQ/Dow/Nikkei-futures, the day's 需給イベント string, and per-sector breadth of the watchlist) and form one overall 地合い call — risk-on / neutral / risk-off — with a one-line 売買可否 implication for today, then post it to Slack. It is market-wide, NOT per-ticker; it does NOT modify any context. One-shot; fired by the Worker pre-open (right after the 08:30 intake fetches premarket, before the per-ticker signal-judge) via repository_dispatch, or run manually.
+description: From the market backdrop, form one overall 地合い call (risk-on / neutral / risk-off) with a 売買可否 implication for today. It is market-wide, NOT per-ticker, and does NOT modify any context. One-shot; fired by the Worker pre-open, or run manually.
 ---
 
 # market-check
 
-You are a swing trader reading **the room, not a name**. Before deciding which ticker to touch
-today, you want one honest read on the market backdrop: is this a day to lean in (押し目を拾う),
-sit on hands (様子見), or protect what you hold (守り)? Read the numeric context, weigh it, and post
-one 地合いスコア to Slack. This is judgment — the notes below say where the inputs mislead; they
-don't hand you the call. Commit to one read.
-
-This skill is **market-wide and reads nothing per-ticker for a buy/sell decision** — that is
-signal-judge's job, and the downside map of a single name is crash-scenario's. market-check is the
-**前段ゲート**: it tells you whether *today's tape* favors acting at all. Output is Slack only; it
-writes no context.
+Read **the room, not a name**: one honest call on today's backdrop. The 前段ゲート for whether
+today's tape favors acting at all. The notes below say where the inputs mislead; commit to one read.
 
 ## Inputs
 
-One file is passed: the numeric context JSON from the Worker `/market-context` endpoint (already
-fetched & normalized — **read it**). Self-describing; what isn't obvious:
+Two paths are passed: the numeric context JSON to **read** (Worker `/market-context`, already
+fetched & normalized), and an `out=<path>` file to **write** your call to. Do not post to Slack; do
+not run any script — write the call to `out` and stop.
+
+What isn't obvious from the JSON fields:
 
 - **`premarket`** is last night's NY tell — the strongest single input pre-open. `sox_change_pct` is
   the most important field for this semis-heavy watchlist: SOX leads the JP semis at the open. Read
   `nasdaq_change_pct` / `dow_change_pct` for breadth and `nikkei_futures_price` for the home tape's
   own gap. `status: stale` → the feed predates last night's NY close; demote it and lean on
   `sectors` + event. `unavailable` → say so and call on `sectors` + event alone.
-- **`event_context`** is the one-line 需給イベント string (SQ週 / SQ明け / FOMC / 日銀 近接). SQ週 and
-  メジャーSQ distort the tape, so treat intraday moves as noise and tilt toward 様子見; a near FOMC /
-  日銀 is a scheduled binary, so lighten 持ち越し. SQ明け is clean. 米メジャーSQ reaches JP only via
-  SOX — discount it.
+- **`event_context`** is the one-line 需給イベント string (SQ週 / SQ明け / FOMC / 日銀 近接). SQ週 /
+  メジャーSQ → intraday moves as noise, tilt 様子見; near FOMC / 日銀 → lighten 持ち越し. SQ明け is
+  clean. 米メジャーSQ reaches JP only via SOX — discount it.
 - **`sectors`** is how the watchlist itself actually moved. Per sector: `tone` (SOX-derived
   backdrop), `avg_change_pct` (直近営業日のセクター平均前日比), `avg_ret_5d_pct` (5日のトレンド), and
-  per-name `rel_strength_pct` (relative strength vs sector avg — a deeply negative value is 独り負け,
-  a fault line even on an up day) and `vol_ratio` (出来高の盛り上がり). `status: unavailable` → skip it.
+  per-name `rel_strength_pct` (relative strength vs sector avg) and `vol_ratio` (出来高の盛り上がり).
+  `status: unavailable` → skip it.
 - **`market_phase`** (JST trading-day position) frames what the numbers mean: `premarket` (pre-open —
   lead on `premarket`/event, the gap isn't in yet), `morning_session` / `afternoon_session` (場中 —
   `sectors` is live, read the breadth directly), `closed` (引け後 — react to today's close plus
@@ -69,19 +63,17 @@ Pick one **regime** — `リスクオン` / `中立` / `リスクオフ` — plu
 today that follows from the regime + events: `拾い場` (lean in), `様子見` (sit), `守り` (protect /
 reduce). Which one follows from the read above, not a fixed rule.
 
-Post to Slack (below), then write one line to stdout — no narration:
+Write the call to the `out=<path>` file:
+
+- Line 1: `🌐 地合い: <regime>・<含意>` — exact format; `<regime>` and `<含意>` are the 3 値 above
+  verbatim. This line is parsed into the 地合いゲート that signal-judge / crash-scenario read, so a
+  drifted wording silently drops the gate.
+- Lines 2+: 2–4 body lines — the premarket tilt (SOX/NASDAQ/日経先物 と breadth が揃っているか),
+  the event caveat (近接イベントがあれば), the 売買可否の理由を1行, and — if any — a 独り負け
+  line naming the weakest watchlist name.
+
+Then one stdout line, no narration:
 
 ```
-地合い → <regime>・<含意> (SOX <±x%>/日経先物 cue, breadth <aligned|split>) event <tilt>, slack <ok|skipped>
+地合い → <regime>・<含意> (SOX <±x%>/日経先物 cue, breadth <aligned|split>) event <tilt>
 ```
-
-## Post to Slack (only output)
-
-```
-bash scripts/post-market.sh "🌐 地合い: <regime>・<含意>" "<body>"
-```
-
-`<body>` is 2–4 lines (`\n`-separated): the premarket tilt (SOX/NASDAQ/日経先物 と breadth が揃って
-いるか), the event caveat (近接イベントがあれば), the 含意 (なぜこの売買可否か), and — if any —
-a 独り負け line naming the weakest watchlist name. The script prints `slack ok` or `slack skipped` —
-use that for the stdout line.

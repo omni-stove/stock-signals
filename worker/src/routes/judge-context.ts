@@ -7,8 +7,9 @@
 // (= /latest?macro-events の 1 call) を Worker 1 call に集約 (計 7 call → 1)。
 // 取得は D1/R2 直読み (サブリクエストなし)。正規化は lib/judge-context.ts に集約。
 //
-// 出力は旧 judge-context.sh の JSON に event_context (旧 event-context.sh の 1 行) を加えたもの:
-//   { ticker, today, market_phase, event_context, context_body,
+// 出力は旧 judge-context.sh の JSON に event_context (旧 event-context.sh の 1 行) と
+// market_regime (当日の market-check 地合いコール / 無ければ null) を加えたもの:
+//   { ticker, today, market_phase, market_regime, event_context, context_body,
 //     earnings, premarket, daily, prices, margin }
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
@@ -35,6 +36,7 @@ import {
 	earnings,
 	macroEvents,
 	margin,
+	marketRegime,
 	premarketBackdrop,
 	prices,
 } from "../lib/schema";
@@ -124,6 +126,18 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.limit(4)
 		.all()) as MarginRow[];
 
+	// 当日の地合いコール (market-check が寄り前に書いたもの)。前段ゲートとして signal-judge /
+	// crash-scenario に market_regime として渡す。当日分が無ければ null (= 銘柄単体で判断)。
+	const regimeRow = await db(env.DB)
+		.select({
+			regime: marketRegime.regime,
+			stance: marketRegime.stance,
+			headline: marketRegime.headline,
+		})
+		.from(marketRegime)
+		.where(eq(marketRegime.date, today))
+		.get();
+
 	// 需給イベント文脈: SQ/指数リバランスは today から計算、FOMC/日銀/ピア決算は macro_events 全件を渡す。
 	const macroRows = (await db(env.DB)
 		.select({
@@ -140,6 +154,13 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		ticker: code,
 		today,
 		market_phase: marketPhase,
+		market_regime: regimeRow
+			? {
+					regime: regimeRow.regime,
+					stance: regimeRow.stance,
+					headline: regimeRow.headline,
+				}
+			: null,
 		event_context: buildEventContext(today, macroRows),
 		context_body: contextRow?.body ?? null,
 		earnings: buildEarnings(earningsRow?.next_date ?? null, today),

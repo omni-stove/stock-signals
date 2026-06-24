@@ -13,23 +13,15 @@
 
 import { eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
+import { pullArticles } from "../lib/articles";
+import { nextCursor } from "../lib/context-input";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { contexts } from "../lib/schema";
-import { type PullRow, pullArticles } from "./pull";
 
 export const contextInput = new Hono<{ Bindings: Env }>();
 
 const LIMIT = 20;
-
-// rows (fetched_at ASC) の最大 fetched_at。0 件なら現行カーソルを据え置く。
-function nextCursor(rows: PullRow[], current: string | null): string | null {
-	if (rows.length === 0) return current;
-	return rows.reduce(
-		(max, r) => (r.fetched_at > max ? r.fetched_at : max),
-		rows[0].fetched_at,
-	);
-}
 
 contextInput.get("/context-input", async (c: Context<{ Bindings: Env }>) => {
 	const env = c.env;

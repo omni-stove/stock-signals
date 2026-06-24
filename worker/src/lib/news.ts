@@ -13,6 +13,7 @@
 // 全ソース UTF-8 (調査済) なので TextDecoder で十分。iconv 不要。
 
 import * as cheerio from "cheerio";
+import { eq } from "drizzle-orm";
 import { db } from "./db";
 import { articles } from "./schema";
 import { WATCHLIST } from "./timeseries";
@@ -97,12 +98,12 @@ function normDate(raw: string): string {
 }
 
 async function isSeen(env: NewsEnv, url: string): Promise<boolean> {
-	const row = await env.DB.prepare(
-		"SELECT 1 FROM articles WHERE url = ? LIMIT 1",
-	)
-		.bind(url)
-		.first();
-	return row !== null;
+	const rows = await db(env.DB)
+		.select({ url: articles.url })
+		.from(articles)
+		.where(eq(articles.url, url))
+		.limit(1);
+	return rows.length > 0;
 }
 
 async function saveArticle(

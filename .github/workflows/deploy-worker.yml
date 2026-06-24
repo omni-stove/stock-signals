@@ -66,8 +66,6 @@ jobs:
 
       - uses: pnpm/action-setup@v6
         if: steps.changed.outputs.run == 'true'
-        with:
-          version: latest
 
       - uses: actions/setup-node@v6
         if: steps.changed.outputs.run == 'true'
@@ -98,8 +96,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: latest
 
       - uses: actions/setup-node@v6
         with:

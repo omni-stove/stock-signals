@@ -17,17 +17,22 @@
 #   $2 = body-file       (必須。skill が書いた出力ファイルのパス。1 行目 = headline、
 #                         2 行目以降 = Slack 本文。skill は curl を一切叩かず、判定結果を
 #                         このファイルに書くだけ。投稿はこのスクリプト = workflow の後続ステップが行う)
+#   $3 = rebalance-file  (任意。前段ステップが /index-rebalance を並行取得して書いた JSON のパス。
+#                         judge には渡さない観測事実なので numctx とは別ファイルで運ぶ。
+#                         未指定/不在/空/窓外 (note 空) なら何も貼らない)
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意)。
 #
 # 出力 (stdout): "slack ok" または "slack skipped" の 1 行。skill の stdout 行はこれを使う。
 # テスト/オフライン用の注入口: POST_SIGNAL_DRYRUN=1 で curl を叩かず、組み立てた JSON
 #   ペイロードを stderr に "POST <url> <json>" 形式で出すだけにする (bats が blocks を検証できる)。
 #   FETCH_FORCED_JSON があれば /latest?kind=forced の curl を叩かずそれを使う (bats 用)。
+#   FETCH_REBALANCE_JSON があれば rebalance-file を読まずそれを使う (bats 用)。
 
 set -euo pipefail
 
-TICKER="${1:?usage: post-signal.sh <ticker> <body-file>}"
+TICKER="${1:?usage: post-signal.sh <ticker> <body-file> [rebalance-file]}"
 BODY_FILE="${2:?body-file required}"
+REBAL_FILE="${3:-}"
 
 : "${WORKER_URL:?WORKER_URL is required}"
 [[ -f "$BODY_FILE" ]] || { echo "post-signal.sh: body-file not found: $BODY_FILE" >&2; exit 1; }
@@ -65,14 +70,15 @@ fi
 # --- 指数リバランス窓の観測行 (judge には渡さない。投稿末尾に貼るだけ) ----------
 # リバランスは「その日の値動きと無関係に引けへパッシブ売買が集中する」時間アノマリー。forced と同じく
 # 方向判断 (judge=LLM) には効かないので渡さず、窓に入っていれば観測事実として本文末尾に貼る。
-# 日付計算は Worker /index-rebalance (event-context.ts) が JST 今日で行う (bash の GNU date 依存を排除)。
-# テスト/オフライン用の注入口: FETCH_REBALANCE_JSON があれば curl を叩かずそれを使う。
+# 日付計算は Worker /index-rebalance (event-context.ts) が JST 今日で行う。取得はこのスクリプトでは
+# なく前段ステップが judge-context と並行に済ませ、その JSON を rebalance-file 経由で受け取る。
+# ここで curl は叩かない (numctx と保存場所を分けて judge に混ざらないようにするため)。
 if [[ -n "${FETCH_REBALANCE_JSON:-}" ]]; then
   REBAL_RAW="$FETCH_REBALANCE_JSON"
-elif [[ ${#AUTH[@]} -gt 0 ]]; then
-  REBAL_RAW="$(curl -sf "${AUTH[@]}" "${WORKER_URL%/}/index-rebalance" 2>/dev/null || true)"
+elif [[ -n "$REBAL_FILE" && -s "$REBAL_FILE" ]]; then
+  REBAL_RAW="$(cat "$REBAL_FILE")"
 else
-  REBAL_RAW="$(curl -sf "${WORKER_URL%/}/index-rebalance" 2>/dev/null || true)"
+  REBAL_RAW=""
 fi
 REBAL_LINE=""
 if printf '%s' "$REBAL_RAW" | jq -e . >/dev/null 2>&1; then

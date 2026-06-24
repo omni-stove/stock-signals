@@ -48,11 +48,14 @@ when the context arrives, the worse the entry and the more it pulls toward selli
 `fair_per` (`worker/src/lib/watchlist.ts`) as a tilt on the 水準, never the direction — well above it渋く
 the 水準, below it supports a deeper `押し目`; it never overrides fresh context.
 
-**Overbought works on the 水準, not the direction.** A top is only confirmed after it breaks —
-strong trends stay overbought for days; overbought argues against adding, not against holding. It turns
-toward exiting only once the move has *cracked* — high in the range *and* `vol_x_20d` thinning, not
-merely high — or the driving topic drops out of 直近の重大トピック. (Read `atr_pct` cross-sectionally
-against the sector when `atr_pct_baseline` is null.)
+**Overbought works on the 水準, not the direction, and `market_regime` sets how hard it bites.** A
+top is only confirmed after it breaks — strong trends stay overbought for days; overbought argues
+against adding, not against holding. It turns toward exiting only once the move has *cracked* — high
+in the range *and* `vol_x_20d` thinning, not merely high — or the driving topic drops out of 直近の重大
+トピック. (Read `atr_pct` cross-sectionally against the sector when `atr_pct_baseline` is null.) Under
+リスクオン a still-expanding high-in-range is the trend working, not a top — it need not demote the 水準
+and can carry 追い; toward リスクオフ tolerance collapses and a stretched name is the first 投げ, so
+high-in-range waits for the 押し目. Name which regime set the 過熱 read.
 
 - **Margin (需給) is subordinate** — moves the 水準, never the direction. Contradicts the context →
   keep direction, soften the 水準 one step.

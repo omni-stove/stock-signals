@@ -15,8 +15,9 @@
 setup() {
   ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   SCRIPT="$ROOT/scripts/post-signal.sh"
-  # リバランス観測行は Worker /index-rebalance から取る (bash の日付計算は廃止)。bats では
-  # FETCH_REBALANCE_JSON で注入する。既定は「窓外 (note 空)」とし、窓ありのテストだけ上書きする。
+  # リバランス観測行は前段ステップが Worker /index-rebalance を並行取得して rebalance-file に
+  # 書いたものを読む (post-signal.sh は curl しない)。bats では FETCH_REBALANCE_JSON で注入する
+  # (rebalance-file 読みより優先)。既定は「窓外 (note 空)」とし、窓ありのテストだけ上書きする。
   export FETCH_REBALANCE_JSON="${FETCH_REBALANCE_JSON:-{\"ok\":true,\"note\":\"\"}}"
 }
 
@@ -185,4 +186,46 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 4 ]
   printf '%s' "$p" | jq -e '.blocks[2].text.text | test("強制フロー観測")' >/dev/null
   printf '%s' "$p" | jq -e '.blocks[3].text.text | test("リバランス窓")' >/dev/null
+}
+
+# === rebalance-file: 前段で並行取得した JSON ファイルを第3引数で受け取る ========
+
+# 第3引数のファイルが窓内 note を持てば観測行が付く (FETCH_REBALANCE_JSON 未設定で経路を見る)
+@test "rebalance-file: in-window note from file appends an observation line" {
+  local f="$BATS_TEST_TMPDIR/signal.out" rf="$BATS_TEST_TMPDIR/rebalance.json"
+  printf 'HEAD\nalpha\n' > "$f"
+  printf '%s' '{"ok":true,"note":"FTSE/Russellリバランス(実施=本日)"}' > "$rf"
+  # FETCH_REBALANCE_JSON を空にして rebalance-file 読みの経路を通す (注入口が優先されるため)。
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
+    FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON="" \
+    bash "$SCRIPT" 285A "$f" "$rf" 2>&1
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("リバランス窓")' >/dev/null
+  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("FTSE")' >/dev/null
+}
+
+# 第3引数のファイルが空 note (窓外) なら何も足さない
+@test "rebalance-file: empty note from file appends nothing" {
+  local f="$BATS_TEST_TMPDIR/signal.out" rf="$BATS_TEST_TMPDIR/rebalance.json"
+  printf 'HEAD\nalpha\n' > "$f"
+  printf '%s' '{"ok":true,"note":""}' > "$rf"
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
+    FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON="" \
+    bash "$SCRIPT" 285A "$f" "$rf" 2>&1
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
+}
+
+# 第3引数を省略しても (rebalance-file なし) 何も足さず正常終了する
+@test "rebalance-file: omitted arg appends nothing" {
+  local f="$BATS_TEST_TMPDIR/signal.out"
+  printf 'HEAD\nalpha\n' > "$f"
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
+    FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON="" \
+    bash "$SCRIPT" 285A "$f" 2>&1
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
 }

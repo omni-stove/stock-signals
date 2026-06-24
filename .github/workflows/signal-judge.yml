@@ -78,10 +78,24 @@ jobs:
       # 鮮度判定・20日レンジ位置・MA位置・出来高倍率・days_to_earnings・market_phase・event_context は
       # すべて Worker 側 (決定論的) で算出済み。skill には curl を叩かせず数値解釈と判断だけをさせる。
       # JSON は複数行・特殊文字を含むので prompt に直接埋めず、ファイルに書いて skill にパスを渡す。
+      #
+      # 指数リバランス窓 (/index-rebalance) は judge=LLM の方向判断には渡さない観測事実なので、
+      # numctx.json とは**別ファイル** (rebalance.json) に保存する。同じファイルに混ぜると skill に
+      # 余計なリバランス情報が渡ってしまうため、保存場所を情報ごとに分ける。両 curl は依存が無いので
+      # & で並行に走らせ、wait で揃える (judge-context のレイテンシに相乗りで実質ゼロコスト)。
+      # リバランスは窓外なら note が空になり、post-signal.sh 側で何も貼らない。fetch 失敗は空ファイル。
       - name: Build numeric context
         run: |
           curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
-            "${WORKER_URL%/}/judge-context?code=${TICKER}" > "$RUNNER_TEMP/numctx.json"
+            "${WORKER_URL%/}/judge-context?code=${TICKER}" > "$RUNNER_TEMP/numctx.json" &
+          numctx_pid=$!
+          # リバランスは judge に必須でない観測事実。fetch 失敗でも judge を止めず空ファイルで続ける。
+          ( curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+              "${WORKER_URL%/}/index-rebalance" > "$RUNNER_TEMP/rebalance.json" || : > "$RUNNER_TEMP/rebalance.json" ) &
+          rebal_pid=$!
+          # judge-context は必須。失敗したらここで落とす。リバランスは結果を問わず待つだけ。
+          wait "$numctx_pid"
+          wait "$rebal_pid" || true
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -112,8 +126,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       # skill が書いた判定ファイルを読んで Slack に投稿する (curl/jq/フォールバックは script が持つ)。
+      # 第3引数は前段で並行取得した指数リバランス窓の JSON (judge には渡していない観測事実)。
       - name: Post signal to Slack
-        run: bash scripts/post-signal.sh "$TICKER" "$RUNNER_TEMP/signal.out"
+        run: bash scripts/post-signal.sh "$TICKER" "$RUNNER_TEMP/signal.out" "$RUNNER_TEMP/rebalance.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}

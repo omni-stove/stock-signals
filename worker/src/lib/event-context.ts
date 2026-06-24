@@ -19,7 +19,8 @@ export interface MacroEventRow {
 }
 
 const DAYS = 5; // マクロ/ピアの近接窓 (today〜today+DAYS)
-const IDX_WINDOW = 5; // 指数リバランスの近接窓 (前後 IDX_WINDOW 暦日)
+const IDX_LEAD = 5; // 指数リバランス: 実施前の窓 (これから歪む側。N 日前まで)
+const IDX_AFTER = 2; // 指数リバランス: 実施後の窓 (反動取りの側のみ。歪み剥落後の「実勢に戻る」だけの日は出さない)
 
 // --- 日付ヘルパー (全て UTC 正午アンカーで計算。DST/端数の影響を受けない) ---
 
@@ -160,14 +161,18 @@ function checkSq(today: string): string[] {
 function emitIndex(today: string, date: string, name: string): string | null {
 	if (!date) return null;
 	const diff = daysDiff(today, date);
-	if (Math.abs(diff) > IDX_WINDOW) return null;
 	if (diff > 0) {
+		// 実施前: これから引けに歪む側。IDX_LEAD 日前まで出す。
+		if (diff > IDX_LEAD) return null;
 		return `${name}(実施=${date}/${diff}日後・パッシブ需給がクローズに集中, リバランス当日へ向けた歪みに注意)`;
 	}
 	if (diff === 0) {
 		return `${name}(実施=本日${date}/引けにパッシブ売買集中・寄りと引けで需給が大きく振れうる)`;
 	}
-	return `${name}(実施=${date}/${-diff}日前に通過・リバランス由来の振れは剥落、実勢に戻る局面)`;
+	// 実施後: 歪みは剥落するが直後は反動 (戻り/反落) が出やすい。その反動取りの窓 (IDX_AFTER 日) だけ
+	// 出す。それ以降は「実勢に戻った」だけで方向判断の足しにならないので出さない。
+	if (-diff > IDX_AFTER) return null;
+	return `${name}(実施=${date}/${-diff}日前に通過・リバランス由来の振れが剥落する局面で反動 (戻り/反落) が出やすい)`;
 }
 
 export function checkIndexRebalance(today: string): string[] {
@@ -303,10 +308,15 @@ if (import.meta.vitest) {
 			expect(out).toContain("実施=2026-05-29/2日後");
 			expect(out).toContain("当日へ向けた歪み");
 		});
-		it("通過後 (2026-06-01) は N日前に通過", () => {
-			const out = buildEventContext("2026-06-01");
-			expect(out).toContain("実施=2026-05-29/3日前に通過");
-			expect(out).toContain("剥落");
+		it("通過直後 (実施2日後まで) は反動の窓を出す", () => {
+			// MSCI半期 実施=2026-05-29。2日後=2026-05-31 は反動取りの窓。
+			const out = buildEventContext("2026-05-31");
+			expect(out).toContain("実施=2026-05-29/2日前に通過");
+			expect(out).toContain("反動");
+		});
+		it("通過後 3日以上 (2026-06-01) は出さない", () => {
+			// 実施 3日後。剥落しただけで方向判断の足しにならないので出さない。
+			expect(buildEventContext("2026-06-01")).not.toContain("MSCI半期リバランス");
 		});
 		it("FTSE (米SQ同日 6/19) 当日は本日", () => {
 			const out = buildEventContext("2026-06-19");

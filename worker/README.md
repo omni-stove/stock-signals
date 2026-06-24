@@ -36,7 +36,7 @@ D1=ローカルSQLite、R2=ローカルFS をエミュレートする。
 ```sh
 cd worker
 pnpm install
-pnpm run db:init:local                # ローカルD1にスキーマ適用
+pnpm run db:migrate:local             # ローカルD1にmigration適用 (スキーマは src/lib/schema.ts)
 pnpm exec wrangler dev --port 8799
 # 別ターミナル:
 curl "http://localhost:8799/health"
@@ -56,7 +56,7 @@ cd worker
 pnpm exec wrangler login                                  # ★ブラウザ認証
 pnpm exec wrangler d1 create stock-signals                # ★ → database_id を wrangler.toml に記入
 pnpm exec wrangler r2 bucket create stock-signals-articles # ★
-pnpm run db:init:remote                                   # リモートD1にスキーマ適用 (スキーマ変更時も)
+pnpm run db:migrate:remote                                # リモートD1にmigration適用 (スキーマ変更時も)
 pnpm exec wrangler deploy                                 # ★初回のみ手動。以降は push で自動
 ```
 
@@ -74,9 +74,32 @@ pnpm exec wrangler deploy                                 # ★初回のみ手�
   で起動する。`GH_APP_PRIVATE_KEY` を Secret、`GH_APP_ID` / `GH_APP_INSTALL_ID` を wrangler.toml vars に。
   3つ揃っていなければ発火は no-op (収集自体は動く)。`curl .../dispatch-test?code=285A` で E2E 確認。
 
-## D1 スキーマ (`schema.sql`)
+## D1 スキーマ (`src/lib/schema.ts` / drizzle-kit migration)
 
-全テーブルの定義は `schema.sql` を見る (各テーブルにコメント付き)。
+スキーマの唯一の情報源は `src/lib/schema.ts` (Drizzle 定義、各テーブルにコメント付き)。
+手書き `schema.sql` は廃止し、drizzle-kit が差分 migration を `drizzle/` に生成する運用に移行した。
+
+スキーマ変更フロー:
+
+```sh
+cd worker
+# 1. src/lib/schema.ts を編集
+pnpm db:generate                      # → drizzle/NNNN_<name>.sql に差分 SQL を生成 (内容を確認)
+pnpm db:migrate:local                 # ローカル D1 に適用
+pnpm db:migrate:remote                # リモート D1 に適用 (本番)
+```
+
+差分 migration なので、テーブル追加は `CREATE TABLE`、列追加は `ALTER TABLE ADD COLUMN` だけが
+生成される (全 DROP を伴う初期化スクリプトを流すことがなく、既存データが消えない)。PK 変更など
+SQLite が直接サポートしない変更は drizzle-kit が「新テーブル作成→コピー→旧 DROP」の手順を生成する
+ので、その場合だけ生成 SQL のレビューが要る。
+
+> **既存 D1 のベースライン化**: drizzle-kit 導入前から存在する D1 は、初回 migration (`0000_init`) を
+> 「適用済み」として登録してから運用に入る (そのまま apply すると "table already exists" で落ちるため)。
+> 登録は管理テーブルに一行入れるだけ:
+> `wrangler d1 execute stock-signals --remote --command "INSERT INTO d1_migrations (name, applied_at) VALUES ('0000_init.sql', CURRENT_TIMESTAMP);"`
+> その後 `pnpm db:migrate:remote` が "No migrations to apply!" になれば同期完了。新規 D1 はこの手順不要
+> (空の DB に `0000_init` がそのまま流れる)。
 
 冪等性は複合 PRIMARY KEY が担保し、`INSERT OR IGNORE`/`OR REPLACE` で二重取得を弾く。
 watchlist (4銘柄) と URL テンプレートは各 src (`timeseries.ts` / `news.ts` / `earnings.ts` の

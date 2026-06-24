@@ -316,7 +316,9 @@ if (import.meta.vitest) {
 		});
 		it("通過後 3日以上 (2026-06-01) は出さない", () => {
 			// 実施 3日後。剥落しただけで方向判断の足しにならないので出さない。
-			expect(buildEventContext("2026-06-01")).not.toContain("MSCI半期リバランス");
+			expect(buildEventContext("2026-06-01")).not.toContain(
+				"MSCI半期リバランス",
+			);
 		});
 		it("FTSE (米SQ同日 6/19) 当日は本日", () => {
 			const out = buildEventContext("2026-06-19");

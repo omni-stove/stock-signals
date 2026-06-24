@@ -83,6 +83,7 @@ jobs:
             --data-urlencode "channel=${CHANNEL}" \
             --data-urlencode "thread_ts=${THREAD_TS}" \
             --data-urlencode "kind=${KIND}" \
+            --data-urlencode "code=${TICKER}" \
             --data-urlencode "text=${TEXT}" > "$RUNNER_TEMP/thread.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
@@ -91,6 +92,7 @@ jobs:
           CHANNEL: ${{ github.event.client_payload.channel }}
           THREAD_TS: ${{ github.event.client_payload.thread_ts }}
           KIND: ${{ github.event.client_payload.kind }}
+          TICKER: ${{ github.event.client_payload.ticker }}
           TEXT: ${{ github.event.client_payload.text }}
 
       - name: Run slack-reply skill

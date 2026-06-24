@@ -13,9 +13,14 @@ crash-scenario pre-mortem). Match the user's language (usually 日本語).
 A `<ticker>`, two files to **read**, and an `out=<path>` file to **write** your reply to. Do not
 post to Slack; do not run any script — write the reply to `out` and stop.
 
-`<thread-json>` is `{ channel, thread_ts, kind, replies: [{ user, text, ts }, ...] }`. `kind`
-(`signal-judge` / `crash-scenario`) is what the user is replying to; the last `replies` entry is the
-question to answer, the earlier ones the original analysis and any back-and-forth.
+`<thread-json>` is `{ channel, thread_ts, kind, replies: [...], positions }`. `replies` is
+`[{ user, text, ts }, ...]`; `kind` (`signal-judge` / `crash-scenario`) is what the user is replying
+to; the last `replies` entry is the question to answer, the earlier ones the original analysis and
+any back-and-forth.
+
+`positions` is the user's own holdings for `<ticker>`: `{ status, ref_price, positions: [{ account,
+side, avg_price, qty, pnl_pct }, ...] }`. `status: none` → no holdings. `pnl_pct` is from
+`ref_price`; null when no price was available.
 
 The other file is the **numeric context** JSON from `/judge-context` (the same the original call
 used, re-fetched fresh — tape/premarket/margin are current, `context_body` is read-only from D1).
@@ -29,6 +34,8 @@ closed. `<ticker>`'s `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist
 - Answer the user's actual question; don't re-run the whole analysis unless asked. If they push
   back on the call, weigh their point against the data honestly — concede where they're right, hold
   where the data holds, and say which. Don't shift your earlier direction to please them.
+- When holdings are present, weigh the answer against the user's own entry, size, and unrealized
+  P&L, not just the generic call. Don't assume holdings beyond what's registered.
 - Stay consistent with the original `kind`: a signal-judge thread is about the buy/sell direction
   and 水準; a crash-scenario thread is about the crash paths, triggers, and defenses. Don't
   silently switch frames.

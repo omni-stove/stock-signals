@@ -1,12 +1,15 @@
-// Drizzle スキーマ定義 (D1 / SQLite)。
+// Drizzle スキーマ定義 (D1 / SQLite)。このファイルがスキーマの唯一の情報源 (single source of truth)。
 //
 // 従来は worker/schema.sql (手書きDDL) と各 lib の `INSERT INTO ...(col, ...)` 文に
-// テーブル形状が二重定義されていた。ここを型の単一情報源にし、各 lib は
-// db.insert(prices).values({...}) のようにカラム名で書く (bind 引数順ミスを型で防ぐ)。
+// テーブル形状が二重定義されていたが、schema.sql は廃止し、ここを型 + DDL の単一情報源にした。
+// 各 lib は db.insert(prices).values({...}) のようにカラム名で書く (bind 引数順ミスを型で防ぐ)。
 //
-// schema.sql は引き続き `pnpm db:init:*` が初期化に使う DDL の出所として残す。
-// このファイルと schema.sql は手で同期させる (drizzle-kit generate を使う場合は後述)。
-// → 段階移行中のため、当面は schema.sql を正とし、こちらは「型 + Drizzle 用ハンドル」。
+// スキーマ変更フロー (worker/README.md 参照):
+//   1. このファイルを編集
+//   2. pnpm db:generate            → drizzle/ に差分 migration SQL を生成
+//   3. pnpm db:migrate:local       → ローカル D1 に適用 (リモートは :remote)
+// drizzle-kit が差分 (ADD COLUMN / CREATE TABLE / PK 変更時の table 再作成) を生成するため、
+// 全テーブルを DROP して作り直す初期化スクリプトを流す事故が起きない。
 
 import { sql } from "drizzle-orm";
 import {
@@ -228,3 +231,25 @@ export const marketRegime = sqliteTable("market_regime", {
 	headline: text("headline").notNull(),
 	fetchedAt: text("fetched_at").notNull(),
 });
+
+// ── positions (ユーザーの保有ポジション。冪等キー = (ticker, account)) ─────────
+// ユーザーが /position コマンドで登録する自分の建玉。判定 (signal-judge / crash-scenario) は
+// 汎用のまま据え置き、これは slack-reply だけが読む (スレッド返信で「建値から見て今どうか」を
+// 答えるため)。/thread-context が当該銘柄の全行を引いて positions ブロックに同梱する。
+//
+// 銘柄ごとに現物 (account=cash) と信用 (account=margin) を1行ずつ持てる (PK=(ticker, account))。
+// 同じ口座区分に複数ロットは持たず「平均建値」1本に集約する (ナンピンは平均建値を入れ直す)。
+// side は現物なら通常 long だが、信用の売建を許容するため別フィールドで持つ。
+// 登録は INSERT OR REPLACE で上書き。qty<=0 を登録したら手仕舞い扱いで行ごと削除する (routes 側)。
+export const positions = sqliteTable(
+	"positions",
+	{
+		ticker: text("ticker").notNull(), // 銘柄コード (例 285A)
+		account: text("account").notNull(), // cash (現物) | margin (信用)
+		side: text("side").notNull(), // long (買い建て) | short (売り建て)
+		avgPrice: real("avg_price").notNull(), // 平均建値 (円)
+		qty: integer("qty").notNull(), // 株数
+		updatedAt: text("updated_at").notNull(), // 最終更新時刻 (ISO8601)
+	},
+	(t) => [primaryKey({ columns: [t.ticker, t.account] })],
+);

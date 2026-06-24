@@ -110,41 +110,14 @@ export async function openView(
 		if (!body.ok) {
 			// invalid_arguments 等は response_metadata.messages に不正フィールドの詳細が入る。
 			const detail = body.response_metadata?.messages?.join(" | ") ?? "";
-			console.error(`views.open failed: ${body.error}${detail ? ` (${detail})` : ""}`);
+			console.error(
+				`views.open failed: ${body.error}${detail ? ` (${detail})` : ""}`,
+			);
 			return false;
 		}
 		return true;
 	} catch (e) {
 		console.error(`views.open error: ${(e as Error).message}`);
-		return false;
-	}
-}
-
-// 既に開いている modal を view_id 指定で差し替える (views.update)。trigger_id と違い view_id は
-// 失効しないので、block_actions を受けたあと waitUntil で非同期に呼んでよい。銘柄選択後に
-// ピッカーを「起動しました」表示へ差し替えるのに使う。best-effort: 失敗時は false。
-export async function updateView(
-	env: Env,
-	args: { view_id: string; view: unknown },
-): Promise<boolean> {
-	if (!env.SLACK_BOT_TOKEN) return false;
-	try {
-		const res = await fetch("https://slack.com/api/views.update", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json; charset=utf-8",
-				Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
-			},
-			body: JSON.stringify({ view_id: args.view_id, view: args.view }),
-		});
-		const body = (await res.json()) as { ok: boolean; error?: string };
-		if (!body.ok) {
-			console.error(`views.update failed: ${body.error}`);
-			return false;
-		}
-		return true;
-	} catch (e) {
-		console.error(`views.update error: ${(e as Error).message}`);
 		return false;
 	}
 }

@@ -33,12 +33,13 @@ export const COMMANDS: Record<string, Command> = {
 };
 
 // 銘柄選択 UI の block_id / action_id / modal callback_id 接頭辞。/slack/interact 側で突き合わせる。
-// ACTION_ID / BLOCK_ID / PICKER_CALLBACK_ID は routes の interact が view_submission 解析に使うので export する。
+// ACTION_ID / BLOCK_ID は routes の interact が view_submission 解析に使うので export する。
 export const BLOCK_ID = "ticker_block";
 export const ACTION_ID = "ticker_select";
 // callback_id は "<PICKER_CALLBACK_ID>:<cmd>"。view_submission には元コマンドの手掛かりが
 // 残らないので、どの解析 (signal/crash) を撃つかを callback_id に埋めて往復させる。
-export const PICKER_CALLBACK_ID = "ticker_picker";
+// pickerView が組み立て、interact 側は ":" split で cmd を取るだけなので export 不要。
+const PICKER_CALLBACK_ID = "ticker_picker";
 
 // ephemeral (本人にだけ見える) 応答。dispatch の起動可否はチャンネルに撒かない。
 export function ephemeral(text: string): Response {
@@ -91,6 +92,181 @@ export function pickerView(cmd: string, headline: string) {
 			},
 		],
 	};
+}
+
+// ── /position : ユーザーの保有ポジション登録 modal ──────────────────────────
+// /signal /crash は「銘柄を選んで dispatch」だが /position は「建玉を入力して D1 保存」なので
+// COMMANDS とは別系統。modal の callback_id でこちらの submission だと判別する。
+// 入力: 銘柄 (static_select) / 口座区分 (現物・信用) / 方向 (買い建て・売り建て) /
+//       平均建値 (数値文字列) / 株数 (数値文字列)。株数 0 を出すと手仕舞い (routes 側で行削除)。
+export const POSITION_CALLBACK_ID = "position_form";
+// POS_* の block_id/action_id は positionFormView と parsePositionSubmission の対 (同一ファイル内)
+// でしか突き合わせないので export 不要。routes は callback_id (POSITION_CALLBACK_ID) だけ見る。
+const POS_ACCOUNT_BLOCK = "pos_account_block";
+const POS_ACCOUNT_ACTION = "pos_account";
+const POS_SIDE_BLOCK = "pos_side_block";
+const POS_SIDE_ACTION = "pos_side";
+const POS_PRICE_BLOCK = "pos_price_block";
+const POS_PRICE_ACTION = "pos_price";
+const POS_QTY_BLOCK = "pos_qty_block";
+const POS_QTY_ACTION = "pos_qty";
+
+// 口座区分 / 方向の選択肢 (value はそのまま positions テーブルに入る正規値)。
+const ACCOUNT_OPTIONS = [
+	{ text: "現物", value: "cash" },
+	{ text: "信用", value: "margin" },
+];
+const SIDE_OPTIONS = [
+	{ text: "買い建て (long)", value: "long" },
+	{ text: "売り建て (short)", value: "short" },
+];
+
+function selectInput(
+	blockId: string,
+	actionId: string,
+	label: string,
+	options: { text: string; value: string }[],
+) {
+	return {
+		type: "input",
+		block_id: blockId,
+		label: { type: "plain_text", text: label },
+		element: {
+			type: "static_select",
+			action_id: actionId,
+			placeholder: { type: "plain_text", text: label },
+			initial_option: {
+				text: { type: "plain_text", text: options[0].text },
+				value: options[0].value,
+			},
+			options: options.map((o) => ({
+				text: { type: "plain_text", text: o.text },
+				value: o.value,
+			})),
+		},
+	};
+}
+
+function plainTextInput(blockId: string, actionId: string, label: string) {
+	return {
+		type: "input",
+		block_id: blockId,
+		label: { type: "plain_text", text: label },
+		element: {
+			type: "plain_text_input",
+			action_id: actionId,
+			placeholder: { type: "plain_text", text: label },
+		},
+	};
+}
+
+// /position の入力 modal。銘柄ピッカー (pickerView) と同じ static_select を流用し、口座/方向/
+// 建値/株数を足す。Submit を押すと view_submission が /slack/interact に飛び、保存後に clear で閉じる。
+export function positionFormView() {
+	return {
+		type: "modal",
+		callback_id: POSITION_CALLBACK_ID,
+		title: { type: "plain_text", text: "ポジション登録" },
+		submit: { type: "plain_text", text: "保存" },
+		close: { type: "plain_text", text: "閉じる" },
+		blocks: [
+			{
+				type: "section",
+				text: {
+					type: "mrkdwn",
+					text: "保有ポジションを登録します (現物/信用ごとに平均建値で1件)。株数 0 で手仕舞い。",
+				},
+			},
+			{
+				type: "input",
+				block_id: BLOCK_ID,
+				label: { type: "plain_text", text: "銘柄" },
+				element: {
+					type: "static_select",
+					action_id: ACTION_ID,
+					placeholder: { type: "plain_text", text: "銘柄を選択" },
+					options: tickerOptions(),
+				},
+			},
+			selectInput(
+				POS_ACCOUNT_BLOCK,
+				POS_ACCOUNT_ACTION,
+				"口座",
+				ACCOUNT_OPTIONS,
+			),
+			selectInput(POS_SIDE_BLOCK, POS_SIDE_ACTION, "方向", SIDE_OPTIONS),
+			plainTextInput(POS_PRICE_BLOCK, POS_PRICE_ACTION, "平均建値 (円)"),
+			plainTextInput(POS_QTY_BLOCK, POS_QTY_ACTION, "株数"),
+		],
+	};
+}
+
+// view_submission の state から /position 入力を取り出して検証する純粋関数。
+// 数値文字列のパース・範囲チェックをここに集約し、routes は保存と応答に専念する。
+// 戻り値: 成功は {ok:true, ...正規値}、失敗は {ok:false, errors} (block_id→メッセージ)。
+type PositionInput = {
+	ticker: string;
+	account: string;
+	side: string;
+	avgPrice: number;
+	qty: number;
+};
+export type PositionParse =
+	| { ok: true; value: PositionInput }
+	| { ok: false; errors: Record<string, string> };
+
+export function parsePositionSubmission(
+	state:
+		| Record<
+				string,
+				Record<
+					string,
+					{
+						value?: string;
+						selected_option?: { value?: string };
+					}
+				>
+		  >
+		| undefined,
+	knownTickers: readonly string[],
+): PositionParse {
+	const errors: Record<string, string> = {};
+	const v = state ?? {};
+
+	const ticker = v[BLOCK_ID]?.[ACTION_ID]?.selected_option?.value ?? "";
+	if (!knownTickers.includes(ticker))
+		errors[BLOCK_ID] = "銘柄を選んでください。";
+
+	const account =
+		v[POS_ACCOUNT_BLOCK]?.[POS_ACCOUNT_ACTION]?.selected_option?.value ?? "";
+	if (account !== "cash" && account !== "margin")
+		errors[POS_ACCOUNT_BLOCK] = "口座を選んでください。";
+
+	const side =
+		v[POS_SIDE_BLOCK]?.[POS_SIDE_ACTION]?.selected_option?.value ?? "";
+	if (side !== "long" && side !== "short")
+		errors[POS_SIDE_BLOCK] = "方向を選んでください。";
+
+	// 建値: 正の数のみ。カンマ・空白は除去して受ける。
+	const priceRaw = (
+		v[POS_PRICE_BLOCK]?.[POS_PRICE_ACTION]?.value ?? ""
+	).replace(/[,\s]/g, "");
+	const avgPrice = Number(priceRaw);
+	if (!priceRaw || !Number.isFinite(avgPrice) || avgPrice <= 0)
+		errors[POS_PRICE_BLOCK] = "平均建値は正の数で入力してください。";
+
+	// 株数: 0 以上の整数。0 は手仕舞い (routes 側で行削除)。
+	const qtyRaw = (v[POS_QTY_BLOCK]?.[POS_QTY_ACTION]?.value ?? "").replace(
+		/[,\s]/g,
+		"",
+	);
+	const qty = Number(qtyRaw);
+	if (qtyRaw === "" || !Number.isInteger(qty) || qty < 0)
+		errors[POS_QTY_BLOCK] =
+			"株数は 0 以上の整数で入力してください (0 で手仕舞い)。";
+
+	if (Object.keys(errors).length > 0) return { ok: false, errors };
+	return { ok: true, value: { ticker, account, side, avgPrice, qty } };
 }
 
 // Slack Events API (message.channels) の受信エンベロープ。

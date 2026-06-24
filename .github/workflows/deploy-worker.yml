@@ -10,11 +10,12 @@
 #     対象アカウント(admin@omnistove.com / account_id 020120735d111b7d06111196719171c1)と
 #     対象の D1 / R2 へのアクセスを含めて発行する。account_id は wrangler.toml に記載済みなので不要。
 #
-# ※ D1 スキーマ (schema.sql) は worker/schema.sql が変更された push のときだけ
-#   deploy 手前で --remote 適用する (apply-schema job)。schema.sql は全て
-#   CREATE TABLE/INDEX IF NOT EXISTS で書かれており冪等なので、流しても既存データ・
-#   テーブルは壊れない。DROP や列削除など破壊的変更を入れる場合は、この自動適用に
-#   頼らず手動移行 (cd worker && npm run db:init:remote 等) を検討すること。
+# ※ D1 スキーマは drizzle-kit migration で管理する (真の情報源は worker/src/lib/schema.ts)。
+#   worker/drizzle/ 配下 (生成された migration SQL) が変更された push のときだけ、deploy 手前で
+#   `wrangler d1 migrations apply --remote` する (apply-migrations job)。これは未適用の migration
+#   だけを順に流す差分適用なので、既存データ・テーブルは壊れない (DROP 全流しではない)。
+#   PK 変更など SQLite 非対応の変更は drizzle-kit が table 再作成手順を生成するので、その migration
+#   SQL を事前にレビューしてから push すること。新規 D1 はベースライン登録が要る (worker/README.md 参照)。
 
 name: deploy-worker
 
@@ -35,10 +36,10 @@ permissions:
   contents: read
 
 jobs:
-  # worker/schema.sql が変更された push のときだけ D1 へ schema を --remote 適用する。
-  # schema は冪等 (IF NOT EXISTS) なので既存データは壊れない。
+  # worker/drizzle/ (生成された migration SQL) が変更された push のときだけ、未適用 migration を
+  # --remote 差分適用する。migrations apply は適用済みを d1_migrations で追跡し未適用だけ流すので冪等。
   # workflow_dispatch (手動) からも流せるよう、push 以外では常に実行する。
-  apply-schema:
+  apply-migrations:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,21 +47,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # 直前コミットとの差分で schema.sql 変更を検出するため2コミット分取る。
+          # 直前コミットとの差分で drizzle/ 変更を検出するため2コミット分取る。
           fetch-depth: 2
 
-      - name: Check if schema.sql changed
+      - name: Check if migrations changed
         id: changed
         run: |
           if [ "${{ github.event_name }}" != "push" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "手動実行 (${{ github.event_name }}) のため schema を適用します。"
-          elif git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -q '^worker/schema.sql$'; then
+            echo "手動実行 (${{ github.event_name }}) のため migration を適用します。"
+          elif git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -q '^worker/drizzle/'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "worker/schema.sql が変更されたため適用します。"
+            echo "worker/drizzle/ が変更されたため migration を適用します。"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "worker/schema.sql に変更なし。schema 適用をスキップします。"
+            echo "worker/drizzle/ に変更なし。migration 適用をスキップします。"
           fi
 
       - uses: pnpm/action-setup@v6
@@ -80,16 +81,16 @@ jobs:
         # minimumReleaseAge=0 / allowBuilds は worker/pnpm-workspace.yaml に永続設定済み。
         run: pnpm install --frozen-lockfile
 
-      - name: Apply D1 schema (remote)
+      - name: Apply D1 migrations (remote)
         if: steps.changed.outputs.run == 'true'
-        run: pnpm exec wrangler d1 execute stock-signals --remote --file=./schema.sql --yes
+        run: pnpm exec wrangler d1 migrations apply stock-signals --remote --yes
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
   deploy:
     runs-on: ubuntu-latest
-    # schema 適用が失敗したまま新コードを deploy すると不整合になりうるので待つ。
-    needs: apply-schema
+    # migration 適用が失敗したまま新コードを deploy すると不整合になりうるので待つ。
+    needs: apply-migrations
     defaults:
       run:
         working-directory: worker

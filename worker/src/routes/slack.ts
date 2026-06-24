@@ -17,12 +17,12 @@
 // dispatch 実体は GitHub Actions の各ワークフロー (repository_dispatch: <event_type>)。
 // このルートは「起動するだけ」で、解析本文は skill が Slack に投稿する。
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
-import { slackThreads } from "../lib/schema";
+import { positions, slackThreads } from "../lib/schema";
 import { addReaction, openView } from "../lib/slack";
 import {
 	ACTION_ID,
@@ -30,7 +30,10 @@ import {
 	COMMANDS,
 	type Command,
 	ephemeral,
+	POSITION_CALLBACK_ID,
+	parsePositionSubmission,
 	pickerView,
+	positionFormView,
 	type SlackEventEnvelope,
 	shouldHandleReply,
 } from "../lib/slack-command";
@@ -69,8 +72,9 @@ async function verified(
 	return { raw };
 }
 
-// POST /slack/command : スラッシュコマンド (/crash, /signal) の受け口。
-// form.command (例 "/crash") の先頭 / を外して COMMANDS を引き、どの解析を撃つか決める。
+// POST /slack/command : スラッシュコマンド (/crash, /signal, /position) の受け口。
+// form.command (例 "/crash") の先頭 / を外して分岐する。/crash /signal は COMMANDS を引いて
+// 解析を dispatch する。/position は dispatch ではなく保有ポジション登録 modal を開く (別系統)。
 slack.post("/slack/command", async (c) => {
 	const v = await verified(c);
 	if ("err" in v) return v.err;
@@ -78,6 +82,22 @@ slack.post("/slack/command", async (c) => {
 	// Slack は application/x-www-form-urlencoded で送る (command / text / trigger_id 等)。
 	const form = new URLSearchParams(v.raw);
 	const cmdKey = (form.get("command") ?? "").replace(/^\//, "");
+
+	// /position はポジション登録 modal を開く (dispatch しない別系統)。view_submission は
+	// /slack/interact が POSITION_CALLBACK_ID で判別して D1 へ保存する。
+	if (cmdKey === "position") {
+		const triggerId = form.get("trigger_id") ?? "";
+		const opened = await openView(c.env, {
+			trigger_id: triggerId,
+			view: positionFormView(),
+		});
+		if (!opened)
+			return ephemeral(
+				"ポジション登録フォームを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
+			);
+		return c.body(null, 200);
+	}
+
 	const cmd = COMMANDS[cmdKey];
 	// 未登録コマンド (想定外) は静かに無視せず本人に知らせる。
 	if (!cmd) return ephemeral(`未対応のコマンド: /${cmdKey}`);
@@ -200,13 +220,58 @@ slack.post("/slack/interact", async (c) => {
 			state?: {
 				values?: Record<
 					string,
-					Record<string, { selected_option?: { value?: string } }>
+					Record<
+						string,
+						{ value?: string; selected_option?: { value?: string } }
+					>
 				>;
 			};
 		};
 	};
 
 	if (payload.type !== "view_submission") return c.body(null, 200);
+
+	// /position の登録フォーム submission。input を検証して positions に upsert する。
+	// qty=0 は手仕舞いとして行を削除する。clear で modal を閉じ、結果は ephemeral で本人に返せない
+	// (view_submission の応答に本文は載せられない) ため clear のみ。
+	if (payload.view?.callback_id === POSITION_CALLBACK_ID) {
+		const parsed = parsePositionSubmission(
+			payload.view?.state?.values,
+			WATCHLIST,
+		);
+		if (!parsed.ok)
+			return c.json({ response_action: "errors", errors: parsed.errors });
+		const p = parsed.value;
+		const drizzle = db(c.env.DB);
+		if (p.qty === 0) {
+			await drizzle
+				.delete(positions)
+				.where(
+					and(eq(positions.ticker, p.ticker), eq(positions.account, p.account)),
+				);
+		} else {
+			await drizzle
+				.insert(positions)
+				.values({
+					ticker: p.ticker,
+					account: p.account,
+					side: p.side,
+					avgPrice: p.avgPrice,
+					qty: p.qty,
+					updatedAt: new Date().toISOString(),
+				})
+				.onConflictDoUpdate({
+					target: [positions.ticker, positions.account],
+					set: {
+						side: p.side,
+						avgPrice: p.avgPrice,
+						qty: p.qty,
+						updatedAt: new Date().toISOString(),
+					},
+				});
+		}
+		return c.json({ response_action: "clear" });
+	}
 
 	// callback_id "<PICKER_CALLBACK_ID>:<cmd>" の cmd 部だけ取り出す。
 	const cmdKey = (payload.view?.callback_id ?? "").split(":")[1] ?? "";
@@ -219,7 +284,9 @@ slack.post("/slack/interact", async (c) => {
 	if (!cmd || !WATCHLIST.includes(ticker)) {
 		return c.json({
 			response_action: "errors",
-			errors: { [BLOCK_ID]: "銘柄が取得できませんでした。選び直してください。" },
+			errors: {
+				[BLOCK_ID]: "銘柄が取得できませんでした。選び直してください。",
+			},
 		});
 	}
 

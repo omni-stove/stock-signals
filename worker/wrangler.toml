@@ -8,7 +8,7 @@
 #   npx wrangler login                    # ブラウザ認証
 #   npx wrangler d1 create stock-signals  # → database_id を下の d1_databases に記入
 #   npx wrangler r2 bucket create stock-signals-articles
-#   npx wrangler d1 execute stock-signals --file=./schema.sql --remote
+#   pnpm db:migrate:remote                # drizzle migration をリモート D1 に適用 (スキーマは src/lib/schema.ts)
 #
 # ── ローカル検証 (ログイン/デプロイ不要、D1=ローカルSQLite/R2=ローカルFSをエミュレート) ──
 #   npx wrangler dev
@@ -51,10 +51,13 @@ crons = [
 ]
 
 # D1: 取得済みURLハッシュ(重複排除)と記事メタを持つ。
+# スキーマの真の情報源は src/lib/schema.ts。drizzle-kit が差分 migration を drizzle/ に生成し、
+# wrangler d1 migrations apply (migrations_dir=drizzle) が適用する。手書き schema.sql は廃止。
 [[d1_databases]]
 binding = "DB"
 database_name = "stock-signals"
 database_id = "13ca8c54-1dcc-45dc-8168-0a493e74ec46"  # APAC, 2026-06-17 作成
+migrations_dir = "drizzle"  # drizzle-kit generate の出力先と揃える
 
 # R2: 記事本文JSON (data/queue 相当) を置く。
 [[r2_buckets]]

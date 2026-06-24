@@ -2,7 +2,7 @@
 //
 // 週次の需給データを kabutan 個別ページ (https://kabutan.jp/stock/?code=<code>) 内の信用残
 // テーブル (日付 / 売り残 / 買い残 / 倍率) から取得し D1 margin に蓄積する。1回で過去5週が返る。
-// 冪等キー = (ticker, 集計基準日)。毎日取っても1週1行に収束する流儀は schema.sql の margin を参照。
+// 冪等キー = (ticker, 集計基準日)。毎日取っても1週1行に収束する流儀は schema.ts の margin を参照。
 
 import * as cheerio from "cheerio";
 import { db } from "./db";

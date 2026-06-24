@@ -192,6 +192,9 @@ slack.post("/slack/events", async (c) => {
 				channel: row.channel,
 				thread_ts: ev.thread_ts,
 				text,
+				// 返信した本人の Slack user_id。slack-reply が /thread-context へ渡し、
+				// その人の建玉 (positions) だけを引いて含み損益を答えるのに使う。
+				user: ev.user ?? "",
 			},
 			Date.now(),
 		).then((ok) => {
@@ -215,6 +218,7 @@ slack.post("/slack/interact", async (c) => {
 	const form = new URLSearchParams(v.raw);
 	const payload = JSON.parse(form.get("payload") ?? "{}") as {
 		type?: string;
+		user?: { id?: string };
 		view?: {
 			callback_id?: string;
 			state?: {
@@ -235,24 +239,37 @@ slack.post("/slack/interact", async (c) => {
 	// qty=0 は手仕舞いとして行を削除する。clear で modal を閉じ、結果は ephemeral で本人に返せない
 	// (view_submission の応答に本文は載せられない) ため clear のみ。
 	if (payload.view?.callback_id === POSITION_CALLBACK_ID) {
+		// 建玉は Slack ユーザー単位。返信時に本人の行だけ引けるよう、登録者の user_id を必ず保存する。
+		// view_submission payload には Slack が必ず user.id を載せる。万一欠けたら保存せずエラー表示。
+		const userId = payload.user?.id ?? "";
 		const parsed = parsePositionSubmission(
 			payload.view?.state?.values,
 			WATCHLIST,
 		);
 		if (!parsed.ok)
 			return c.json({ response_action: "errors", errors: parsed.errors });
+		if (!userId)
+			return c.json({
+				response_action: "errors",
+				errors: { [BLOCK_ID]: "ユーザー情報を取得できませんでした。" },
+			});
 		const p = parsed.value;
 		const drizzle = db(c.env.DB);
 		if (p.qty === 0) {
 			await drizzle
 				.delete(positions)
 				.where(
-					and(eq(positions.ticker, p.ticker), eq(positions.account, p.account)),
+					and(
+						eq(positions.userId, userId),
+						eq(positions.ticker, p.ticker),
+						eq(positions.account, p.account),
+					),
 				);
 		} else {
 			await drizzle
 				.insert(positions)
 				.values({
+					userId,
 					ticker: p.ticker,
 					account: p.account,
 					side: p.side,
@@ -261,7 +278,7 @@ slack.post("/slack/interact", async (c) => {
 					updatedAt: new Date().toISOString(),
 				})
 				.onConflictDoUpdate({
-					target: [positions.ticker, positions.account],
+					target: [positions.userId, positions.ticker, positions.account],
 					set: {
 						side: p.side,
 						avgPrice: p.avgPrice,

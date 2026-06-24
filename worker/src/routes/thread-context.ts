@@ -18,7 +18,7 @@
 // 参照現値は prices の live があればそれ、無ければ daily 最新 close を使い、各行の含み損益%を出す。
 // code (= 銘柄コード) は client_payload の ticker を Worker が渡す。未指定 / 未登録は status:none。
 
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
@@ -35,6 +35,8 @@ threadContext.get("/thread-context", async (c: Context<{ Bindings: Env }>) => {
 	const kind = c.req.query("kind") ?? "";
 	const text = c.req.query("text") ?? "";
 	const code = c.req.query("code") ?? "";
+	// 返信した本人の Slack user_id。建玉はユーザー単位なので、この人の行だけを引く。
+	const user = c.req.query("user") ?? "";
 
 	// 親 + 全返信を ts 昇順で。失敗・未設定は空配列 (fetchReplies が握りつぶす)。
 	const replies = await fetchReplies(env, {
@@ -45,19 +47,21 @@ threadContext.get("/thread-context", async (c: Context<{ Bindings: Env }>) => {
 	// ユーザーの最新返信 (text) が履歴に未反映なら末尾に足す (マージは lib/slack に集約)。
 	const merged = appendUserReply(replies, text, threadTs);
 
-	// 保有ポジション: 当該銘柄の全行 (現物/信用) を引く。code 未指定なら空。
-	const positionRows = code
-		? ((await db(env.DB)
-				.select({
-					account: positions.account,
-					side: positions.side,
-					avgPrice: positions.avgPrice,
-					qty: positions.qty,
-				})
-				.from(positions)
-				.where(eq(positions.ticker, code))
-				.all()) as PositionRow[])
-		: [];
+	// 保有ポジション: 返信した本人 (user) の当該銘柄の全行 (現物/信用) を引く。
+	// code または user が未指定なら空 (= status:none)。建玉はユーザー単位なので両方必須。
+	const positionRows =
+		code && user
+			? ((await db(env.DB)
+					.select({
+						account: positions.account,
+						side: positions.side,
+						avgPrice: positions.avgPrice,
+						qty: positions.qty,
+					})
+					.from(positions)
+					.where(and(eq(positions.userId, user), eq(positions.ticker, code)))
+					.all()) as PositionRow[])
+			: [];
 
 	// 参照現値: prices の最新行 (live/直近) があればそれ、無ければ daily 最新 close。
 	let refPrice: number | null = null;

@@ -232,18 +232,21 @@ export const marketRegime = sqliteTable("market_regime", {
 	fetchedAt: text("fetched_at").notNull(),
 });
 
-// ── positions (ユーザーの保有ポジション。冪等キー = (ticker, account)) ─────────
+// ── positions (ユーザーの保有ポジション。冪等キー = (userId, ticker, account)) ──
 // ユーザーが /position コマンドで登録する自分の建玉。判定 (signal-judge / crash-scenario) は
 // 汎用のまま据え置き、これは slack-reply だけが読む (スレッド返信で「建値から見て今どうか」を
-// 答えるため)。/thread-context が当該銘柄の全行を引いて positions ブロックに同梱する。
+// 答えるため)。/thread-context が返信した本人 (userId) の当該銘柄行を引いて positions ブロックに同梱する。
 //
-// 銘柄ごとに現物 (account=cash) と信用 (account=margin) を1行ずつ持てる (PK=(ticker, account))。
+// 建玉は Slack ユーザー単位で持つ (userId = 登録/返信した本人の Slack user_id)。複数人で使っても
+// 各自の建玉が混ざらないよう、PK に userId を含める。
+// 銘柄ごとに現物 (account=cash) と信用 (account=margin) を1行ずつ持てる (PK=(userId, ticker, account))。
 // 同じ口座区分に複数ロットは持たず「平均建値」1本に集約する (ナンピンは平均建値を入れ直す)。
 // side は現物なら通常 long だが、信用の売建を許容するため別フィールドで持つ。
 // 登録は INSERT OR REPLACE で上書き。qty<=0 を登録したら手仕舞い扱いで行ごと削除する (routes 側)。
 export const positions = sqliteTable(
 	"positions",
 	{
+		userId: text("user_id").notNull(), // 登録/返信した本人の Slack user_id (例 U0123ABCD)
 		ticker: text("ticker").notNull(), // 銘柄コード (例 285A)
 		account: text("account").notNull(), // cash (現物) | margin (信用)
 		side: text("side").notNull(), // long (買い建て) | short (売り建て)
@@ -251,5 +254,5 @@ export const positions = sqliteTable(
 		qty: integer("qty").notNull(), // 株数
 		updatedAt: text("updated_at").notNull(), // 最終更新時刻 (ISO8601)
 	},
-	(t) => [primaryKey({ columns: [t.ticker, t.account] })],
+	(t) => [primaryKey({ columns: [t.userId, t.ticker, t.account] })],
 );

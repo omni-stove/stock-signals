@@ -92,6 +92,43 @@ if (import.meta.vitest) {
 		it("avg<=0 は null (0除算回避)", () => {
 			expect(pnlPct("long", 0, 100)).toBeNull();
 		});
+		it("avg<0 も null (負の建値はあり得ないが防御)", () => {
+			expect(pnlPct("long", -100, 100)).toBeNull();
+		});
+		it("price が非有限 (NaN/Infinity) は null", () => {
+			expect(pnlPct("long", 1000, Number.NaN)).toBeNull();
+			expect(pnlPct("long", 1000, Number.POSITIVE_INFINITY)).toBeNull();
+			expect(pnlPct("long", 1000, Number.NEGATIVE_INFINITY)).toBeNull();
+		});
+		it("avg が非有限 (NaN/Infinity) は null", () => {
+			expect(pnlPct("long", Number.NaN, 1000)).toBeNull();
+			expect(pnlPct("long", Number.POSITIVE_INFINITY, 1000)).toBeNull();
+		});
+		it("price=0 は long で -100%、short で +100%", () => {
+			expect(pnlPct("long", 1000, 0)).toBe(-100);
+			expect(pnlPct("short", 1000, 0)).toBe(100);
+		});
+		it("側名は short 以外すべて long 扱い (空文字・未知値)", () => {
+			expect(pnlPct("", 1000, 1100)).toBe(10);
+			expect(pnlPct("buy", 1000, 1100)).toBe(10);
+		});
+	});
+
+	describe("round1", () => {
+		it("小数第1位で四捨五入する", () => {
+			expect(round1(10.04)).toBe(10);
+			expect(round1(10.05)).toBe(10.1);
+			expect(round1(10.15)).toBe(10.2);
+		});
+		it("負数も四捨五入する (Math.round は +∞ 方向丸めなので -10.05→-10.0)", () => {
+			expect(round1(-10.04)).toBe(-10);
+			expect(round1(-10.05)).toBe(-10);
+			expect(round1(-10.06)).toBe(-10.1);
+		});
+		it("0 と整数はそのまま", () => {
+			expect(round1(0)).toBe(0);
+			expect(round1(42)).toBe(42);
+		});
 	});
 
 	describe("buildPositions", () => {

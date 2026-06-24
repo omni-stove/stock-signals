@@ -355,6 +355,46 @@ if (import.meta.vitest) {
 		}
 	});
 
+	describe("toHalf", () => {
+		it("全角英数を半角化する", () => {
+			expect(toHalf("ＵＢＳ")).toBe("UBS");
+			expect(toHalf("２１５Ａ")).toBe("215A");
+			expect(toHalf("ＪＰモル")).toBe("JPモル");
+		});
+		it("既に半角ならそのまま (前後空白は trim)", () => {
+			expect(toHalf("  UBS  ")).toBe("UBS");
+			expect(toHalf("215A")).toBe("215A");
+		});
+		it("全角記号・カナは変換対象外 (英数のみ)", () => {
+			// ｺｽﾓ (半角カナ) や全角カナは対象外。0xFEE0 シフトは Ａ-Ｚ/ａ-ｚ/０-９ のみ。
+			expect(toHalf("岩井ｺｽﾓ")).toBe("岩井ｺｽﾓ");
+			expect(toHalf("モルガン")).toBe("モルガン");
+		});
+		it("空文字は空文字", () => {
+			expect(toHalf("")).toBe("");
+		});
+	});
+
+	describe("normDate", () => {
+		const now = new Date("2026-06-20T10:00:00Z");
+		it("M/D + 取得年で YYYY-MM-DD に整形 (ゼロ埋め)", () => {
+			expect(normDate("6/18", now)).toBe("2026-06-18");
+			expect(normDate("6/5", now)).toBe("2026-06-05"); // 1桁日もゼロ埋め
+		});
+		it("当年だと7日超未来になる日付は前年に倒す (1月初の前年12月日報)", () => {
+			expect(normDate("12/30", new Date("2026-01-03T10:00:00Z"))).toBe(
+				"2025-12-30",
+			);
+		});
+		it("7日以内の未来は当年のまま (倒さない)", () => {
+			// 6/20 取得で 6/25 (5日後) は窓内なので当年。
+			expect(normDate("6/25", now)).toBe("2026-06-25");
+		});
+		it("形式不一致は取得日 (UTC) にフォールバック", () => {
+			expect(normDate("不明", now)).toBe("2026-06-20");
+		});
+	});
+
 	describe("extractReportIds", () => {
 		it("日報・週報の両方のリンクを拾う", () => {
 			const html = [

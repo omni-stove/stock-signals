@@ -292,4 +292,17 @@ if (import.meta.vitest) {
 			expect(base).toEqual(copy);
 		});
 	});
+
+	describe("categoryHeading", () => {
+		it("既知カテゴリは専用見出しを返す", () => {
+			expect(categoryHeading("holdings")).toBe("📢 適時開示 (持株会社)");
+			expect(categoryHeading("corporate")).toBe("🏢 企業情報");
+			expect(categoryHeading("business")).toBe("🔧 製品・事業");
+			expect(categoryHeading("personal")).toBe("🛒 個人向け");
+		});
+		it("未知カテゴリ・空文字は default の汎用見出し", () => {
+			expect(categoryHeading("unknown")).toBe("📄 IR");
+			expect(categoryHeading("")).toBe("📄 IR");
+		});
+	});
 }

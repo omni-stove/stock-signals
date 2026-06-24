@@ -10,6 +10,6 @@
 - No LLM in collection (Worker). Judgment runs only in the GitHub Actions `claude-code-action`.
 - Edit skills at `agents/skills/<name>/SKILL.md` (`.claude/skills/` is a symlink).
 - `scripts/*.sh`: preprocessing called from Actions. `scripts/*.ts`: tools run via `pnpm run`, never called by Actions at runtime.
+- Write tests in-source: an `if (import.meta.vitest) { ... }` block at the end of the module under test.
 - Worker logs: `wrangler tail` is live-only; query D1 / R2 for the past.
 - Local secrets live in `worker/.dev.vars`.
-- Any document that instructs an LLM (SKILL.md, AGENTS.md, prompts, command/workflow definitions, …) holds only what the LLM must judge: write it in English, cut the obvious, never write examples or why, describe forces rather than binding judgment to fixed labels, order sections by the reader's workflow, define each thing once, state what it must not do, and grant judgment explicitly. For a SKILL.md specifically, also push deterministic work into `scripts/*.sh` that the skill calls in one line. These rules live in `agents/skills/_LLM_INSTRUCTION_RULES.md` and a PreToolUse hook (`scripts/llm-instruction-guard.sh`) injects them before any such file is edited.

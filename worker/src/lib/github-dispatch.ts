@@ -278,4 +278,60 @@ if (import.meta.vitest) {
 			expect(selectDebounceTargets(["A"], last, NOW)).toEqual([]);
 		});
 	});
+
+	describe("makeAppJwt", () => {
+		// テスト用に RS256 鍵ペアを生成し、秘密鍵を PKCS#8 PEM 化して makeAppJwt に渡す。
+		// 出力 JWT を「公開鍵で署名検証」「header/payload のデコード」で検証する。
+		const toPem = (der: ArrayBuffer) => {
+			const b64 = btoa(String.fromCharCode(...new Uint8Array(der)));
+			const lines = b64.match(/.{1,64}/g)?.join("\n") ?? b64;
+			return `-----BEGIN PRIVATE KEY-----\n${lines}\n-----END PRIVATE KEY-----`;
+		};
+		const exportPkcs8 = async (key: CryptoKey) =>
+			(await crypto.subtle.exportKey("pkcs8", key)) as ArrayBuffer;
+		const decodeSeg = (seg: string) => {
+			const b64 = seg.replace(/-/g, "+").replace(/_/g, "/");
+			return JSON.parse(atob(b64));
+		};
+
+		it("RS256 JWT を生成し、公開鍵で署名検証が通る", async () => {
+			const pair = (await crypto.subtle.generateKey(
+				{
+					name: "RSASSA-PKCS1-v1_5",
+					modulusLength: 2048,
+					publicExponent: new Uint8Array([1, 0, 1]),
+					hash: "SHA-256",
+				},
+				true,
+				["sign", "verify"],
+			)) as CryptoKeyPair;
+			const pem = toPem(await exportPkcs8(pair.privateKey));
+			const nowSec = 1_700_000_000;
+
+			const jwt = await makeAppJwt("123456", pem, nowSec);
+			const [h, p, s] = jwt.split(".");
+			expect(jwt.split(".").length).toBe(3);
+
+			// header: RS256/JWT。payload: iss=appId, iat=now-60, exp=now+540。
+			expect(decodeSeg(h)).toEqual({ alg: "RS256", typ: "JWT" });
+			expect(decodeSeg(p)).toEqual({
+				iat: nowSec - 60,
+				exp: nowSec + 540,
+				iss: "123456",
+			});
+
+			// 署名を公開鍵で検証。`header.payload` に対する RS256 署名であること。
+			const sig = Uint8Array.from(
+				atob(s.replace(/-/g, "+").replace(/_/g, "/")),
+				(c) => c.charCodeAt(0),
+			);
+			const ok = await crypto.subtle.verify(
+				"RSASSA-PKCS1-v1_5",
+				pair.publicKey,
+				sig,
+				new TextEncoder().encode(`${h}.${p}`),
+			);
+			expect(ok).toBe(true);
+		});
+	});
 }

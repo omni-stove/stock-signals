@@ -230,3 +230,57 @@ export async function runScheduled(
 	const res = await collectTimeseries(env, kind, null);
 	console.log(`scheduled ${kind} done:`, JSON.stringify(res));
 }
+
+if (import.meta.vitest) {
+	const { describe, it, expect } = import.meta.vitest;
+	const ms = (iso: string) => new Date(iso).getTime();
+
+	describe("isNoonIntakeSlot", () => {
+		// JST 12:30 = UTC 03:30。03:30〜03:34 の5分窓で拾う。
+		it("UTC 03:30〜03:34 は昼スロット", () => {
+			expect(isNoonIntakeSlot(ms("2026-06-22T03:30:00Z"))).toBe(true);
+			expect(isNoonIntakeSlot(ms("2026-06-22T03:34:59Z"))).toBe(true);
+		});
+		it("窓の外 (03:29 / 03:35 / 別の時) は昼スロットでない", () => {
+			expect(isNoonIntakeSlot(ms("2026-06-22T03:29:59Z"))).toBe(false);
+			expect(isNoonIntakeSlot(ms("2026-06-22T03:35:00Z"))).toBe(false);
+			expect(isNoonIntakeSlot(ms("2026-06-22T00:30:00Z"))).toBe(false);
+		});
+	});
+
+	describe("isJstWeekend", () => {
+		// scheduledTime を JST に直した曜日で判定する。
+		it("JST 土日は true", () => {
+			// 2026-06-20 は土曜。JST 10:00 = UTC 前日 01:00。
+			expect(isJstWeekend(ms("2026-06-20T01:00:00Z"))).toBe(true); // 土 JST 10:00
+			expect(isJstWeekend(ms("2026-06-21T01:00:00Z"))).toBe(true); // 日 JST 10:00
+		});
+		it("JST 平日は false", () => {
+			expect(isJstWeekend(ms("2026-06-22T01:00:00Z"))).toBe(false); // 月 JST 10:00
+			expect(isJstWeekend(ms("2026-06-19T01:00:00Z"))).toBe(false); // 金 JST 10:00
+		});
+		it("UTC 日曜 23:30 = JST 月曜 08:30 は稼働 (TZ ズレの境界)", () => {
+			// 寄り前 intake `30 23 * * *`。UTC 日曜夜 → JST 月曜朝なので平日扱い。
+			expect(isJstWeekend(ms("2026-06-21T23:30:00Z"))).toBe(false);
+		});
+		it("UTC 土曜 23:30 = JST 日曜 08:30 はスキップ", () => {
+			expect(isJstWeekend(ms("2026-06-20T23:30:00Z"))).toBe(true);
+		});
+	});
+
+	describe("isJstMonthStart", () => {
+		it("JST 1〜3日は月初スロット", () => {
+			expect(isJstMonthStart(ms("2026-07-01T07:00:00Z"))).toBe(true); // JST 16:00 1日
+			expect(isJstMonthStart(ms("2026-07-03T07:00:00Z"))).toBe(true);
+		});
+		it("JST 4日以降は false", () => {
+			expect(isJstMonthStart(ms("2026-07-04T07:00:00Z"))).toBe(false);
+			expect(isJstMonthStart(ms("2026-07-15T07:00:00Z"))).toBe(false);
+		});
+		it("UTC 月末 16:00 = JST 翌月 1日 01:00 は月初扱い (TZ ズレ)", () => {
+			// UTC 6/30 16:00 → JST 7/1 01:00。eod は UTC 07:00 発火なので実際はこの時刻だが、
+			// JST 日付で月初を判定することの確認。
+			expect(isJstMonthStart(ms("2026-06-30T16:00:00Z"))).toBe(true);
+		});
+	});
+}

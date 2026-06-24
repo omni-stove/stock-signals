@@ -47,4 +47,51 @@ if (import.meta.vitest) {
 			expect(hash("6857")).not.toBe(hash("6858"));
 		});
 	});
+
+	describe("fetchHtml", () => {
+		const env = { USER_AGENT: "test-ua" };
+		const origFetch = globalThis.fetch;
+		// 各テスト後に fetch を元へ戻す (他テストへの汚染防止)。
+		const restore = () => {
+			globalThis.fetch = origFetch;
+		};
+
+		it("200 OK は本文を UTF-8 文字列で返す", async () => {
+			globalThis.fetch = (async () =>
+				new Response(new TextEncoder().encode("こんにちは"), {
+					status: 200,
+				})) as typeof fetch;
+			try {
+				expect(await fetchHtml("https://x.test/", env)).toBe("こんにちは");
+			} finally {
+				restore();
+			}
+		});
+
+		it("非 ok (404/500) は HTTP ステータス付き Error を投げる", async () => {
+			globalThis.fetch = (async () =>
+				new Response("nope", { status: 404 })) as typeof fetch;
+			try {
+				await expect(fetchHtml("https://x.test/missing", env)).rejects.toThrow(
+					/HTTP 404 https:\/\/x\.test\/missing/,
+				);
+			} finally {
+				restore();
+			}
+		});
+
+		it("User-Agent ヘッダを env から渡す", async () => {
+			let sentUa: string | null = null;
+			globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+				sentUa = new Headers(init?.headers).get("User-Agent");
+				return new Response("ok", { status: 200 });
+			}) as typeof fetch;
+			try {
+				await fetchHtml("https://x.test/", env);
+				expect(sentUa).toBe("test-ua");
+			} finally {
+				restore();
+			}
+		});
+	});
 }

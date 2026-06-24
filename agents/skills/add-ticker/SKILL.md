@@ -56,15 +56,10 @@ style. Edit only `watchlist.ts` — never hand-edit the generated workflow optio
 
 ```
 npm run gen:watchlist
-```
-
-### 5. Verify
-
-```
 npm run check:watchlist
 ```
 
-### 6. Report in one line
+### 5. Report in one line
 
 stdout, no narration:
 

@@ -44,7 +44,7 @@ when none).
 
 `market_regime` (object `{ regime, stance, headline }` or null) is today's pre-open 地合い call. A
 リスクオフ regime raises the 確度 of the macro / リスクオフ scenarios and shortens their trigger
-horizon; it does not invent 銘柄固有 risk. Null → ignore it.
+horizon; it does not invent 銘柄固有 risk. Null → say nothing about 地合い or the gate's absence.
 
 1. **Metadata** — `<ticker>` in `worker/src/lib/watchlist.ts` for `name`/`sector`/`sector_role`/
    `fair_per`. Treat `fair_per` only as a rough directional hint of richness; never anchor a 想定下落

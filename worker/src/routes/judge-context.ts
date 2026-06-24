@@ -10,7 +10,7 @@
 // 出力は旧 judge-context.sh の JSON に event_context (旧 event-context.sh の 1 行) と
 // market_regime (当日の market-check 地合いコール / 無ければ null) を加えたもの:
 //   { ticker, today, market_phase, market_regime, event_context, context_body,
-//     earnings, premarket, daily, prices, margin }
+//     earnings, earnings_result, premarket, daily, prices, margin }
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
 import { desc, eq } from "drizzle-orm";
@@ -22,9 +22,11 @@ import type { DailyRow } from "../lib/indicators";
 import {
 	buildDaily,
 	buildEarnings,
+	buildEarningsResult,
 	buildMargin,
 	buildPremarket,
 	buildPrices,
+	type FundamentalsSnapshot,
 	type MarginRow,
 	type PremarketRow,
 	type PriceRow,
@@ -34,6 +36,7 @@ import {
 	contexts,
 	daily,
 	earnings,
+	fundamentals,
 	macroEvents,
 	margin,
 	marketRegime,
@@ -63,6 +66,21 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.from(earnings)
 		.where(eq(earnings.ticker, code))
 		.get();
+
+	// fundamentals の日次スナップショット (date 降順)。actual_period の四半期切替で
+	// 「決算が出た日」を割り出すため、四半期 (約90日) を跨ぐ余裕を持って遡る。
+	const fundamentalsRows = (await db(env.DB)
+		.select({
+			date: fundamentals.date,
+			actual_eps: fundamentals.actualEps,
+			actual_period: fundamentals.actualPeriod,
+			forecast_eps: fundamentals.forecastEps,
+		})
+		.from(fundamentals)
+		.where(eq(fundamentals.ticker, code))
+		.orderBy(desc(fundamentals.date))
+		.limit(120)
+		.all()) as FundamentalsSnapshot[];
 
 	const dailyRows = (await db(env.DB)
 		.select({
@@ -164,6 +182,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		event_context: buildEventContext(today, macroRows),
 		context_body: contextRow?.body ?? null,
 		earnings: buildEarnings(earningsRow?.next_date ?? null, today),
+		earnings_result: buildEarningsResult(fundamentalsRows, today),
 		premarket: buildPremarket(premarketRow ?? null, epochNow),
 		daily: buildDaily(dailyRows),
 		prices: buildPrices(priceRows, epochNow),

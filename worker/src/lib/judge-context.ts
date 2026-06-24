@@ -45,6 +45,113 @@ export function buildEarnings(
 	};
 }
 
+// --- earnings_result: 直近に出た決算の beat/miss -----------------------------
+// 「決算が近い」(buildEarnings) と対をなす「決算が出たばかり」ブロック。fundamentals は
+// (ticker, date) で毎日1スナップショット入るので、actual_period (最後の実績四半期) が
+// 前の取得日から別四半期へ切り替わった日 = その四半期決算が出た日、と捉えられる。
+// その日から FRESH_DAYS 営業日以内なら fresh とし、実績EPS vs 予想EPS のサプライズ符号を渡す。
+// 判定の強弱は signal-judge (SKILL) に委ね、ここは事実 (beat/miss と経過日) だけ出す。
+
+// fundamentals の1スナップショット (取得日 date と、その時点の実績/予想)。
+export interface FundamentalsSnapshot {
+	date: string; // 取得日 YYYY-MM-DD
+	actual_eps?: number | null;
+	actual_period?: string | null;
+	forecast_eps?: number | null;
+}
+
+export interface EarningsResultBlock {
+	status: "fresh" | "stale" | "none";
+	reported_period: string | null; // 出たばかりの決算期 (例 "2026.06")
+	days_since: number | null; // 決算が出た取得日から today までの営業日 (土日除く、同日=0)
+	actual_eps: number | null;
+	forecast_eps: number | null;
+	surprise_pct: number | null; // (actual - forecast)/|forecast| ×100、floor1
+	verdict: "beat" | "inline" | "miss" | null;
+}
+
+// 決算が出てから fresh 扱いする営業日 (当日=0。寄りで大半が織り込まれるので2営業日ほど)。
+const FRESH_DAYS = 2;
+// サプライズが inline を脱する閾値 (予想比 ±%)。これ未満は誤差として inline。
+const SURPRISE_BAND_PCT = 5;
+
+// from→to (いずれも YYYY-MM-DD) の間の営業日数 (土日を除く、同日=0)。祝日は非考慮の近似で、
+// event-context.ts の営業日計算と揃える (窓判定なので祝日ズレは実用上問題ない)。
+function businessDaysBetween(from: string, to: string): number {
+	let count = 0;
+	const cur = new Date(`${from}T00:00:00Z`);
+	const end = new Date(`${to}T00:00:00Z`);
+	while (cur < end) {
+		cur.setUTCDate(cur.getUTCDate() + 1);
+		const w = cur.getUTCDay();
+		if (w !== 0 && w !== 6) count++;
+	}
+	return count;
+}
+
+const NONE_RESULT: EarningsResultBlock = {
+	status: "none",
+	reported_period: null,
+	days_since: null,
+	actual_eps: null,
+	forecast_eps: null,
+	surprise_pct: null,
+	verdict: null,
+};
+
+// snapshots は date 降順 (新しい順) で渡す。先頭が最新スナップショット。
+export function buildEarningsResult(
+	snapshots: FundamentalsSnapshot[],
+	today: string,
+): EarningsResultBlock {
+	if (snapshots.length === 0) return NONE_RESULT;
+	const latest = snapshots[0];
+	const period = latest.actual_period ?? null;
+	if (!period) return NONE_RESULT;
+
+	// actual_period が latest と違う最初の (= 直近の) 古いスナップショットを探す。
+	// 見つかればその「直後」のスナップショットが切り替わり日 = 決算が出た日。
+	let reportedAt: string | null = null;
+	for (let i = 1; i < snapshots.length; i++) {
+		const prevPeriod = snapshots[i].actual_period ?? null;
+		if (prevPeriod && prevPeriod !== period) {
+			reportedAt = snapshots[i - 1].date;
+			break;
+		}
+		// period が一致し続ける = まだ切り替わっていない。さらに遡る。
+	}
+	// 全スナップショットで同じ period = この窓内に切替なし。決算は窓より前。
+	if (reportedAt === null) {
+		return { ...NONE_RESULT, status: "stale", reported_period: period };
+	}
+
+	const daysSince = businessDaysBetween(reportedAt, today);
+
+	const actual = latest.actual_eps ?? null;
+	const forecast = latest.forecast_eps ?? null;
+	let surprisePct: number | null = null;
+	let verdict: EarningsResultBlock["verdict"] = null;
+	if (actual !== null && forecast !== null && forecast !== 0) {
+		surprisePct = floor1(((actual - forecast) / Math.abs(forecast)) * 100);
+		verdict =
+			surprisePct >= SURPRISE_BAND_PCT
+				? "beat"
+				: surprisePct <= -SURPRISE_BAND_PCT
+					? "miss"
+					: "inline";
+	}
+
+	return {
+		status: daysSince <= FRESH_DAYS ? "fresh" : "stale",
+		reported_period: period,
+		days_since: daysSince,
+		actual_eps: actual,
+		forecast_eps: forecast,
+		surprise_pct: surprisePct,
+		verdict,
+	};
+}
+
 // --- premarket: 鮮度判定 (age>20h で stale) ---------------------------------
 export interface PremarketRow {
 	fetched_at?: string | null;
@@ -210,6 +317,159 @@ if (import.meta.vitest) {
 				next_date: null,
 				days_to_earnings: null,
 			});
+		});
+	});
+
+	describe("buildEarningsResult", () => {
+		// date 降順 (新しい順) で渡す。actual_period の切替で「決算が出た日」を割り出す。
+		it("直近で四半期が切替→fresh、予想超えで beat", () => {
+			// 06-18(木) 切替 → 06-19(金) today = 1営業日。
+			const out = buildEarningsResult(
+				[
+					{
+						date: "2026-06-19",
+						actual_eps: 152,
+						forecast_eps: 120,
+						actual_period: "2026.06",
+					},
+					{
+						date: "2026-06-18",
+						actual_eps: 152,
+						forecast_eps: 120,
+						actual_period: "2026.06",
+					},
+					{
+						date: "2026-06-17",
+						actual_eps: 100,
+						forecast_eps: 120,
+						actual_period: "2026.03",
+					},
+				],
+				"2026-06-19",
+			);
+			expect(out.status).toBe("fresh");
+			expect(out.reported_period).toBe("2026.06");
+			expect(out.days_since).toBe(1); // 切替日 = 2026-06-18(木)
+			expect(out.verdict).toBe("beat");
+			expect(out.surprise_pct).toBe(26.6); // (152-120)/120*100 floor1
+		});
+		it("予想割れは miss", () => {
+			const out = buildEarningsResult(
+				[
+					{
+						date: "2026-06-20",
+						actual_eps: 90,
+						forecast_eps: 120,
+						actual_period: "2026.06",
+					},
+					{
+						date: "2026-06-19",
+						actual_eps: 100,
+						forecast_eps: 120,
+						actual_period: "2026.03",
+					},
+				],
+				"2026-06-20",
+			);
+			expect(out.status).toBe("fresh");
+			expect(out.verdict).toBe("miss");
+		});
+		it("予想比±5%以内は inline", () => {
+			const out = buildEarningsResult(
+				[
+					{
+						date: "2026-06-20",
+						actual_eps: 123,
+						forecast_eps: 120,
+						actual_period: "2026.06",
+					},
+					{
+						date: "2026-06-19",
+						actual_eps: 100,
+						forecast_eps: 120,
+						actual_period: "2026.03",
+					},
+				],
+				"2026-06-20",
+			);
+			expect(out.verdict).toBe("inline");
+		});
+		it("切替から FRESH_DAYS 超過は stale", () => {
+			// 06-12(金) 切替 → 06-19(金) today = 5営業日 > 2。
+			const out = buildEarningsResult(
+				[
+					{
+						date: "2026-06-19",
+						actual_eps: 152,
+						forecast_eps: 120,
+						actual_period: "2026.06",
+					},
+					{
+						date: "2026-06-12", // 切替直後 = 決算が出た日 (金)
+						actual_eps: 152,
+						forecast_eps: 120,
+						actual_period: "2026.06",
+					},
+					{
+						date: "2026-06-11",
+						actual_eps: 100,
+						forecast_eps: 120,
+						actual_period: "2026.03",
+					},
+				],
+				"2026-06-19",
+			);
+			expect(out.status).toBe("stale");
+			expect(out.days_since).toBe(5);
+			expect(out.reported_period).toBe("2026.06");
+		});
+		it("土日は営業日に数えない (金切替→翌月曜 today = 1営業日で fresh)", () => {
+			// 06-19(金) 切替 → 06-22(月) today。暦日3だが営業日は1。
+			const out = buildEarningsResult(
+				[
+					{
+						date: "2026-06-22",
+						actual_eps: 152,
+						forecast_eps: 120,
+						actual_period: "2026.06",
+					},
+					{
+						date: "2026-06-19", // 切替直後 = 決算が出た日 (金)
+						actual_eps: 152,
+						forecast_eps: 120,
+						actual_period: "2026.06",
+					},
+					{
+						date: "2026-06-18",
+						actual_eps: 100,
+						forecast_eps: 120,
+						actual_period: "2026.03",
+					},
+				],
+				"2026-06-22",
+			);
+			expect(out.status).toBe("fresh");
+			expect(out.days_since).toBe(1);
+		});
+		it("窓内で切替なし (全行同一四半期) は stale", () => {
+			const out = buildEarningsResult(
+				[
+					{ date: "2026-06-20", actual_period: "2026.06" },
+					{ date: "2026-06-19", actual_period: "2026.06" },
+				],
+				"2026-06-20",
+			);
+			expect(out.status).toBe("stale");
+			expect(out.days_since).toBeNull();
+		});
+		it("スナップショット無し / actual_period 無しは none", () => {
+			expect(buildEarningsResult([], "2026-06-20").status).toBe("none");
+			expect(
+				buildEarningsResult(
+					[{ date: "2026-06-20", actual_period: null }],
+					"2026-06-20",
+				).status,
+			).toBe("none");
 		});
 	});
 

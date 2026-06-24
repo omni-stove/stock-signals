@@ -22,7 +22,8 @@ What isn't obvious from the JSON fields:
   market-check call, the pre-open 地合い gate. Apply it; do not merely weigh it. It moves the 水準,
   never the direction. リスクオフ caps the 水準 at 押し目 — 追い is off the table and the 損切り is a
   floor you never loosen. 中立 grants no boost. リスクオン permits the fuller 水準, 追い included.
-  Null → the gate didn't run; judge on the name alone. Name in the body how the gate moved the 水準.
+  When present, name in the body how the gate moved the 水準. Null → judge on the name alone; say
+  nothing about 地合い or the gate's absence.
 - **`event_context`** is a one-line 需給イベント string (特になし when none). Read it for near-term
   需給 distortion and binary-event risk.
 - **`context_body` is your primary fundamental input** — read it in full. 直近の重大トピック is
@@ -30,12 +31,11 @@ What isn't obvious from the JSON fields:
   continues or reverses; 証券会社レーティング is a 6–12mo view that corroborates (weight by 発行日 /
   アップサイド% / 信頼度), never dominates. Null → `context: unavailable`, call on price alone.
 - In `prices`, **ignore `pts_price`** (use `change_pct`/`volume`/`quote_time`/`slot`).
-- `prices.quote_status: closed` → the tape is stale; demote it to backdrop, lead on context + `premarket`.
-- `market_phase` (top level, JST trading-day position) disambiguates a `closed` `quote_status` —
-  same stale tape, but `premarket` (pre-open, digesting overnight NY → lead on `premarket`/context)
-  vs `closed` (after close → react to the close + tonight's NY setup) changes what the level means.
+- `prices.quote_status: closed` → stale tape, demoted to backdrop; `market_phase` (top level, JST
+  trading-day position) says what to lead on instead — `premarket` (pre-open, digesting overnight NY
+  → lead on `premarket`/context) vs `closed` (after close → react to the close + tonight's NY setup).
 - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.
-- `<ticker>`'s `name`/`sector` are in `worker/src/lib/watchlist.ts`.
+- `<ticker>`'s `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist.ts`.
 
 ## Forming the call
 
@@ -45,22 +45,25 @@ These are the forces in play; weigh them into one call, don't match them to a la
 just-released earnings/guidance) make the strongest call; a thin single line still picks a side,
 noted as thin; nothing materially new weakens the long case. The further the move has already run
 when the context arrives, the worse the entry and the more it pulls toward selling. Weigh
-`fair_per` (`worker/src/lib/watchlist.ts`) as a tilt on the 水準, never the direction — well above it渋く
-the 水準, below it supports a deeper `押し目`; it never overrides fresh context.
+`fair_per` as a tilt on the 水準, never the direction — price well above it tightens the 水準, below
+it supports a deeper `押し目`; it never overrides fresh context.
 
 **Overbought works on the 水準, not the direction, and `market_regime` sets how hard it bites.** A
 top is only confirmed after it breaks — strong trends stay overbought for days; overbought argues
 against adding, not against holding. It turns toward exiting only once the move has *cracked* — high
 in the range *and* `vol_x_20d` thinning, not merely high — or the driving topic drops out of 直近の重大
-トピック. (Read `atr_pct` cross-sectionally against the sector when `atr_pct_baseline` is null.) Under
-リスクオン a still-expanding high-in-range is the trend working, not a top — it need not demote the 水準
-and can carry 追い; toward リスクオフ tolerance collapses and a stretched name is the first 投げ, so
-high-in-range waits for the 押し目. Name which regime set the 過熱 read.
+トピック. (Read `atr_pct` cross-sectionally against the sector when `atr_pct_baseline` is null.) The
+gate (defined above) sets how hard 過熱 bites: under リスクオン a still-expanding high-in-range is the
+trend working, not a top; toward リスクオフ tolerance collapses and a stretched name is the first 投げ.
+Name which regime set the 過熱 read.
 
 - **Margin (需給) is subordinate** — moves the 水準, never the direction. Contradicts the context →
   keep direction, soften the 水準 one step.
-- **Earnings near** argues for getting out, unless the freshest context *is* that release. Near or
-  just-out, **## 決算の特色・クセ** says what this name's earnings move on — use it to read the reaction.
+- **Earnings** — **near** argues for getting out, unless the freshest context *is* that release.
+  **Just out** (`earnings_result.status: fresh`): its `verdict` tilts the 水準 one step — `beat`
+  toward 追い/holding, `miss` toward 利確/逃げ; `inline` and any non-`fresh` status add nothing. It
+  only tilts, never sets direction. Near or just-out, **## 決算の特色・クセ** says what this name moves
+  on (it may be a metric other than EPS) — read the price reaction (daily/premarket) through it.
 - **Event context** — SQ週/メジャーSQ unwind distorts the tape (treat the move as noise, fall back
   to fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX — discount.
   A near 海外SOX系ピア決算 is a scheduled event whose result swings SOX next day and reaches this

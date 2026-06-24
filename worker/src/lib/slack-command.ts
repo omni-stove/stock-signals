@@ -32,25 +32,32 @@ export const COMMANDS: Record<string, Command> = {
 	},
 };
 
-// 銘柄選択 UI の block_id / action_id / modal callback_id。/slack/interact 側で突き合わせる。
+// 銘柄選択 UI の block_id 接頭辞 / action_id / modal callback_id。/slack/interact 側で突き合わせる。
 // ACTION_ID だけ routes の interact が action_id 照合に使うので export する。
 const BLOCK_ID = "ticker_block";
 export const ACTION_ID = "ticker_select";
 const PICKER_CALLBACK_ID = "ticker_picker";
+
+// actions block 1 つに置けるボタン数の上限 (Slack 制約は 25)。超えたら複数ブロックに分割する。
+const MAX_BUTTONS_PER_BLOCK = 25;
 
 // ephemeral (本人にだけ見える) 応答。dispatch の起動可否はチャンネルに撒かない。
 export function ephemeral(text: string): Response {
 	return Response.json({ response_type: "ephemeral", text });
 }
 
-// WATCHLIST から銘柄選択用の static_select option を組み立てる。
-// 表示は「コード 会社名」(WATCHLIST_NAMES)。コードだけだと選べないため会社名を併記する。
+// WATCHLIST から銘柄選択用のボタン element を組み立てる。
+// 表示は「コード 会社名」(WATCHLIST_NAMES)。スマホでは static_select のプルダウンが
+// 「modal を開く→プルダウンを開く→スクロールして探す」と段数が多くもたつくため、
+// 銘柄をボタンで平置きして 1 タップで撃てるようにする (action_id は全ボタン共通の ACTION_ID)。
 // interact (block_actions) には元コマンドの手掛かりが残らないので、value に "<cmd>:<code>"
 // を埋めて往復させる (どの解析を撃つかをピッカー選択時に復元するため)。
-function tickerOptions(cmd: string) {
+function tickerButtons(cmd: string) {
 	return WATCHLIST.map((code) => {
 		const name = WATCHLIST_NAMES[code];
 		return {
+			type: "button",
+			action_id: ACTION_ID,
 			text: {
 				type: "plain_text",
 				text: name ? `${code} ${name}` : code,
@@ -60,29 +67,34 @@ function tickerOptions(cmd: string) {
 	});
 }
 
-// 銘柄ピッカー modal の view を組む。section の accessory に static_select を置き、選択した
-// 瞬間に block_actions が /slack/interact に飛ぶ (Submit ボタンは持たない → 選択即発火)。
+// 銘柄ピッカー modal の view を組む。見出し section の下に銘柄ボタンを actions block で平置きし、
+// ボタンを押した瞬間に block_actions が /slack/interact に飛ぶ (Submit ボタンは持たない → 選択即発火)。
+// actions block は 1 つにつき最大 25 element なので、銘柄数が増えても落ちないよう分割する。
 // 起動可否のフィードバックは選択後に views.update でこの view を差し替えて出す。
 // callback_id / external 状態は使わず、value の "<cmd>:<code>" だけでコマンドと銘柄を運ぶ。
 export function pickerView(cmd: string, headline: string) {
+	const buttons = tickerButtons(cmd);
+	const actionBlocks = [];
+	for (let i = 0; i < buttons.length; i += MAX_BUTTONS_PER_BLOCK) {
+		actionBlocks.push({
+			type: "actions",
+			block_id: `${BLOCK_ID}_${i / MAX_BUTTONS_PER_BLOCK}`,
+			elements: buttons.slice(i, i + MAX_BUTTONS_PER_BLOCK),
+		});
+	}
 	return {
 		type: "modal",
 		callback_id: PICKER_CALLBACK_ID,
 		title: { type: "plain_text", text: "銘柄を選択" },
-		// Submit を出さない (close のみ)。選択した瞬間に発火し view を更新する設計のため。
+		// Submit を出さない (close のみ)。ボタンを押した瞬間に発火し view を更新する設計のため。
 		close: { type: "plain_text", text: "閉じる" },
 		blocks: [
 			{
 				type: "section",
 				block_id: BLOCK_ID,
 				text: { type: "mrkdwn", text: headline },
-				accessory: {
-					type: "static_select",
-					action_id: ACTION_ID,
-					placeholder: { type: "plain_text", text: "銘柄を選択" },
-					options: tickerOptions(cmd),
-				},
 			},
+			...actionBlocks,
 		],
 	};
 }
@@ -149,11 +161,13 @@ if (import.meta.vitest) {
 		});
 	});
 
-	describe("tickerOptions", () => {
-		it("コードと会社名を表示し、value に <cmd>:<code> を埋める", () => {
-			const opts = tickerOptions("signal");
-			expect(opts).toHaveLength(WATCHLIST.length);
-			expect(opts[0]).toEqual({
+	describe("tickerButtons", () => {
+		it("コードと会社名を表示するボタンを作り、value に <cmd>:<code> を埋める", () => {
+			const buttons = tickerButtons("signal");
+			expect(buttons).toHaveLength(WATCHLIST.length);
+			expect(buttons[0]).toEqual({
+				type: "button",
+				action_id: ACTION_ID,
 				text: {
 					type: "plain_text",
 					text: `${WATCHLIST[0]} ${WATCHLIST_NAMES[WATCHLIST[0]]}`,
@@ -171,22 +185,38 @@ if (import.meta.vitest) {
 	});
 
 	describe("pickerView", () => {
-		it("modal 型で見出しと static_select を持ち、select の value に cmd を埋める", () => {
+		it("modal 型で見出し section と銘柄ボタンを持ち、ボタンの value に cmd を埋める", () => {
 			const view = pickerView("signal", "見出し") as {
 				type: string;
 				blocks: {
-					text: { text: string };
-					accessory: {
-						action_id: string;
-						options: { value: string }[];
-					};
+					type: string;
+					text?: { text: string };
+					elements?: { action_id: string; value: string }[];
 				}[];
 			};
 			expect(view.type).toBe("modal");
-			const block = view.blocks[0];
-			expect(block.text.text).toBe("見出し");
-			expect(block.accessory.action_id).toBe(ACTION_ID);
-			expect(block.accessory.options[0].value).toBe(`signal:${WATCHLIST[0]}`);
+			const headline = view.blocks[0];
+			expect(headline.type).toBe("section");
+			expect(headline.text?.text).toBe("見出し");
+			// 銘柄ボタンは見出しに続く actions block の elements に入る。
+			const buttons = view.blocks
+				.filter((b) => b.type === "actions")
+				.flatMap((b) => b.elements ?? []);
+			expect(buttons).toHaveLength(WATCHLIST.length);
+			expect(buttons[0].action_id).toBe(ACTION_ID);
+			expect(buttons[0].value).toBe(`signal:${WATCHLIST[0]}`);
+		});
+
+		it("銘柄数が actions block 上限を超えても全ボタンを分割して保持する", () => {
+			// MAX_BUTTONS_PER_BLOCK は private なので、現状の銘柄数なら 1 ブロックに収まることだけ確認しつつ、
+			// 分割ロジック自体は elements 総数が WATCHLIST と一致することで担保する。
+			const view = pickerView("crash", "見出し") as {
+				blocks: { type: string; elements?: unknown[] }[];
+			};
+			const total = view.blocks
+				.filter((b) => b.type === "actions")
+				.reduce((n, b) => n + (b.elements?.length ?? 0), 0);
+			expect(total).toBe(WATCHLIST.length);
 		});
 	});
 

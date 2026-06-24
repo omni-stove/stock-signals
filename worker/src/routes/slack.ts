@@ -3,8 +3,9 @@
 // 経路: Slack で `/crash` または `/signal` → POST /slack/command (このルート)。
 //   - 引数あり (`/crash 285A`)         → その銘柄で即 repository_dispatch (該当 event_type)。
 //   - 引数なし / 未知コード (`/crash`) → views.open で銘柄ピッカー modal を開く。modal 内の
-//       static_select を選ぶと block_actions が POST /slack/interact に届き、そこで dispatch +
-//       views.update で結果文へ差し替える (Submit ボタンは持たず、選択した瞬間に発火する)。
+//       銘柄ボタンを押すと block_actions が POST /slack/interact に届き、そこで dispatch +
+//       views.update で結果文へ差し替える (Submit ボタンは持たず、押した瞬間に発火する)。
+//       ボタン平置きはスマホ最適化 (プルダウンの段数・スクロール探しを無くす)。
 //   コマンドの違い (どの解析を撃つか / 文言 / ピッカーの value 接頭辞) は COMMANDS で持つ。
 //   /crash → crash-scenario (暴落プリモーテム)、/signal → signal-judge (buy/sell 判定)。
 //
@@ -190,13 +191,14 @@ slack.post("/slack/interact", async (c) => {
 	const payload = JSON.parse(form.get("payload") ?? "{}") as {
 		type?: string;
 		view?: { id?: string };
-		actions?: { action_id?: string; selected_option?: { value?: string } }[];
+		// 銘柄ピッカーはボタン (button → value を直に持つ)。selected_option は使わない。
+		actions?: { action_id?: string; value?: string }[];
 	};
 
 	if (payload.type !== "block_actions") return c.body(null, 200);
 	const action = payload.actions?.find((a) => a.action_id === ACTION_ID);
 	// value は command 側で埋めた "<cmd>:<code>"。分解してコマンドと銘柄を復元する。
-	const [cmdKey, ticker] = (action?.selected_option?.value ?? "").split(":");
+	const [cmdKey, ticker] = (action?.value ?? "").split(":");
 	const cmd = COMMANDS[cmdKey ?? ""];
 	const viewId = payload.view?.id ?? "";
 	// 不正値: modal をエラー文へ差し替える (閉じずに理由を見せる)。

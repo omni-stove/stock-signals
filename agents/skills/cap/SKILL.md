@@ -5,8 +5,8 @@ description: Commit all current changes and push to the current branch. Use when
 
 # cap
 
-Write a concise commit message from the diff, then run:
+Write a concise commit message from the diff, then run (from the repo root):
 
 ```
-scripts/cap.sh "<message>"
+./scripts/cap.sh "<message>"
 ```

@@ -11,5 +11,5 @@
 - Edit skills at `agents/skills/<name>/SKILL.md` (`.claude/skills/` is a symlink).
 - `scripts/*.sh`: preprocessing called from Actions. `scripts/*.ts`: tools run via `pnpm run`, never called by Actions at runtime.
 - Write tests in-source: an `if (import.meta.vitest) { ... }` block at the end of the module under test.
-- Worker logs: `wrangler tail` is live-only; query D1 / R2 for the past.
+- When something breaks, check the logs first; for the past, query D1 / R2.
 - Local secrets live in `worker/.dev.vars`.

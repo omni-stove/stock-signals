@@ -21,6 +21,9 @@ if git diff --quiet && git diff --cached --quiet && [[ -z "$(git status --porcel
   exit 0
 fi
 
+# commit/push の前に検証を通す。失敗したら set -e で抜ける (commit/push しない)。
+pnpm verify
+
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 git add -A

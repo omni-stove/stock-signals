@@ -16,6 +16,7 @@ pnpm exec run-p -c -s \
   verify:typecheck \
   verify:worker:typecheck \
   verify:check:watchlist \
+  verify:check:mermaid \
   verify:test \
   verify:worker:test \
   verify:test:sh \

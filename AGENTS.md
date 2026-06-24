@@ -1,6 +1,7 @@
 # AGENTS.md
 
 - There is no `CLAUDE.md`; do not create one.
+- In docs/comments/messages, write the current state only; omit history, rationale, and "previously" unless skipping it invites a real bad practice.
 - Never switch branches; work on the current branch only.
 - Never `cd`; run commands from the repo root with a path or filter.
 - Run `pnpm run verify` when done.
@@ -12,4 +13,4 @@
 - `scripts/*.sh`: preprocessing called from Actions. `scripts/*.ts`: tools run via `pnpm run`, never called by Actions at runtime.
 - Write tests in-source: an `if (import.meta.vitest) { ... }` block at the end of the module under test.
 - When something breaks, check the logs first; for the past, query D1 / R2.
-- Local secrets live in `worker/.dev.vars`.
+- Local secrets live in `worker/.dev.vars`; source them into the env before running any `scripts/*.sh` locally.

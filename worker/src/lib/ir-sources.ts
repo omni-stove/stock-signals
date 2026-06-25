@@ -33,7 +33,7 @@ function categoryFromUrl(url: string): string {
 	return "other";
 }
 
-// kioxia ニュース一覧パーサ (scripts/fetch-ir.ts の parseKioxiaList と同じ)。
+// kioxia ニュース一覧パーサ。
 function parseKioxiaList(html: string, baseUrl: string): ListItem[] {
 	const $ = cheerio.load(html);
 	const out: ListItem[] = [];

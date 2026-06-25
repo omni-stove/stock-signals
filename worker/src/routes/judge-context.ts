@@ -3,12 +3,9 @@
 //
 //   GET /judge-context?code=285A&now=<ISO8601 任意>
 //
-// 旧 scripts/judge-context.sh (= /context + /latest×5 の 6 call) + scripts/event-context.sh
-// (= /latest?macro-events の 1 call) を Worker 1 call に集約 (計 7 call → 1)。
 // 取得は D1/R2 直読み (サブリクエストなし)。正規化は lib/judge-context.ts に集約。
 //
-// 出力は旧 judge-context.sh の JSON に event_context (旧 event-context.sh の 1 行) と
-// market_regime (当日の market-check 地合いコール / 無ければ null) を加えたもの:
+// 出力 (event_context は需給イベント1行、market_regime は当日の market-check 地合いコール / 無ければ null):
 //   { ticker, today, market_phase, market_regime, event_context, context_body,
 //     earnings, earnings_result, premarket, daily, prices, margin }
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
@@ -98,7 +95,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.limit(70)
 		.all()) as DailyRow[];
 
-	// latest.ts の prices select と完全に揃える (latest=row全体を旧 judge-context.sh と一致させるため)。
+	// latest.ts の prices select と完全に揃える (row 全体)。
 	const priceRows = (await db(env.DB)
 		.select({
 			ticker: prices.ticker,

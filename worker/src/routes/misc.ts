@@ -69,8 +69,7 @@ misc.get("/test-slack", async (c) => {
 	return c.json({ ok: true, sent: true });
 });
 
-// POST /slack/post : Bot トークンで Slack に投稿する (要 SYNC_TOKEN 認証)。GitHub Actions の
-// signal-judge / crash-scenario / slack-reply skill が webhook 直叩きの代わりにこれを叩く。
+// POST /slack/post : Bot トークンで Slack に投稿する (要 SYNC_TOKEN 認証)。
 // webhook と違い ts が取れるので、解析結果の投稿 (thread_ts 無し) は slack_threads に控え、
 // その ts へのスレッド返信から銘柄を復元できるようにする (返信対話の起点)。
 //   body(JSON): { channel, ticker, kind, text, blocks?, thread_ts? }

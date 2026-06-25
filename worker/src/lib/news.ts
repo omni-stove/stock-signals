@@ -1,14 +1,13 @@
 // Cloudflare Worker: per_ticker ニュース収集 (kabutan 銘柄ニュース)
 //
-// ローカルの scripts/fetch-news.ts の per_ticker 系統を Worker に移植したもの。
-// macro 系統 (marketnews 横断ニュース) は廃止した。地合いは premarket(SOX/日経先物)
-// とマクロイベント(macro_events: FOMC/日銀)で足り、銘柄に紐付かない macro ニュースは判定に使わないため。
+// 扱うのは per_ticker 系統のみ。地合いは premarket(SOX/日経先物) とマクロイベント
+// (macro_events: FOMC/日銀)で足り、銘柄に紐付かない macro ニュースは判定に使わない。
 //
 // watchlist の各銘柄ニュース一覧 (https://kabutan.jp/stock/news?code=<code>) を取り、
 // 銘柄が確定しているので IR と同じ articles テーブル + R2 に保存する。
 //   source     = "kabutan:<code>"   (IR は "ir:<site>:<code>" なので /pull-news が source で振り分け可)
 //   ir_category= NULL                (ニュースにカテゴリは無い)
-// 重複排除は articles.url の PRIMARY KEY + INSERT OR IGNORE (ローカルの seen.txt 相当)。
+// 重複排除は articles.url の PRIMARY KEY + INSERT OR IGNORE。
 //
 // 全ソース UTF-8 (調査済) なので TextDecoder で十分。iconv 不要。
 
@@ -26,7 +25,7 @@ export interface NewsEnv {
 	MIN_INTERVAL_MS: string;
 }
 
-// ローカル config/watchlist.yaml の news_url と対応。
+// 各銘柄のニュース一覧 URL。
 const URL_NEWS = (code: string) => `https://kabutan.jp/stock/news?code=${code}`;
 const SITE = "kabutan";
 
@@ -34,7 +33,6 @@ const SITE = "kabutan";
 const NEWS_LIMIT = 20;
 
 // 株探の銘柄ニュース一覧 (table.s_news_list の各 tr) を抽出。
-// scripts/fetch-news.ts の parseKabutanList と同じ。
 function parseKabutanList(
 	html: string,
 	baseUrl: string,
@@ -57,7 +55,6 @@ function parseKabutanList(
 }
 
 // 株探の記事本文ページから本文を抽出。
-// scripts/fetch-news.ts の parseKabutanArticle と同じ。
 function parseKabutanArticle(html: string): {
 	title: string;
 	body: string;
@@ -251,7 +248,7 @@ if (import.meta.vitest) {
 		it("ページ上部の銘柄名 h2 や株価更新時刻 time は拾わず、記事の datePublished を取る", () => {
 			// kabutan の実構造: 上部に銘柄名 h2 と株価更新時刻 (time.close=現在日) があり、
 			// その後に記事の time.s_news_date[itemprop=datePublished] と h1.pdbt0 が来る。
-			// 旧実装は h2 と time.first() を拾って「銘柄名」「現在日」に化けていた (回帰防止)。
+			// h2 と time.first() ではなく記事側の要素を拾う。
 			const html = [
 				"<h2>6857　アドバンテスト</h2>",
 				'<time class="close" datetime="2026-06-23T09:08+09:00">09:08</time>',

@@ -1,12 +1,10 @@
 // Cloudflare Worker: 時系列データ収集 (prices / daily / fundamentals)
 //
-// ローカルの scripts/fetch-prices.ts / fetch-daily.ts / fetch-fundamentals.ts と
-// 同じ kabutan パーサを Worker に移植したもの。結果は jsonl ではなく D1 テーブル
-// (prices / daily / fundamentals) に INSERT OR IGNORE / REPLACE で冪等に書く。
+// kabutan パーサで取得し、D1 テーブル (prices / daily / fundamentals) に
+// INSERT OR IGNORE / REPLACE で冪等に書く。
 //
-// URL テンプレートはローカル config/sources.yaml の該当部分をここに写している。
 // 銘柄リスト (WATCHLIST / WATCHLIST_NAMES) の出所は watchlist.ts (銘柄定義の唯一の真のソース)。
-// ここで re-export し、Worker 内の各モジュールは従来どおり timeseries から import する。
+// ここで re-export し、Worker 内の各モジュールは timeseries から import する。
 
 import * as cheerio from "cheerio";
 import { db } from "./db";
@@ -20,11 +18,11 @@ export interface TimeseriesEnv {
 	MIN_INTERVAL_MS: string;
 }
 
-// Worker 内の全モジュールは従来どおり timeseries から import する。実体は watchlist.ts。
+// Worker 内の全モジュールは timeseries から import する。実体は watchlist.ts。
 // 同一モジュール内でも使うので import した上で re-export する。
 export { WATCHLIST, WATCHLIST_NAMES };
 
-// ローカル config/sources.yaml の url_template と対応。
+// 取得対象の URL テンプレート (prices / daily / fundamentals)。
 const URL_PRICES = (code: string) => `https://kabutan.jp/stock/?code=${code}`;
 const URL_DAILY = (code: string) =>
 	`https://kabutan.jp/stock/kabuka?code=${code}`;
@@ -63,7 +61,7 @@ type PriceParsed = {
 	pts_time: string | null;
 };
 
-// scripts/fetch-prices.ts の parseKabutanPrice と同じ。
+// 株探の現値ページをパースする。
 function parseKabutanPrice(html: string): PriceParsed {
 	const $ = cheerio.load(html);
 	const block = $(".si_i1_2").first();
@@ -142,7 +140,7 @@ type DailyBar = {
 	volume: number | null;
 };
 
-// scripts/fetch-daily.ts の parseKabutanDaily と同じ (本日表 + 過去表)。
+// 株探の日足 (本日表 + 過去表) をパースする。
 function parseKabutanDaily(html: string): DailyBar[] {
 	const $ = cheerio.load(html);
 	const rows: DailyBar[] = [];
@@ -183,8 +181,8 @@ async function collectDailyOne(
 	const source = `${SITE}:${code}`;
 
 	// (ticker, date) PK の INSERT OR IGNORE で重複日付を自動スキップ。
-	// 1文に全行をまとめると D1/SQLite のバインド変数上限 (100個) を超えるため、旧コードの
-	// env.DB.batch() と同じく「1行=1ステートメント」を db.batch() で一括投入する。
+	// 1文に全行をまとめると D1/SQLite のバインド変数上限 (100個) を超えるため、
+	// 「1行=1ステートメント」を db.batch() で一括投入する。
 	const d = db(env.DB);
 	const stmts = bars.map((b) =>
 		d
@@ -232,7 +230,7 @@ function isForecastRow(label: string): boolean {
 	return /予/.test(label);
 }
 
-// scripts/fetch-fundamentals.ts の parseKabutanFundamentals と同じ。
+// 株探の指標ページをパースする。
 function parseKabutanFundamentals(html: string): FundParsed {
 	const $ = cheerio.load(html);
 
@@ -315,7 +313,7 @@ async function collectFundamentalsOne(
 	const fetched_at = new Date().toISOString();
 	const date = fetched_at.slice(0, 10);
 	// 同日複数回は最新値で上書きしたいので、PK (ticker, date) 衝突時に全カラム上書き
-	// (旧 INSERT OR REPLACE と同じ「最新が勝つ」効果)。
+	// (「最新が勝つ」)。
 	const row = {
 		ticker: code,
 		date,

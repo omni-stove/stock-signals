@@ -1,7 +1,7 @@
 // 「他プレイヤーの強制的な売買フロー」(追証売り=買い方のロスカット / 踏み上げ=売り方のロスカット)
 // を決定論的に検知して D1 forced_liquidation に保存する。LLM を介さない (収集に LLM を置かない方針)。
 //
-// 設計 (docs/forced-flow-strategy.md / 旧 scripts/forced-liquidation.sh と同一思想):
+// 設計 (docs/forced-flow-strategy.md と同一思想):
 //   - 判定は決定論なので judge は不要。eod cron で daily(指標) + margin から算出し D1 に保存。
 //     judge (signal-judge=LLM) には渡さない (daily 指標から自前で読めるので判断材料として冗長)。
 //     post-signal.sh が投稿時に D1 から最新行を引き、stance!=none のとき観測行を本文末尾に貼るだけ。
@@ -35,7 +35,7 @@ import {
 import { daily, forcedLiquidation, margin } from "./schema";
 import { WATCHLIST } from "./timeseries";
 
-// 算出に使う閾値。旧 sh の env 上書き (FL_*) に対応。呼び出し側から差し替え可能にしてテストしやすくする。
+// 算出に使う閾値。呼び出し側から差し替え可能にしてテストしやすくする。
 interface ForcedThresholds {
 	fireAtrX: number; // 着火とみなす |change|/atr_pct の下限 (FL_FIRE_ATR_X=2.0)
 	ratioHi: number; // 買い長とみなす信用倍率の下限 (FL_RATIO_HI=3.0)
@@ -44,6 +44,7 @@ interface ForcedThresholds {
 	rsiLow: number; // 売られすぎ RSI 上限 (FL_RSI_LOW=30)
 	rsiHigh: number; // 買われすぎ RSI 下限 (FL_RSI_HIGH=70)
 	settleDays: number; // 追証発生(=着火)から強制決済までの猶予営業日数 (FL_SETTLE_DAYS=2)
+	fireAbsPct: number; // ATR 比に依らず単独で着火とみなす絶対変動率 (%) (FL_FIRE_ABS_PCT=12)
 }
 
 const DEFAULT_THRESHOLDS: ForcedThresholds = {
@@ -54,6 +55,7 @@ const DEFAULT_THRESHOLDS: ForcedThresholds = {
 	rsiLow: 30,
 	rsiHigh: 70,
 	settleDays: 2,
+	fireAbsPct: 12,
 };
 
 // スコア算出に必要な「最新の確定足」フィールド (指標とは別に渡す当日の生値)。
@@ -65,7 +67,7 @@ interface LatestBar {
 	hasUpperWick: boolean; // 高値から押し戻された (= 踏みを吸収)。close が当日レンジ下半分
 }
 
-// 最新の margin の正規化済み値 (judge-context.sh の margin ブロック相当)。
+// 最新の margin の正規化済み値。
 interface MarginSnapshot {
 	ratio: number | null;
 	longChg: number | null; // WoW 信用買残増減 (千株)。新規高値掴みの積み上がり
@@ -131,15 +133,24 @@ function computeForcedScore(
 		chg != null && atrPct != null && atrPct > 0 ? chg / atrPct : null;
 	const ma25Dev = maDevPct(close, ma25);
 
+	// 絶対%の単独着火: 連日の高ボラで atr_pct が膨張すると ATR 比着火 (atrMove) が機能しなくなり、
+	// 一気に上げてきた直後の急落は close<ma25 もまだ立たない。そこで「ATR 比に依らず絶対 N% 動いたら
+	// 着火」を別建てで足し、fire の上限内 (3) で MA25/ATR 比条件を肩代わりする 2 点を与える。
+	const absFireLong = chg != null && chg <= -thr.fireAbsPct ? 2 : 0;
+	const absFireShort = chg != null && chg >= thr.fireAbsPct ? 2 : 0;
+
 	// ── ロング (買い方の追証=投げ): 下落で着火、MA25 を下抜け、買い長 (ratio高) ──
 	const longFuel =
 		(margin.ratio != null && margin.ratio >= thr.ratioHi ? 1 : 0) +
 		(margin.longChg != null && margin.longChg > 0 ? 1 : 0) +
 		(ma25Dev != null && ma25Dev > -3 ? 1 : 0);
-	const longFire =
+	const longFire = Math.min(
+		3,
 		(atrMove != null && atrMove <= -thr.fireAtrX ? 1 : 0) +
-		(close != null && ma25 != null && close < ma25 ? 1 : 0) +
-		(ind.atr_vs_baseline != null && ind.atr_vs_baseline > 1.2 ? 1 : 0);
+			(close != null && ma25 != null && close < ma25 ? 1 : 0) +
+			(ind.atr_vs_baseline != null && ind.atr_vs_baseline > 1.2 ? 1 : 0) +
+			absFireLong,
+	);
 	const longExhaust =
 		(ind.vol_x_20d != null && ind.vol_x_20d >= thr.volX ? 1 : 0) +
 		(ind.rsi_14 != null && ind.rsi_14 < thr.rsiLow ? 1 : 0) +
@@ -150,10 +161,13 @@ function computeForcedScore(
 		(margin.ratio != null && margin.ratio <= thr.ratioLo ? 1 : 0) +
 		(margin.shortChg != null && margin.shortChg > 0 ? 1 : 0) +
 		(ma25Dev != null && ma25Dev < 3 ? 1 : 0);
-	const shortFire =
+	const shortFire = Math.min(
+		3,
 		(atrMove != null && atrMove >= thr.fireAtrX ? 1 : 0) +
-		(close != null && ma25 != null && close > ma25 ? 1 : 0) +
-		(ind.atr_vs_baseline != null && ind.atr_vs_baseline > 1.2 ? 1 : 0);
+			(close != null && ma25 != null && close > ma25 ? 1 : 0) +
+			(ind.atr_vs_baseline != null && ind.atr_vs_baseline > 1.2 ? 1 : 0) +
+			absFireShort,
+	);
 	const shortExhaust =
 		(ind.vol_x_20d != null && ind.vol_x_20d >= thr.volX ? 1 : 0) +
 		(ind.rsi_14 != null && ind.rsi_14 > thr.rsiHigh ? 1 : 0) +
@@ -192,7 +206,7 @@ function computeForcedScore(
 }
 
 // 最新2本の margin 行 (date DESC) から WoW 増減 (long_chg/short_chg) と最新 ratio を組む。
-// judge-context.sh の margin ブロックと同じ: 最新-前週、千株単位 (floor1 相当は judge 側に任せ生値)。
+// 最新-前週、千株単位 (floor1 相当はかけず生値)。
 function marginSnapshotFromRows(
 	rows: {
 		longQty: number | null;
@@ -222,7 +236,7 @@ async function scoreOne(
 	today: string,
 ): Promise<ForcedScore> {
 	const d = db(env.DB);
-	// daily は ATR baseline 用に多めに 70 本 (judge-context.sh と同じ)。date DESC。
+	// daily は ATR baseline 用に多めに 70 本。date DESC。
 	const dailyRaw = (await d
 		.select({
 			date: daily.date,
@@ -321,7 +335,7 @@ export async function collectForcedLiquidation(
 	return { results };
 }
 
-// in-source tests (本番ビルドでは tree-shake される)。旧 forced-liquidation.bats のケースを移植。
+// in-source tests (本番ビルドでは tree-shake される)。
 // 指標を直接注入してスコアロジックの分岐を検証する (指標算出は indicators.ts のテストが担保)。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
@@ -369,6 +383,37 @@ if (import.meta.vitest) {
 			expect(out.scores.fire).toBe(3);
 			expect(out.settleWarningInDays).toBe(2);
 			expect(out.summary).toContain("投げ警戒");
+		});
+
+		it("long building: 高ボラで ATR 比着火が効かなくても絶対%大暴落なら着火 (285A 2026-06-23 相当)", () => {
+			// 実データ: chg -15.1 / atr_pct 8.7 => atrMove -1.74 (>-2 で ATR 比は不成立)、
+			// close 92290 > ma25 77055 (乖離 +19.7 → 平均建値割れも未成立)、atr_vs_baseline 1.1 (≤1.2)。
+			// 旧ロジックでは fire 0 で none。絶対%着火 (|chg|≥12 → +2) で fire 2 に底上げ。
+			// fuel: ratio 12(≥3) + long_chg<0 + ma25_dev +19.7(> -3) → 2。fire 2 × fuel 2 → building。
+			const out = computeForcedScore(
+				"285A",
+				"2026-06-23",
+				IND({ atr_pct: 8.7, atr_pct_baseline: 7.9, atr_vs_baseline: 1.1 }),
+				BAR({ changePct: -15.1, close: 92290, ma25: 77056 }),
+				M(12, -691, 0),
+			);
+			expect(out.direction).toBe("long");
+			expect(out.stance).toBe("building");
+			expect(out.scores.fire).toBe(2);
+			expect(out.scores.fuel).toBe(2);
+			expect(out.summary).toContain("投げ警戒");
+		});
+
+		it("fire は絶対%着火を足しても上限 3 を超えない", () => {
+			// ATR 比着火 + MA25 下抜け + ボラ拡大 (各1) に絶対%着火(+2)が重なっても clamp で 3。
+			const out = computeForcedScore(
+				"285A",
+				"2026-01-31",
+				IND({ atr_vs_baseline: 1.5 }),
+				BAR({ changePct: -20, close: 80, ma25: 100 }),
+				M(4, 5000, 0),
+			);
+			expect(out.scores.fire).toBe(3);
 		});
 
 		it("long exhausted: 同じ fuel+fire + 出来高急増 + RSI売られすぎ", () => {

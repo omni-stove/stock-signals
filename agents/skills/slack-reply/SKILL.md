@@ -22,6 +22,11 @@ any back-and-forth.
 side, avg_price, qty, pnl_pct }, ...] }`. `status: none` → no holdings. `pnl_pct` is from
 `ref_price`; null when no price was available.
 
+`profile` is the user's own trading preferences, set via `/profile`: `{ status, risk_tolerance,
+hold_style, max_position_pct, note }`. `status: none` → not set. `risk_tolerance` is `low`/`mid`/`high`,
+`hold_style` is `swing`/`day`/`mid_long` (玉の持ち方の基本), `max_position_pct` a per-name size cap (%),
+`note` free-text 特記事項 (e.g. 「玉は分割で建てる」「決算跨ぎは持たない」). Any field may be null.
+
 The other file is the **numeric context** JSON from `/judge-context` (the same the original call
 used, re-fetched fresh — tape/premarket/margin are current, `context_body` is read-only from D1).
 `context_body` is your primary fundamental input; 直近の重大トピック is freshest; null → say
@@ -36,6 +41,8 @@ closed. `<ticker>`'s `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist
   where the data holds, and say which. Don't shift your earlier direction to please them.
 - When holdings are present, weigh the answer against the user's own entry, size, and unrealized
   P&L, not just the generic call. Don't assume holdings beyond what's registered.
+- When `profile` is set, frame the answer to the user's risk tolerance, hold style, size cap, and
+  特記事項. Don't override the data — surface where their preference and the call diverge.
 - Stay consistent with the original `kind`: a signal-judge thread is about the buy/sell direction
   and 水準; a crash-scenario thread is about the crash paths, triggers, and defenses. Don't
   silently switch frames.

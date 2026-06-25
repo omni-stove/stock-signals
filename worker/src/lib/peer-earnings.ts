@@ -1,14 +1,14 @@
 // Cloudflare Worker: 海外SOX系ピア決算カレンダーの収集。
 //
-// 背景: 監視4銘柄 (285A/6857/6920/6981) はいずれも半導体で、SOX (フィラデルフィア半導体指数)
+// 監視4銘柄 (285A/6857/6920/6981) はいずれも半導体で、SOX (フィラデルフィア半導体指数)
 // 経由で海外ピアの決算に強く連動する。MU/NVDA/AMAT 等の大物が決算を出すと、その結果次第で
 // 翌日の SOX が振れ、日本の半導体株がギャップで寄る。これは「いつ起きるか先に分かる」スケジュール型
-// イベントなので、FOMC/日銀 (macro-events.ts) と同じく事前にカレンダー化して judge/crash の
-// prompt に「あとX日でMU決算→SOX変動リスク」を1行で載せたい。
+// イベントなので、FOMC/日銀 (macro-events.ts) と同じく事前にカレンダー化し、judge/crash の
+// prompt に「あとX日でMU決算→SOX変動リスク」を1行で載せる。
 //
 // 保存先は macro_events テーブルを共用する (新テーブルを作らない)。PK = (date, kind) なので、
 // 同じ日に複数社が決算を出すケース (NVDA と AMAT が同日 等) で衝突しないよう、kind に
-// ティッカーを畳んで kind = `peer_earnings:<TICKER>` とする。event-context.sh はこの
+// ティッカーを畳んで kind = `peer_earnings:<TICKER>` とする。event-context.ts はこの
 // プレフィックスで peer 行を見分ける。
 //
 // データソース (Nasdaq, API キー不要。素の fetch だと 403 のためブラウザ風ヘッダで叩く):
@@ -131,7 +131,7 @@ function parseEarningsDate(json: unknown): string | null {
 }
 
 // earnings-surprise の過去4Q (dateReported, fiscalQtrEnd) から次回決算日を推定する。
-// earnings.ts と同じ思想: 直近実績の「次の四半期」= 前年同期の発表日 +1年。
+// 直近実績の「次の四半期」= 前年同期の発表日 +1年。
 // 行は新しい順に並ぶ (rows[0] が直近)。fiscalQtrEnd の月で四半期を識別する。
 function estimateFromSurprise(json: unknown): string | null {
 	const rows = (

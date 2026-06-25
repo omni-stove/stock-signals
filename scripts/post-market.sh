@@ -2,12 +2,12 @@
 # scripts/post-market.sh
 # market-check の地合い判定を Slack に投稿する。
 #
-# 設計 (post-signal.sh と同じ思想):
+# 設計:
 #   - skill 本体に curl を叩かせない。投稿経路 (Worker /slack/post, Bearer 認証, kind 付与,
 #     503=Bot未設定→stdout フォールバック) は決定論的なのでこのスクリプトが持つ。
 #     skill は「ヘッドライン・本文行」を引数で渡すだけ。
-#   - 地合いは銘柄非依存なので ticker は固定で "market"。post-signal.sh が ticker 必須なのと違い
-#     ここでは取らない。blocks は本文行 (改行区切り) を section に詰めるだけ (post-signal.sh と同じ)。
+#   - 地合いは銘柄非依存なので ticker は固定で "market"。blocks は本文行 (改行区切り) を
+#     section に詰めるだけ。
 #
 # 入力:
 #   $1 = body-file  (必須。skill が書いた出力ファイルのパス。1 行目 = headline、
@@ -31,7 +31,7 @@ HEADLINE="$(head -n1 "$BODY_FILE")"
 BODY="$(tail -n +2 "$BODY_FILE")"
 [[ -n "$HEADLINE" ]] || { echo "post-market.sh: empty headline (line 1) in $BODY_FILE" >&2; exit 1; }
 
-# headline + 本文行を section blocks に組み立てる (post-signal.sh と同一)。リテラル "\n" も実改行も
+# headline + 本文行を section blocks に組み立てる。リテラル "\n" も実改行も
 # どちらで渡されても同じになるよう gsub で正規化してから split する。
 PAYLOAD="$(jq -n \
   --arg headline "$HEADLINE" \

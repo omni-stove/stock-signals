@@ -3,13 +3,11 @@
 //
 //   GET /context-input?code=285A
 //
-// 旧 scripts/context-input.sh (= /context + /pull + /pull-news の 3 call) を Worker 1 call に集約。
-// 出力構造・status 値は旧 sh と完全一致させる (context-builder skill が読む):
-//   status:"no-update" … 新規 IR/ニュースが両方 0 → skill は本文も dispatch も触らない
-//   status:"ok"        … 新規あり → skill は items を読んで本文を再生成する
+//   status:"no-update" … 新規 IR/ニュースが両方 0
+//   status:"ok"        … 新規あり (items に新規 IR/ニュース)
 //
 // カーソル未確立 (初回・行なし) は since 省略で backlog を引く。次カーソル = 引いた行の max fetched_at、
-// 0 件の kind は現行カーソルを据え置く (context-builder が POST /context する際にそのまま渡す)。
+// 0 件の kind は現行カーソルを据え置く。
 
 import { eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
@@ -47,7 +45,7 @@ contextInput.get("/context-input", async (c: Context<{ Bindings: Env }>) => {
 	const irRows = await pullArticles(env, code, irCursor, LIMIT, false);
 	const newsRows = await pullArticles(env, code, newsCursor, LIMIT, true);
 
-	// 両方 0 → no-update。skill は本文も dispatch も触らない。
+	// 両方 0 → no-update。
 	if (irRows.length === 0 && newsRows.length === 0) {
 		return c.json({
 			ticker: code,

@@ -14,7 +14,7 @@ import type { Env } from "../lib/env";
 
 export const pull = new Hono<{ Bindings: Env }>();
 
-// ルートハンドラ: クエリを読んで pullArticles を呼び、従来の {ok, code, since, count, rows} で返す。
+// ルートハンドラ: クエリを読んで pullArticles を呼び、{ok, code, since, count, rows} で返す。
 async function handlePull(c: Context<{ Bindings: Env }>, isNews: boolean) {
 	const code = c.req.query("code") || "285A";
 	const since = c.req.query("since") ?? null;

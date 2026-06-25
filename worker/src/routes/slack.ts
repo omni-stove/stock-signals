@@ -22,7 +22,7 @@ import { type Context, Hono } from "hono";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
-import { positions, slackThreads } from "../lib/schema";
+import { positions, slackThreads, userProfiles } from "../lib/schema";
 import { addReaction, openView } from "../lib/slack";
 import {
 	ACTION_ID,
@@ -31,9 +31,13 @@ import {
 	type Command,
 	ephemeral,
 	POSITION_CALLBACK_ID,
+	PROF_RISK_BLOCK,
+	PROFILE_CALLBACK_ID,
 	parsePositionSubmission,
+	parseProfileSubmission,
 	pickerView,
 	positionFormView,
+	profileFormView,
 	type SlackEventEnvelope,
 	shouldHandleReply,
 } from "../lib/slack-command";
@@ -94,6 +98,21 @@ slack.post("/slack/command", async (c) => {
 		if (!opened)
 			return ephemeral(
 				"ポジション登録フォームを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
+			);
+		return c.body(null, 200);
+	}
+
+	// /profile は好み・特記事項の登録 modal を開く (dispatch しない別系統)。view_submission は
+	// /slack/interact が PROFILE_CALLBACK_ID で判別して D1 へ保存する。
+	if (cmdKey === "profile") {
+		const triggerId = form.get("trigger_id") ?? "";
+		const opened = await openView(c.env, {
+			trigger_id: triggerId,
+			view: profileFormView(),
+		});
+		if (!opened)
+			return ephemeral(
+				"好み登録フォームを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
 			);
 		return c.body(null, 200);
 	}
@@ -284,6 +303,54 @@ slack.post("/slack/interact", async (c) => {
 						avgPrice: p.avgPrice,
 						qty: p.qty,
 						updatedAt: new Date().toISOString(),
+					},
+				});
+		}
+		return c.json({ response_action: "clear" });
+	}
+
+	// /profile の登録フォーム submission。全項目任意で upsert する。全項目空 (全 null) は
+	// プロフィール解除として行を削除する。clear で modal を閉じる (position と同様、本文は返せない)。
+	if (payload.view?.callback_id === PROFILE_CALLBACK_ID) {
+		// プロフィールは Slack ユーザー単位。view_submission payload には Slack が必ず user.id を載せる。
+		const userId = payload.user?.id ?? "";
+		const parsed = parseProfileSubmission(payload.view?.state?.values);
+		if (!parsed.ok)
+			return c.json({ response_action: "errors", errors: parsed.errors });
+		if (!userId)
+			return c.json({
+				response_action: "errors",
+				errors: { [PROF_RISK_BLOCK]: "ユーザー情報を取得できませんでした。" },
+			});
+		const p = parsed.value;
+		const drizzle = db(c.env.DB);
+		const allEmpty =
+			p.riskTolerance == null &&
+			p.holdStyle == null &&
+			p.maxPositionPct == null &&
+			p.note == null;
+		if (allEmpty) {
+			await drizzle.delete(userProfiles).where(eq(userProfiles.userId, userId));
+		} else {
+			const now = new Date().toISOString();
+			await drizzle
+				.insert(userProfiles)
+				.values({
+					userId,
+					riskTolerance: p.riskTolerance,
+					holdStyle: p.holdStyle,
+					maxPositionPct: p.maxPositionPct,
+					note: p.note,
+					updatedAt: now,
+				})
+				.onConflictDoUpdate({
+					target: [userProfiles.userId],
+					set: {
+						riskTolerance: p.riskTolerance,
+						holdStyle: p.holdStyle,
+						maxPositionPct: p.maxPositionPct,
+						note: p.note,
+						updatedAt: now,
 					},
 				});
 		}

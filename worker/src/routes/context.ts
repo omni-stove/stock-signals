@@ -2,11 +2,9 @@
 //   GET  /context?code=285A          … その銘柄の本文 + 2カーソル (IR / news) を返す
 //   POST /context (JSON)             … 本文とカーソルを 1 行 upsert する (全面上書き)
 //
-// 従来 GitHub Issue 本文に持っていた living document を D1 (contexts テーブル) に移したもの。
-//   - GET は context-input.sh (本文+カーソルを読んで /pull の since を決める) と、
-//     signal-judge / crash-scenario / slack-reply skill (本文を判断材料に読む) が叩く。
-//   - POST は context-builder skill が本文再生成後に叩く。本文の全面上書きとカーソル前進を
-//     1 回の upsert で原子的に行う (本文だけ進む/カーソルだけ進む を構造的に排除)。
+// 銘柄の living document を D1 (contexts テーブル) に持つ。
+// POST は本文の全面上書きとカーソル前進を 1 回の upsert で原子的に行う
+// (本文だけ進む/カーソルだけ進む を構造的に排除)。
 //
 // カーソル未確立 (初回・行なし) は cursors を null で返す → /pull は since 省略で backlog を引く。
 

@@ -1,5 +1,4 @@
-// Cloudflare Worker: 新規IRの Slack 通知。index.ts から切り出し。
-// 収集側 (ir-collect.ts) が新規記事を集めて notifySlack に渡す。Webhook 未設定なら no-op。
+// Cloudflare Worker: 新規IRの Slack 通知。Webhook 未設定なら no-op。
 
 import type { Env } from "./env";
 
@@ -205,8 +204,7 @@ function categoryHeading(cat: string): string {
 
 // 新規取得したIRを Slack に通知する。Webhook未設定なら何もしない。
 // 1リクエストで全件まとめて送る (1記事1メッセージにすると場中に連投になるため)。
-// 送り先は IR専用の SLACK_IR_WEBHOOK_URL を優先し、無ければ SLACK_WEBHOOK_URL にフォールバック
-// (レポート判定と同一チャンネルに出る従来挙動)。
+// 送り先は IR専用の SLACK_IR_WEBHOOK_URL を優先し、無ければ SLACK_WEBHOOK_URL にフォールバック。
 export async function notifySlack(
 	env: Env,
 	items: NotifyItem[],

@@ -9,10 +9,10 @@ export interface Env {
 	// Slack Incoming Webhook URL (Secret)。未設定なら通知をスキップ (取得自体は動く)。
 	//   設定: npx wrangler secret put SLACK_WEBHOOK_URL
 	//   dev:  worker/.dev.vars に SLACK_WEBHOOK_URL="https://hooks.slack.com/..." と書く
-	//   judge(レポート)通知の送り先でもある (GitHub Actions signal-judge が同じ URL を使う)。
+	//   judge(レポート)通知の送り先でもある。
 	SLACK_WEBHOOK_URL?: string;
 	// 新規IR通知専用の Slack Webhook URL (Secret)。IR をレポートと別チャンネルに出すための分離。
-	// 未設定なら SLACK_WEBHOOK_URL にフォールバック (= 従来どおり同一チャンネル)。
+	// 未設定なら SLACK_WEBHOOK_URL にフォールバック (= 同一チャンネル)。
 	//   設定: npx wrangler secret put SLACK_IR_WEBHOOK_URL
 	SLACK_IR_WEBHOOK_URL?: string;
 	// Slack スラッシュコマンド /crash の署名検証シークレット (Secret)。Slack App の
@@ -31,9 +31,9 @@ export interface Env {
 	// signal-judge/crash-scenario の投稿先 = 返信を受けるチャンネル。Secret でも Var でも可。
 	//   設定: npx wrangler secret put SLACK_REPLY_CHANNEL  (または wrangler.toml の [vars])
 	SLACK_REPLY_CHANNEL?: string;
-	// 銘柄コンテキスト (contexts テーブル) 更新時の通知先 Slack チャンネルID。context-builder が
-	// living document を D1 に書いた後、その全文をここへ投稿する (人間が普段見ない内部ストアの
-	// 覗き窓。解析結果の SLACK_REPLY_CHANNEL とは別チャンネルに分離する)。未設定なら通知をスキップ。
+	// 銘柄コンテキスト (contexts テーブル) 更新時に living document 全文を投稿する Slack チャンネルID。
+	// 人間が普段見ない内部ストアの覗き窓。解析結果の SLACK_REPLY_CHANNEL とは別チャンネルに分離する。
+	// 未設定なら通知をスキップ。
 	//   設定: npx wrangler secret put SLACK_CONTEXT_CHANNEL  (または wrangler.toml の [vars])
 	SLACK_CONTEXT_CHANNEL?: string;
 	// 全エンドポイント (/health を除く) の簡易認証トークン (Secret)。未設定なら認証なし (dev用)。

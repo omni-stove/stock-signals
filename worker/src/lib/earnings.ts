@@ -1,11 +1,8 @@
 // Cloudflare Worker: 次回決算発表予定日の推定
 //
-// ローカルの scripts/fetch-earnings-date.ts を Worker に移植したもの。
 // kabutan finance ページ (https://kabutan.jp/stock/finance?code=<code>) の
-// 四半期業績テーブルから「直近実績の次四半期 = 前年同期の発表日 +1年」で推定する。
-//
-// ローカル版は watchlist.yaml の next_earnings_date を書き換えていたが、Worker は
-// 読み取り専用FSで yaml に書き戻せないため、推定結果は D1 の earnings テーブルに保持する。
+// 四半期業績テーブルから「直近実績の次四半期 = 前年同期の発表日 +1年」で推定し、
+// 結果を D1 の earnings テーブルに保持する。
 // signal-report は /latest?kind=earnings でこれを読み、決算が近ければ confidence をキャップする。
 //
 // 全ソース UTF-8 なので TextDecoder で十分。

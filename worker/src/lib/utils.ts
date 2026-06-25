@@ -1,6 +1,4 @@
-// Cloudflare Worker: 収集モジュール共通のユーティリティ。
-// 各 collect モジュール (news / disclosure / ratings / earnings / premarket /
-// timeseries / index) でコピペされていた hash / sleep / fetchHtml をここに集約する。
+// Cloudflare Worker: 収集モジュール共通のユーティリティ (hash / sleep / fetchHtml)。
 
 // 指定ミリ秒だけ待つ (kabutan への連続アクセス間隔調整に使う)。
 export function sleep(ms: number): Promise<void> {

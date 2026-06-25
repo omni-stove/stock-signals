@@ -5,7 +5,7 @@
 //
 // 写経先は GitHub Actions の choice options だけ。workflow_dispatch.inputs は実行時に
 // 動的生成できず yml に列挙するしかないため、ここで揃える。Worker 側は watchlist.ts を
-// 直接 import するので生成は不要 (以前あった watchlist.gen.ts / config/watchlist.yaml は廃止)。
+// 直接 import するので生成は不要。
 //
 // 生成先:
 //   ① .github/workflows/context-builder.yml      … workflow_dispatch.inputs.ticker.options

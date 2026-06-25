@@ -1,13 +1,11 @@
 // 「今が JST で東証のどのフェーズか」を 1 フィールドで返す純粋関数。
 //
-// 設計の意図:
-//   - これは judge-context.sh / market-context.sh の MARKET_PHASE 算出 (TZ=Asia/Tokyo の
-//     date + 時刻境界) を TS に移したもの。quote_status (prices の鮮度) は「ライブか引け値か」しか
-//     分からず寄り前と引け後を区別できないため、JST の現在時刻と曜日から東証の場立てフェーズを
-//     1 フィールドで skill に渡す。judge-context.bats の market_phase 境界テストと一致させる。
+// 設計:
+//   - quote_status (prices の鮮度) は「ライブか引け値か」しか分からず寄り前と引け後を区別できないため、
+//     JST の現在時刻と曜日から東証の場立てフェーズを 1 フィールドで返す。
 //   - Worker は UTC で動くので、与えられた時刻を JST の暦日・時刻フィールドに正規化してから判定する。
 //
-// フェーズ定義 (judge-context.sh L35-62 と同一):
+// フェーズ定義:
 //   premarket          平日 〜09:00      (寄り前。前夜 NY を消化中)
 //   morning_session    平日 09:00-11:30  (前場ザラ場)
 //   lunch_break        平日 11:30-12:30  (昼休み)
@@ -32,7 +30,7 @@ interface JstNow {
 //   - 省略時はサーバ実時刻 (UTC) を JST に直す。
 //   - タイムゾーン付き ISO8601 (...Z / ...+09:00) は絶対時刻としてパースし JST へ変換する。
 //   - オフセットなしの "YYYY-MM-DD HH:MM" や "YYYY-MM-DDTHH:MM" は **JST のローカル時刻**として
-//     そのまま読む (judge-context.sh の TZ=Asia/Tokyo / bats の NOW 注入と同じ意味付け)。
+//     そのまま読む。
 function toJstNow(now?: string | null, epochNow?: number): JstNow {
 	const hasTz = now != null && /([zZ]|[+-]\d{2}:?\d{2})\s*$/.test(now.trim());
 	// オフセットなしのローカル文字列はフィールドを直接読む (UTC 換算を挟まない)。
@@ -73,8 +71,8 @@ function isoDow(ymd: string): number {
 	return day === 0 ? 7 : day;
 }
 
-// JST の {hm, dow} から東証フェーズを返す。境界は judge-context.sh と同一 (09:00 は morning、
-// 11:30 は lunch、12:30 は afternoon、15:30 は closed)。土日は常に closed。
+// JST の {hm, dow} から東証フェーズを返す。境界は 09:00 は morning、
+// 11:30 は lunch、12:30 は afternoon、15:30 は closed。土日は常に closed。
 function marketPhaseFrom(jst: JstNow): MarketPhase {
 	if (jst.dow >= 6) return "closed";
 	if (jst.hm < 900) return "premarket";
@@ -93,7 +91,7 @@ export function resolveMarketPhase(
 	return { today: jst.date, marketPhase: marketPhaseFrom(jst) };
 }
 
-// in-source tests (vitest.config.ts 参照)。judge-context.bats の market_phase ケースと一致させる。
+// in-source tests。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
 
@@ -152,7 +150,7 @@ if (import.meta.vitest) {
 		});
 	});
 
-	describe("marketPhaseFrom (judge-context.bats と一致)", () => {
+	describe("marketPhaseFrom", () => {
 		const at = (s: string) => marketPhaseFrom(toJstNow(s));
 		it("平日 09:00 前は premarket", () => {
 			expect(at("2026-06-22 08:30")).toBe("premarket");

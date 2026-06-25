@@ -1,8 +1,5 @@
 // 監視銘柄定義 — 銘柄一覧の唯一の真のソース (手で編集する出所)。
-//
-// 以前は config/watchlist.yaml を出所に gen-watchlist.ts が watchlist.gen.ts を生成していたが、
-// Worker は元々この .ts を import するだけなので、真のソースを最初から .ts にして二重持ちを解消した。
-// yaml の利点だった「コメントで判断根拠を残す」は .ts でもそのまま書けるうえ、型チェックが効く。
+// .ts なのでコメントで判断根拠を残せるうえ、型チェックが効く。
 //
 // このファイルから派生する写経先は GitHub Actions の workflow_dispatch choice options だけで、
 // それは `npm run gen:watchlist` (scripts/gen-watchlist.ts) が WATCHLIST から生成する
@@ -22,11 +19,11 @@
 //      - list_url  : パーサが実際に取得・解析する一覧ページ/RSS の URL。ir_url とは目的が違い、
 //          パーサが期待する構造のページを指す。
 //  - news_url    : 銘柄ページのニュース一覧 (Worker がスクレイプし D1 articles に保存)。
-//  - next_earnings_date : 次回決算発表予定日 (YYYY-MM-DD、未確定なら null)。signal-judge が信頼度抑制に使う。
+//  - next_earnings_date : 次回決算発表予定日 (YYYY-MM-DD、未確定なら null)。
 //      公式日程が未開示の時期は前年同期日付ベースの推定値。実行時の値は eod cron が D1 earnings に
 //      自動更新するので手動更新は原則不要 (ここの値は人間向けの記録)。過去日が残ると制約なし扱いになる。
-//  - fair_per    : 「妥当」と判断する予想PER (倍)。scripts/valuation.ts が必要EPS/必要修正率の逆算に使う。
-//      null は逆算スキップ。業種水準や許容PERを踏まえて更新する主観値。
+//  - fair_per    : 「妥当」と判断する予想PER (倍)。null は逆算スキップ。
+//      業種水準や許容PERを踏まえて更新する主観値。
 
 // ticker.ir の形 (site パーサキー + 取得 URL)。外部が使うのは導出後の IrSourceEntry。
 interface IrSource {

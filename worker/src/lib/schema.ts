@@ -1,7 +1,5 @@
 // Drizzle スキーマ定義 (D1 / SQLite)。このファイルがスキーマの唯一の情報源 (single source of truth)。
 //
-// 従来は worker/schema.sql (手書きDDL) と各 lib の `INSERT INTO ...(col, ...)` 文に
-// テーブル形状が二重定義されていたが、schema.sql は廃止し、ここを型 + DDL の単一情報源にした。
 // 各 lib は db.insert(prices).values({...}) のようにカラム名で書く (bind 引数順ミスを型で防ぐ)。
 //
 // スキーマ変更フロー (worker/README.md 参照):
@@ -210,8 +208,8 @@ export const macroEvents = sqliteTable(
 );
 
 // ── contexts (銘柄 living document。PK = ticker) ─────────────────────────────
-// 従来 GitHub Issue 本文に持っていた living document を D1 に移したもの。本文(markdown)と
-// IR/news の2カーソルを同じ行に持ち、本文の全面上書きとカーソル前進を1 upsert で原子的に行う。
+// 銘柄の living document。本文(markdown)と IR/news の2カーソルを同じ行に持ち、
+// 本文の全面上書きとカーソル前進を1 upsert で原子的に行う。
 export const contexts = sqliteTable("contexts", {
 	ticker: text("ticker").primaryKey(),
 	body: text("body").notNull(),
@@ -221,9 +219,8 @@ export const contexts = sqliteTable("contexts", {
 });
 
 // ── market_regime (当日の地合いコール。PK = JST暦日) ─────────────────────────
-// market-check skill が寄り前に出す地合い (リスクオン/中立/リスクオフ + 拾い場/様子見/守り) を
-// 当日分1行で控える。judge-context が当日分を読み、signal-judge / crash-scenario の入力に
-// market_regime として同梱する (前段ゲート)。1日1行 (当日分を upsert で上書き)。
+// 当日の地合い (リスクオン/中立/リスクオフ + 拾い場/様子見/守り) を 1 行で控える。
+// 1日1行 (当日分を upsert で上書き)。
 export const marketRegime = sqliteTable("market_regime", {
 	date: text("date").primaryKey(),
 	regime: text("regime").notNull(),
@@ -256,3 +253,22 @@ export const positions = sqliteTable(
 	},
 	(t) => [primaryKey({ columns: [t.userId, t.ticker, t.account] })],
 );
+
+// ── user_profiles (ユーザーの好み・特記事項。PK = userId) ──────────────────────
+// ユーザーが /profile コマンドで登録する自分の売買スタイル。判定 (signal-judge / crash-scenario)
+// は汎用のまま据え置き、これは positions と同じく slack-reply だけが読む (スレッド返信で「この人の
+// 玉の持ち方・リスク許容度を踏まえて」答えるため)。/thread-context が返信した本人 (userId) の行を
+// 引いて profile ブロックに同梱する。
+//
+// プロフィールは Slack ユーザー単位 (userId = 登録/返信した本人の Slack user_id)、1 ユーザー 1 行。
+// 構造化フィールド (リスク許容度 / 保有スタイル / 最大ポジション率) と自由記述 (note) を併せ持つ。
+// 構造化に収まらない特記事項 (「玉は分割で建てる」「決算跨ぎは持たない」等) は note に書く。
+// 登録は upsert で上書き。全フィールド空を登録したらプロフィール解除として行ごと削除する (routes 側)。
+export const userProfiles = sqliteTable("user_profiles", {
+	userId: text("user_id").primaryKey(), // 登録/返信した本人の Slack user_id (例 U0123ABCD)
+	riskTolerance: text("risk_tolerance"), // low | mid | high (リスク許容度)
+	holdStyle: text("hold_style"), // swing | day | mid_long (保有スタイル = 玉の持ち方の基本)
+	maxPositionPct: real("max_position_pct"), // 1銘柄あたり最大ポジション率 (%)。任意
+	note: text("note"), // 自由記述の特記事項。任意
+	updatedAt: text("updated_at").notNull(), // 最終更新時刻 (ISO8601)
+});

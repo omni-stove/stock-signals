@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # scripts/post-reply.sh
 # Worker /slack/post へのスレッド系投稿 2 種 (crash-scenario の新規ポスト、slack-reply の
-# スレッド返信) をまとめる。post-signal.sh / post-context.sh と同じ思想で skill に curl を
-# 叩かせない。skill は中身を出力ファイルに書くだけで、投稿はこのスクリプト
-# (= workflow の後続ステップ) が行う:
+# スレッド返信) をまとめる。skill には curl を叩かせない。skill は中身を出力ファイルに書くだけで、
+# 投稿はこのスクリプト (= workflow の後続ステップ) が行う:
 #   - crash: ticker / name / scenario+総括 blocks をファイルで (ヘッダと配列長 N は script が組む)。
 #   - reply: thread-json のパスと返信本文ファイル (channel/thread_ts は script が抜く)。
 #

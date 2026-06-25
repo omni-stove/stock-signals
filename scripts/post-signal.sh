@@ -2,7 +2,7 @@
 # scripts/post-signal.sh
 # signal-judge の判定結果を Slack に投稿する。
 #
-# 設計 (event-context.sh / judge-context.sh と同じ思想):
+# 設計:
 #   - skill 本体に curl を叩かせない。投稿経路 (Worker /slack/post, Bearer 認証, kind 付与,
 #     channel 省略, 503=Bot未設定→stdout フォールバック) は決定論的なのでこのスクリプトが持つ。
 #     skill は「方向・水準・本文行」を引数で渡すだけ。

@@ -2,7 +2,7 @@
 # scripts/post-context.sh
 # context-builder が再生成した本文を確定させる後処理 2 つを 1 本にまとめる。
 #
-# 設計 (post-signal.sh / context-input.sh と同じ思想):
+# 設計:
 #   - skill 本体に curl/jq を叩かせない。本文を再生成しファイルに書いた後の
 #     決定論的な後処理 (Worker /context へ upsert、context チャンネルへ全文投稿) は
 #     このスクリプトが持つ。skill は ticker・本文ファイル・次カーソル 2 つを渡すだけ。

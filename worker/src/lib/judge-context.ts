@@ -1,12 +1,10 @@
 // signal-judge / crash-scenario / slack-reply に渡す「数値コンテキスト」を組み立てる純粋関数群。
 //
-// 設計 (旧 scripts/judge-context.sh の jq 正規化を TS に移植):
+// 設計:
 //   - 取得 (D1 read) は routes/judge-context.ts が行い、ここは「生 rows → 正規化済みブロック」の
 //     純粋関数に徹する。指標 (RSI/ATR/レンジ/MA) は indicators.ts を再利用し二重実装しない。
-//   - 出力キーは旧 judge-context.sh と完全一致 (snake_case)。SKILL.md の読み手が依存する。
-//   - 丸めは judge-context.sh の jq と同一: long_chg/short_chg は floor1 (小数第1位切り捨て)。
-//
-// judge-context.bats の earnings/premarket/daily/margin/prices ブロック検証と一致させること。
+//   - 出力キーは snake_case。
+//   - 丸め: long_chg/short_chg は floor1 (小数第1位切り捨て)。
 
 import {
 	computeDailyIndicators,
@@ -15,7 +13,7 @@ import {
 	withMovingAverages,
 } from "./indicators";
 
-// jq の (x*10|floor)/10。負値も下方向に floor。
+// (x*10|floor)/10。負値も下方向に floor。
 function floor1(x: number): number {
 	return Math.floor(x * 10) / 10;
 }
@@ -299,7 +297,7 @@ export function buildPrices(
 	};
 }
 
-// in-source tests (judge-context.bats と一致させる)。
+// in-source tests。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
 

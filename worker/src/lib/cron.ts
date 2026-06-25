@@ -1,4 +1,4 @@
-// Cloudflare Worker: Cron Trigger の配線。index.ts の scheduled() から切り出し。
+// Cloudflare Worker: Cron Trigger の配線。
 // 発火した cron 式を event.cron で判別して取得種別に振り分ける。
 
 import { collectDisclosures } from "./disclosure";
@@ -25,6 +25,8 @@ import { collectTimeseries, WATCHLIST } from "./timeseries";
 //   - prices (場中5分毎):   prices + ニュース速報を収集し、新規ニュースで signal-report 起動。
 //                           さらに JST 12:30 相当スロットでは IR intake も相乗りさせる (昼の専用 cron を
 //                           立てず4個に収めるため。下の isNoonIntakeSlot 参照)。
+//                           JST 15:00 相当の最終スロット (isPreCloseSlot) では大引け前にその時点の材料
+//                           だけで翌日寄り越えの玉を判断するため、intake 同様に全銘柄を無条件判定する。
 //   - eod    (16:00 引け後): daily + fundamentals + 決算予定日推定 をまとめて実行
 const CRON_KIND: Record<string, "intake" | "prices" | "eod"> = {
 	"30 23 * * *": "intake",
@@ -41,6 +43,15 @@ function isNoonIntakeSlot(scheduledTime: number): boolean {
 	return (
 		d.getUTCHours() === 3 && d.getUTCMinutes() >= 30 && d.getUTCMinutes() < 35
 	);
+}
+
+// JST 15:00 (= UTC 06:00) の引け前スロットか。prices ループ (*/5 0-6) の最終スロットで、
+// 大引け (15:30) 前にその時点で判明している材料だけで「翌日の寄り越えに玉を持つか」を判定するため、
+// intake と同じく全銘柄を無条件 signal-update する。06:00 ちょうどに鳴るが遅延を見込んで
+// 06:00〜06:04 の幅で拾う (5分毎発火なので 1日1回に収まる)。
+function isPreCloseSlot(scheduledTime: number): boolean {
+	const d = new Date(scheduledTime);
+	return d.getUTCHours() === 6 && d.getUTCMinutes() < 5;
 }
 
 // JST 曜日 (0=日, 6=土) で土日かを判定する。対象は東証の日本株なので、東証が開かない
@@ -84,8 +95,7 @@ export async function runScheduled(
 	}
 	if (kind === "intake") {
 		// intake cron (8:30/12:30/18:30) では IR とニュースを両方収集する。
-		// 寄り前(8:30)のときだけ先に当日の地合いを D1 に取る。直後に発火する signal-judge が
-		// pre-open weighting で当日 premarket 行を読めるようにするため (失敗しても収集は続行)。
+		// 寄り前(8:30)のときだけ先に当日の地合いを D1 に取る (失敗しても収集は続行)。
 		// premarket が揃った直後に market-check (地合いゲート) も kick する。地合いは前段ゲート
 		// なので、下で発火する個別 signal-judge より「先」に Slack へ出す必要がある。schedule cron
 		// で別に撃つと signal-judge より後ろにずれるため、ここで premarket 取得後すぐに発火する。
@@ -147,7 +157,7 @@ export async function runScheduled(
 		// 取り残されるため。context-builder は新規 0 なら no-update でコンテキストを触らないが、
 		// signal-judge はワークフロー側で無条件に発火する (context-builder.yml の dispatch ステップ)
 		// ので、価格/地合いの変化だけは寄り前/引け後ごとに必ず拾える。
-		// 場中 (prices, 5分毎) は LLM コストを抑えるため従来どおり新規ベース (下の分岐)。
+		// 場中 (prices, 5分毎) は LLM コストを抑えるため新規ベース (下の分岐)。
 		await dispatchSignalUpdate(env, WATCHLIST);
 		return;
 	}
@@ -181,7 +191,14 @@ export async function runScheduled(
 			"fresh:",
 			fresh.join(","),
 		);
-		// 場中は同一銘柄の短時間連発を抑える (デバウンス)。intake (上の分岐) は抑えない。
+		// JST 15:00 の引け前スロットは、新規の有無によらず全銘柄を判定する (intake と同思想)。
+		// 大引け前にその時点で判明している材料だけで「翌日の寄り越えに玉を持つか」を判断するため、
+		// ニュースの薄い銘柄も取り残さない。デバウンスも掛けない (1日1回の確定枠)。
+		if (isPreCloseSlot(event.scheduledTime)) {
+			await dispatchSignalUpdate(env, WATCHLIST);
+			return;
+		}
+		// 場中の通常スロットは同一銘柄の短時間連発を抑える (デバウンス)。intake (上の分岐) は抑えない。
 		await dispatchSignalUpdate(env, fresh, true);
 		return;
 	}
@@ -208,7 +225,6 @@ export async function runScheduled(
 		}
 		// 強制決済スコア (追証売り/踏み上げ) を当日 daily が確定した直後に算出して D1 に保存する。
 		// daily を上で収集済みなので最新足が揃っている。margin は intake で取得済みの最新行を読む。
-		// 夜の signal-judge が /latest?kind=forced で読むだけにするための事前計算。
 		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
 		const fl = await collectForcedLiquidation(env, null).catch((err) => {
 			console.error("forced-liquidation failed:", err);
@@ -245,6 +261,19 @@ if (import.meta.vitest) {
 			expect(isNoonIntakeSlot(ms("2026-06-22T03:29:59Z"))).toBe(false);
 			expect(isNoonIntakeSlot(ms("2026-06-22T03:35:00Z"))).toBe(false);
 			expect(isNoonIntakeSlot(ms("2026-06-22T00:30:00Z"))).toBe(false);
+		});
+	});
+
+	describe("isPreCloseSlot", () => {
+		// JST 15:00 = UTC 06:00。06:00〜06:04 の5分窓で拾う。
+		it("UTC 06:00〜06:04 は引け前スロット", () => {
+			expect(isPreCloseSlot(ms("2026-06-22T06:00:00Z"))).toBe(true);
+			expect(isPreCloseSlot(ms("2026-06-22T06:04:59Z"))).toBe(true);
+		});
+		it("窓の外 (05:59 / 06:05 / 別の時) は引け前スロットでない", () => {
+			expect(isPreCloseSlot(ms("2026-06-22T05:59:59Z"))).toBe(false);
+			expect(isPreCloseSlot(ms("2026-06-22T06:05:00Z"))).toBe(false);
+			expect(isPreCloseSlot(ms("2026-06-22T03:30:00Z"))).toBe(false);
 		});
 	});
 

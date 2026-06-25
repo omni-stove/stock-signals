@@ -1,11 +1,8 @@
 // セクターの地合い (backdrop tone) と、セクター内での各銘柄の相対強弱を計算する純粋関数群。
 //
-// 設計 (旧 scripts/sector.ts の計算ロジックを Worker に移植):
-//   - sector.ts は HTTP (/latest) を叩いて集計していたが、Worker 内では D1 を直読みできるので、
-//     ここは「premarket 1行 + 各銘柄の daily 行配列 → SectorReport[]」の純粋関数に徹する。
+// 設計:
+//   - 「premarket 1行 + 各銘柄の daily 行配列 → SectorReport[]」の純粋関数に徹する。
 //     取得 (D1 read) は routes/market-context.ts が行う。
-//   - 出力構造 (SectorReport) は旧 sector.ts --json と同一。market-check skill が読む。
-//   - 丸め/平均/tone 判定は sector.ts と同一にすること (sector.ts の in-source test を移植)。
 
 import type { WatchlistMeta } from "./watchlist";
 
@@ -207,7 +204,7 @@ export function buildSectors(
 	return reports;
 }
 
-// in-source tests (sector.ts の in-source test を移植 + 集計の振る舞い)。
+// in-source tests (集計の振る舞い)。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
 

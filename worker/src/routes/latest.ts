@@ -34,7 +34,7 @@ latest.get("/", async (c) => {
 	//   最新 n 件を fetched_at (UTC) DESC で返し、us_indexes_json はパースして展開する。
 	//   寄り前ブリーフは通常 n=1 (最新の地合い1件) で読む。暦日は持たない。
 	if (kind === "premarket") {
-		// 出力 JSON のキーは従来の snake_case を維持 (context-builder 等の読み手が依存)。
+		// 出力 JSON のキーは snake_case。
 		const results = await db(env.DB)
 			.select({
 				fetched_at: premarketBackdrop.fetchedAt,
@@ -177,7 +177,7 @@ latest.get("/", async (c) => {
 				fetched_at: margin.fetchedAt,
 			},
 		},
-		// 強制決済スコア (eod cron 算出済み)。signal-judge が judge-context 経由で読む。date DESC 最新1件が通常。
+		// 強制決済スコア (eod cron 算出済み)。date DESC 最新1件が通常。
 		forced: {
 			ticker: forcedLiquidation.ticker,
 			order: forcedLiquidation.date,

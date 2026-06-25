@@ -1,13 +1,11 @@
 // 需給イベント文脈を 1 行に組み立てる純粋関数。signal-judge / crash-scenario / market-check が読む。
 //
-// 設計 (旧 scripts/event-context.sh を TS に移植):
+// 設計:
 //   - SQ は日付計算で出る: 日本SQ=各月 第2金曜 / 米SQ=各月 第3金曜 / 3・6・9・12月=メジャーSQ。
 //     2 窓を出す: 「SQ週 (当日を含む月〜金)」= 建玉調整で歪む / 「SQ明け (翌週)」= 清算が抜け実勢。
 //   - 指数リバランスも日付計算 (MSCI=2/5/8/11月末, FTSE=3/6/9/12月第3金曜, 日経=4/10月初, TOPIX=10月末)。
 //   - FOMC/日銀/海外ピア決算は計算できないので D1 macro_events から渡す (呼び出し側が rows を注入)。
-//   - GNU date 依存 (旧 sh の弱点。macOS で動かない) がここで消える。全て UTC 正午アンカーで日付計算する。
-//
-// 旧 event-context.sh / event-context.bats の出力文言と完全一致させること (skill の解釈が依存)。
+//   - 全て UTC 正午アンカーで日付計算する。
 
 // macro_events の 1 行 (D1 macroEvents の select 結果と同じキー)。
 export interface MacroEventRow {
@@ -215,7 +213,7 @@ function collectMacro(
 	for (const r of rows) {
 		const eff = r.jst_effect_date || r.date;
 		if (!eff) continue;
-		// 日付パース不能はスキップ (旧 sh と同じく無視)。
+		// 日付パース不能はスキップ。
 		if (!/^\d{4}-\d{2}-\d{2}$/.test(eff) || Number.isNaN(d(eff).getTime()))
 			continue;
 		if (eff < today || eff > horizon) continue;
@@ -240,7 +238,7 @@ function collectMacro(
 }
 
 // today (基準日 JST) と macro_events 行から需給イベント1行を組み立てる。
-// 旧 event-context.sh の最終出力と同一: "需給イベント(<today>): <...; 連結>" or "...: 特になし"。
+// 出力形式: "需給イベント(<today>): <...; 連結>" or "...: 特になし"。
 export function buildEventContext(
 	today: string,
 	macroRows: MacroEventRow[] = [],
@@ -253,7 +251,7 @@ export function buildEventContext(
 	return `需給イベント(${today}): ${all.join("; ")}`;
 }
 
-// in-source tests (event-context.bats と一致させる)。
+// in-source tests。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
 

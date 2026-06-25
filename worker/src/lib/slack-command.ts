@@ -201,6 +201,193 @@ export function positionFormView() {
 	};
 }
 
+// ── /profile : ユーザーの好み・特記事項 登録 modal ───────────────────────────
+// /position と同系統 (modal を開いて D1 保存)。玉の持ち方・リスク許容度を登録し、slack-reply が
+// 本人の返信に効かせる。callback_id でこちらの submission だと判別する。
+// 入力: リスク許容度 (select) / 保有スタイル (select) / 最大ポジション率% (数値、任意) /
+//       特記事項メモ (複数行テキスト、任意)。select は「指定なし」も選べる (全項目空 → 行削除)。
+export const PROFILE_CALLBACK_ID = "profile_form";
+// userId 欠落時のエラーをどこかの入力欄に出すため、先頭ブロックだけ routes に公開する。
+export const PROF_RISK_BLOCK = "prof_risk_block";
+const PROF_RISK_ACTION = "prof_risk";
+const PROF_STYLE_BLOCK = "prof_style_block";
+const PROF_STYLE_ACTION = "prof_style";
+const PROF_MAXPCT_BLOCK = "prof_maxpct_block";
+const PROF_MAXPCT_ACTION = "prof_maxpct";
+const PROF_NOTE_BLOCK = "prof_note_block";
+const PROF_NOTE_ACTION = "prof_note";
+
+// select の選択肢。先頭の「指定なし」(value="") を初期値にして、未設定を表せるようにする。
+const RISK_OPTIONS = [
+	{ text: "指定なし", value: "" },
+	{ text: "低 (慎重)", value: "low" },
+	{ text: "中", value: "mid" },
+	{ text: "高 (積極)", value: "high" },
+];
+const STYLE_OPTIONS = [
+	{ text: "指定なし", value: "" },
+	{ text: "スイング", value: "swing" },
+	{ text: "デイトレ", value: "day" },
+	{ text: "中長期", value: "mid_long" },
+];
+
+// 任意入力なので optional: true を付ける (Slack が空を許容する)。
+function optionalSelectInput(
+	blockId: string,
+	actionId: string,
+	label: string,
+	options: { text: string; value: string }[],
+) {
+	return {
+		type: "input",
+		optional: true,
+		block_id: blockId,
+		label: { type: "plain_text", text: label },
+		element: {
+			type: "static_select",
+			action_id: actionId,
+			placeholder: { type: "plain_text", text: label },
+			initial_option: {
+				text: { type: "plain_text", text: options[0].text },
+				value: options[0].value,
+			},
+			options: options.map((o) => ({
+				text: { type: "plain_text", text: o.text },
+				value: o.value,
+			})),
+		},
+	};
+}
+
+function optionalTextInput(
+	blockId: string,
+	actionId: string,
+	label: string,
+	multiline: boolean,
+) {
+	return {
+		type: "input",
+		optional: true,
+		block_id: blockId,
+		label: { type: "plain_text", text: label },
+		element: {
+			type: "plain_text_input",
+			action_id: actionId,
+			multiline,
+			placeholder: { type: "plain_text", text: label },
+		},
+	};
+}
+
+// /profile の入力 modal。全項目任意。Submit を押すと view_submission が /slack/interact に飛び、
+// 保存 (全項目空なら削除) 後に clear で閉じる。
+export function profileFormView() {
+	return {
+		type: "modal",
+		callback_id: PROFILE_CALLBACK_ID,
+		title: { type: "plain_text", text: "好み・特記事項" },
+		submit: { type: "plain_text", text: "保存" },
+		close: { type: "plain_text", text: "閉じる" },
+		blocks: [
+			{
+				type: "section",
+				text: {
+					type: "mrkdwn",
+					text: "売買スタイルの好みを登録します (スレッド返信で考慮されます)。全項目を空にすると登録を解除します。",
+				},
+			},
+			optionalSelectInput(
+				PROF_RISK_BLOCK,
+				PROF_RISK_ACTION,
+				"リスク許容度",
+				RISK_OPTIONS,
+			),
+			optionalSelectInput(
+				PROF_STYLE_BLOCK,
+				PROF_STYLE_ACTION,
+				"保有スタイル (玉の持ち方)",
+				STYLE_OPTIONS,
+			),
+			optionalTextInput(
+				PROF_MAXPCT_BLOCK,
+				PROF_MAXPCT_ACTION,
+				"1銘柄あたり最大ポジション率 (%)",
+				false,
+			),
+			optionalTextInput(
+				PROF_NOTE_BLOCK,
+				PROF_NOTE_ACTION,
+				"特記事項 (例: 玉は分割で建てる / 決算跨ぎは持たない)",
+				true,
+			),
+		],
+	};
+}
+
+// view_submission の state から /profile 入力を取り出して検証する純粋関数。
+// 全項目任意。select の「指定なし」(value="") と空文字は null に正規化する。
+// 最大ポジション率だけ「入力があれば 0<x<=100 の数値」を検証する。
+// 戻り値: 成功は {ok:true, ...正規値 (未指定は null)}、失敗は {ok:false, errors}。
+type ProfileInput = {
+	riskTolerance: string | null;
+	holdStyle: string | null;
+	maxPositionPct: number | null;
+	note: string | null;
+};
+export type ProfileParse =
+	| { ok: true; value: ProfileInput }
+	| { ok: false; errors: Record<string, string> };
+
+export function parseProfileSubmission(
+	state:
+		| Record<
+				string,
+				Record<string, { value?: string; selected_option?: { value?: string } }>
+		  >
+		| undefined,
+): ProfileParse {
+	const errors: Record<string, string> = {};
+	const v = state ?? {};
+
+	// select: 「指定なし」(value="") / 未選択は null。既知値以外も null に倒す (防御)。
+	const riskRaw =
+		v[PROF_RISK_BLOCK]?.[PROF_RISK_ACTION]?.selected_option?.value ?? "";
+	const riskTolerance =
+		riskRaw === "low" || riskRaw === "mid" || riskRaw === "high"
+			? riskRaw
+			: null;
+
+	const styleRaw =
+		v[PROF_STYLE_BLOCK]?.[PROF_STYLE_ACTION]?.selected_option?.value ?? "";
+	const holdStyle =
+		styleRaw === "swing" || styleRaw === "day" || styleRaw === "mid_long"
+			? styleRaw
+			: null;
+
+	// 最大ポジション率: 空なら null。入力があれば 0 より大きく 100 以下の数値。
+	const pctRaw = (
+		v[PROF_MAXPCT_BLOCK]?.[PROF_MAXPCT_ACTION]?.value ?? ""
+	).replace(/[,\s%]/g, "");
+	let maxPositionPct: number | null = null;
+	if (pctRaw !== "") {
+		const n = Number(pctRaw);
+		if (!Number.isFinite(n) || n <= 0 || n > 100)
+			errors[PROF_MAXPCT_BLOCK] =
+				"最大ポジション率は 0 より大きく 100 以下の数値で入力してください (空欄可)。";
+		else maxPositionPct = n;
+	}
+
+	// 特記事項: 空なら null。前後空白を落とす。
+	const noteRaw = (v[PROF_NOTE_BLOCK]?.[PROF_NOTE_ACTION]?.value ?? "").trim();
+	const note = noteRaw === "" ? null : noteRaw;
+
+	if (Object.keys(errors).length > 0) return { ok: false, errors };
+	return {
+		ok: true,
+		value: { riskTolerance, holdStyle, maxPositionPct, note },
+	};
+}
+
 // view_submission の state から /position 入力を取り出して検証する純粋関数。
 // 数値文字列のパース・範囲チェックをここに集約し、routes は保存と応答に専念する。
 // 戻り値: 成功は {ok:true, ...正規値}、失敗は {ok:false, errors} (block_id→メッセージ)。
@@ -431,6 +618,93 @@ if (import.meta.vitest) {
 					event: { ...base.event, type: "reaction_added" },
 				}),
 			).toBe(false);
+		});
+	});
+
+	describe("parseProfileSubmission", () => {
+		const sel = (value: string) => ({ selected_option: { value } });
+		const txt = (value: string) => ({ value });
+
+		it("全項目を正規値で取り出す", () => {
+			const r = parseProfileSubmission({
+				prof_risk_block: { prof_risk: sel("high") },
+				prof_style_block: { prof_style: sel("swing") },
+				prof_maxpct_block: { prof_maxpct: txt("20") },
+				prof_note_block: { prof_note: txt("玉は分割で建てる") },
+			});
+			expect(r).toEqual({
+				ok: true,
+				value: {
+					riskTolerance: "high",
+					holdStyle: "swing",
+					maxPositionPct: 20,
+					note: "玉は分割で建てる",
+				},
+			});
+		});
+
+		it("指定なし (空 value) / 空欄は null に倒す", () => {
+			const r = parseProfileSubmission({
+				prof_risk_block: { prof_risk: sel("") },
+				prof_style_block: { prof_style: sel("") },
+				prof_maxpct_block: { prof_maxpct: txt("") },
+				prof_note_block: { prof_note: txt("   ") },
+			});
+			expect(r).toEqual({
+				ok: true,
+				value: {
+					riskTolerance: null,
+					holdStyle: null,
+					maxPositionPct: null,
+					note: null,
+				},
+			});
+		});
+
+		it("state 自体が空でも全 null で成功する", () => {
+			expect(parseProfileSubmission(undefined)).toEqual({
+				ok: true,
+				value: {
+					riskTolerance: null,
+					holdStyle: null,
+					maxPositionPct: null,
+					note: null,
+				},
+			});
+		});
+
+		it("未知の select 値は null に倒す (防御)", () => {
+			const r = parseProfileSubmission({
+				prof_risk_block: { prof_risk: sel("extreme") },
+			});
+			expect(r.ok).toBe(true);
+			if (r.ok) expect(r.value.riskTolerance).toBeNull();
+		});
+
+		it("% 記号・カンマ付きの率も受ける", () => {
+			const r = parseProfileSubmission({
+				prof_maxpct_block: { prof_maxpct: txt("12.5%") },
+			});
+			expect(r.ok).toBe(true);
+			if (r.ok) expect(r.value.maxPositionPct).toBe(12.5);
+		});
+
+		it("範囲外の率はエラー (0 以下 / 100 超)", () => {
+			const lo = parseProfileSubmission({
+				prof_maxpct_block: { prof_maxpct: txt("0") },
+			});
+			expect(lo.ok).toBe(false);
+			const hi = parseProfileSubmission({
+				prof_maxpct_block: { prof_maxpct: txt("150") },
+			});
+			expect(hi.ok).toBe(false);
+		});
+
+		it("数値でない率はエラー", () => {
+			const r = parseProfileSubmission({
+				prof_maxpct_block: { prof_maxpct: txt("たくさん") },
+			});
+			expect(r.ok).toBe(false);
 		});
 	});
 }

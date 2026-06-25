@@ -4,7 +4,7 @@
 #
 # 実行: pnpm run test:sh
 #
-# 設計 (post-signal.bats と同じ思想):
+# 設計:
 #   - 外部呼び出し (curl) は POST_MARKET_DRYRUN=1 で叩かず、組み立てた payload を
 #     stderr に "POST <url> <json>" 形式で出すだけにする (注入口)。
 #   - run は stderr も $output に混ぜる (2>&1) ので stdout の状態行と stderr の payload を

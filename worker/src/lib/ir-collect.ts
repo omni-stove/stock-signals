@@ -1,4 +1,4 @@
-// Cloudflare Worker: 公式IR (kioxia 等) の収集本体。index.ts から切り出し。
+// Cloudflare Worker: 公式IR (kioxia 等) の収集本体。
 // watchlist 各銘柄の公式IRページを site ごとの専用パーサで取得し、メタ+重複排除キーを
 // D1 (DB) に、本文(または見出し)を R2 (ARTICLES) に保存する。site ごとに一覧の構造が違うので
 // parseList() で振り分ける (ir-sources.ts 参照):
@@ -27,7 +27,7 @@ import { type NotifyItem, notifySlack } from "./slack";
 import { fetchHtml, hash, sleep } from "./utils";
 
 // 全ソース UTF-8 (調査済) なので TextDecoder で十分。iconv 不要。
-// 既に D1 に存在する URL か (= seen.txt 相当の重複排除)。
+// 既に D1 に存在する URL か (重複排除)。
 async function isSeen(env: Env, url: string): Promise<boolean> {
 	const row = await env.DB.prepare(
 		"SELECT 1 FROM articles WHERE url = ? LIMIT 1",

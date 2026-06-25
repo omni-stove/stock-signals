@@ -1,17 +1,11 @@
 // テクニカル指標の決定論的な算出を 1 ヶ所に集約する純粋関数群。
 //
-// 設計の意図:
-//   - これまで指標 (RSI14 / ATR14 系列 / 20日レンジ位置 / 出来高倍率 / MA乖離率) は
-//     scripts/judge-context.sh の jq の中で計算していた。bash/jq に判断材料の算出ロジックが
-//     埋もれると、forced-liquidation など別の読み手から再利用できず二重実装になる。
-//     そこで算出を TS の純粋関数に集約し、judge-context.sh も forced-liquidation も
-//     「同じ TS の計算結果を読むだけ」にできる土台にする。
+// 設計:
+//   - 指標 (RSI14 / ATR14 系列 / 20日レンジ位置 / 出来高倍率 / MA乖離率) を 1 ヶ所に集約し、
+//     judge-context も forced-liquidation も「同じ計算結果を読むだけ」にする。
 //   - ここは D1 にも HTTP にも依存しない。入力は daily 行の配列 (date 昇順/降順どちらも吸収)。
-//     in-source test (vitest.config.ts 参照) で judge-context.sh の jq と数値一致を保証する。
-//   - **judge-context.sh の jq と完全に同じ丸め・同じ近似式**にすること。bash 側は jq の
-//     `(x*10|floor)/10` 等で「小数第1位を切り捨て」、RSI は Wilder ではなく SMA 版、
+//   - 丸め・近似式: `(x*10|floor)/10` 等で「小数第1位を切り捨て」、RSI は Wilder ではなく SMA 版、
 //     ATR baseline は「最新を除いた過去 atr_pct 系列の (長さ/2 floor) 番目」を中央値とする。
-//     この関数群を変えるときは judge-context.sh 側のテスト (judge-context.bats) と突き合わせる。
 
 // daily 1 行が持つ最小フィールド。余分なキーがあっても無視する。
 export interface DailyRow {
@@ -27,7 +21,7 @@ export interface DailyRow {
 	[key: string]: unknown;
 }
 
-// 算出済み指標。judge-context.sh の daily ブロックと同じキー・同じ意味。
+// 算出済み指標。
 export interface DailyIndicators {
 	range_high_20d: number | null;
 	range_low_20d: number | null;
@@ -39,11 +33,11 @@ export interface DailyIndicators {
 	atr_vs_baseline: number | null; // atr_pct / baseline (小数2桁)
 }
 
-// jq の `(x * 10 | floor) / 10` = 小数第1位までを切り捨て (負値は floor なので下方向)。
+// `(x * 10 | floor) / 10` = 小数第1位までを切り捨て (負値は floor なので下方向)。
 function floor1(x: number): number {
 	return Math.floor(x * 10) / 10;
 }
-// jq の `(x * 100 | floor) / 100` = 小数第2位までを切り捨て。
+// `(x * 100 | floor) / 100` = 小数第2位までを切り捨て。
 function floor2(x: number): number {
 	return Math.floor(x * 100) / 100;
 }
@@ -98,7 +92,7 @@ function rsi14(asc: DailyRow[]): number | null {
 
 // ATR14 を atr_pct (= ATR14/その日のclose*100) のローリング系列として作り、
 // 最新値・過去中央値 (baseline)・最新/baseline 比を返す。
-// judge-context.sh と同じく True Range = max(high-low, |high-prevClose|, |low-prevClose|)、
+// True Range = max(high-low, |high-prevClose|, |low-prevClose|)、
 // 14本移動平均、atr_pct は floor1、baseline は「最新を除いた過去系列を sort して (len/2 floor) 番目」。
 function atr(asc: DailyRow[]): {
 	atr_pct: number | null;
@@ -131,7 +125,7 @@ function atr(asc: DailyRow[]): {
 	const atr_pct = atrPctSeries.length
 		? atrPctSeries[atrPctSeries.length - 1]
 		: null;
-	// baseline: 最新を除いた過去系列を昇順 sort し、(length/2 floor) 番目を中央値とする (jq と同一)。
+	// baseline: 最新を除いた過去系列を昇順 sort し、(length/2 floor) 番目を中央値とする。
 	const hist = atrPctSeries
 		.slice(0, -1)
 		.slice()
@@ -193,8 +187,7 @@ export function computeDailyIndicators(
 	};
 }
 
-// in-source tests (本番ビルドでは tree-shake される。vitest.config.ts 参照)。
-// judge-context.sh の jq 計算と数値一致することを、合成系列で検証する。
+// in-source tests (本番ビルドでは tree-shake される)。合成系列で数値を検証する。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
 

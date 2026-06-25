@@ -1,13 +1,11 @@
 // Cloudflare Worker: 寄り前の地合い収集 (premarket backdrop)
 //
-// ローカルの scripts/fetch-premarket.ts (前夜マーケットモード) と同じ kabutan パーサを
-// Worker に移植したもの。米国指数 (SOX/Nasdaq/Dow) と CME日経225先物(ドル建て) を取得し、
-// jsonl ではなく D1 テーブル premarket_backdrop に INSERT OR REPLACE で冪等に書く。
+// kabutan パーサで米国指数 (SOX/Nasdaq/Dow) と CME日経225先物(ドル建て) を取得し、
+// D1 テーブル premarket_backdrop に INSERT OR REPLACE で冪等に書く。
 //
 // 前夜の米国市場 (とくに SOX) と日経先物が寄り付きの方向をかなり決めるため、これを
 // 寄り前 intake cron が取得し、signal-judge の pre-open weighting の入力にする。
 //
-// ※寄前気配 (kehai) は寄りが読めないため移植しない (scripts 側にローカル資産として残置)。
 // ※LLM は使わない。スクレイピング・正規化のみ。kabutan は全ソース UTF-8 なので iconv 不要。
 
 import * as cheerio from "cheerio";
@@ -21,7 +19,7 @@ export interface PremarketEnv {
 	MIN_INTERVAL_MS: string;
 }
 
-// ローカル config/sources.yaml の premarket.us_indexes / nikkei_futures と対応。
+// 取得対象の URL テンプレート (米国指数 / 日経先物)。
 // Worker は読み取り専用 FS で yaml を持てないため、ここに写す (timeseries.ts の WATCHLIST と同じ方針)。
 type UsIndexDef = { key: string; label: string; url: string };
 const US_INDEXES: UsIndexDef[] = [
@@ -51,7 +49,7 @@ type IndexQuote = {
 	jst_time: string | null;
 };
 
-// scripts/fetch-premarket.ts の toNumber と同じ (円/株/% や全角マイナスを吸収)。
+// 数値文字列を number へ (円/株/% や全角マイナスを吸収)。
 function toNumber(raw: string | undefined | null): number | null {
 	if (!raw) return null;
 	const cleaned = raw.replace(/[,円株%＋+()]/g, "").trim();
@@ -188,8 +186,7 @@ export async function collectBackdrop(
 // ── 出力整形 (routes が D1 から引いた premarket 行を読み手向けに整える純粋ロジック) ──
 // 取得 (collectBackdrop) と読み出し整形を同じモジュールに置く。HTTP には依存しない。
 
-// us_indexes_json (JSON 文字列) を配列へパースする。壊れた/欠損 JSON は空配列にフォールバック
-// (寄り前ブリーフの読み手が落ちないように)。latest / market-context が共有する。
+// us_indexes_json (JSON 文字列) を配列へパースする。壊れた/欠損 JSON は空配列にフォールバック。
 export function parseUsIndexes(json: string | null | undefined): unknown {
 	if (!json) return [];
 	try {
@@ -209,8 +206,8 @@ export function expandPremarketRows(
 	});
 }
 
-// /market-context 用 premarket ブロック。market-context.sh と同じ鮮度判定 (age>20h で stale)。
-// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は常に null (旧 sh と一致)。
+// /market-context 用 premarket ブロック。age>20h で stale 判定。
+// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は常に null。
 //   行なし → { status: "unavailable" }
 //   行あり → status (ok/stale) + age_hours + 各指数 + us_indexes
 export function buildPremarketBlock(

@@ -1,9 +1,8 @@
 #!/usr/bin/env bats
 # scripts/post-context.bats
 # post-context.sh の後処理 2 つ (D1 upsert / Slack 投稿) の分岐と、組み立てる JSON
-# ペイロードを検証する。signal-judge の発火は post-context.sh から切り離したので
-# (scripts/dispatch-judge.sh / dispatch-judge.bats を参照)、ここでは「judge を撃たない」
-# ことだけ確認する。
+# ペイロードを検証する。signal-judge の発火は dispatch-judge.sh が担うので、
+# ここでは「judge を撃たない」ことだけ確認する。
 #
 # 実行: pnpm run test:sh
 #

@@ -2,9 +2,7 @@
 //
 //   GET /market-context?now=<ISO8601 任意>
 //
-// 旧 scripts/market-context.sh (= /latest?premarket + event-context.sh(macro-events) +
-// sector.ts(watchlist 分の daily を銘柄数ぶん + premarket)) を Worker 1 call に集約。
-// 取得は D1 直読み。出力構造は旧 sh と完全一致 (market-check skill が読む):
+// 取得は D1 直読み。出力構造:
 //   { asof, market_phase, event_context, premarket, sectors }
 //
 // premarket は judge-context と違い us_indexes / date も載せる (市場全体の地合い判定に使うため)。
@@ -53,7 +51,7 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 	) as PremarketLine["us_indexes"];
 
 	// premarket ブロック (鮮度判定 age>20h で stale)。整形は lib/premarket に集約。
-	// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は常に null (旧 sh と一致)。
+	// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は常に null。
 	const premarketBlock = buildPremarketBlock(pmRow ?? null, epochNow);
 	const premarketLine: PremarketLine | null = pmRow
 		? {

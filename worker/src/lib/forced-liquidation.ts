@@ -350,6 +350,13 @@ if (import.meta.vitest) {
 		atr_pct: 3,
 		atr_pct_baseline: 2,
 		atr_vs_baseline: 1.5,
+		vol_pctile_60d: null,
+		move_per_vol: null,
+		obv_trend: null,
+		ad_trend: null,
+		cmf_20d: null,
+		volume_quality: null,
+		momentum_state: null,
 		...over,
 	});
 	const BAR = (over: Partial<LatestBar> = {}): LatestBar => ({

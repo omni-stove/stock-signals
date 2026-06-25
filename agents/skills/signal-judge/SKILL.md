@@ -55,11 +55,14 @@ noted as thin; nothing materially new weakens the long case. How far the move ha
 tightens, below it supports a deeper `押し目` — never overriding fresh context.
 
 **Overbought works on the 水準, not the direction.** It argues against adding, not against holding;
-strong trends stay overbought for days. It turns toward exiting only once the move has *cracked* —
-high in the range *and* `vol_x_20d` thinning, not merely high — or the driving topic drops out of
-直近の重大トピック. (Read `atr_pct` cross-sectionally against the sector when `atr_pct_baseline` is
-null.) The gate sets how hard 過熱 bites — リスクオン treats a high-in-range as the trend working,
-リスクオフ as the first 投げ — name which regime set the read.
+strong trends stay overbought for days. `daily.momentum_state`: `extended` is the trend still working
+(hold), `cracking` turns toward exiting — as does the driving topic dropping out of 直近の重大トピック.
+(Read `atr_pct` cross-sectionally against the sector when `atr_pct_baseline` is null.) The gate sets
+how hard 過熱 bites — リスクオン treats `extended` as the trend working, リスクオフ as the first 投げ —
+name which regime set the read.
+
+`daily.volume_quality` resolves an 出来薄 up move: `accumulation` (sellers exhausted) holds the 水準,
+`thin` tightens it, `mixed`/`na` lean on 出来薄 neither way. Works the 過熱 read only.
 
 - **Margin (需給) is subordinate** — moves the 水準, never the direction. Contradicts the context →
   keep direction, soften the 水準 one step.

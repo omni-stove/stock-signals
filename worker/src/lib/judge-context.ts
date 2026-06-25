@@ -255,6 +255,13 @@ export function buildDaily(rowsDesc: DailyRow[]): Record<string, unknown> {
 		atr_pct: ind.atr_pct,
 		atr_pct_baseline: ind.atr_pct_baseline,
 		atr_vs_baseline: ind.atr_vs_baseline,
+		vol_pctile_60d: ind.vol_pctile_60d,
+		move_per_vol: ind.move_per_vol,
+		obv_trend: ind.obv_trend,
+		ad_trend: ind.ad_trend,
+		cmf_20d: ind.cmf_20d,
+		volume_quality: ind.volume_quality,
+		momentum_state: ind.momentum_state,
 	};
 }
 

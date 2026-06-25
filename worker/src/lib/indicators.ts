@@ -31,6 +31,24 @@ export interface DailyIndicators {
 	atr_pct: number | null; // 最新の ATR14/close*100 (小数1桁)
 	atr_pct_baseline: number | null; // 最新を除いた過去 atr_pct の中央値 (小数1桁)
 	atr_vs_baseline: number | null; // atr_pct / baseline (小数2桁)
+	// アキュムレーション/薄商い判別系。「上げたのに出来薄」が大口の蓄積か板薄かを読むための素材。
+	vol_pctile_60d: number | null; // 最新出来高の過去60日順位 (0=最小 100=最大、整数。floor)。低い+急騰=売り物枯渇
+	move_per_vol: number | null; // |最新 changePct| / vol_x_20d (小数2桁)。大=薄い板で価格が飛んだ
+	obv_trend: "rising" | "flat" | "falling" | null; // OBV 直近10本の傾き符号。価格に先行 rising=裏で蓄積
+	ad_trend: "rising" | "flat" | "falling" | null; // A/D ライン直近10本の傾き符号。高値引け×出来高で増=資金流入
+	cmf_20d: number | null; // Chaikin Money Flow 20日 (小数2桁)。プラス圏=買い優勢
+	// 上記を集約した判定。上げ+出来薄 (vol_x_20d<1) の局面でのみ accumulation/thin/mixed を出す。
+	// それ以外 (下げ・出来高十分) は na = この読みは無関係。素材が欠ければ insufficient。
+	volume_quality:
+		| "accumulation"
+		| "thin"
+		| "mixed"
+		| "na"
+		| "insufficient"
+		| null;
+	// 過熱が利確に転じる閾値判定。high-in-range かつ出来高が細った = cracked (転換の芽)。
+	// high-in-range だが出来高が伴う = extended (トレンド継続中の過熱)。高値圏でなければ na。
+	momentum_state: "cracking" | "extended" | "na" | null;
 }
 
 // `(x * 10 | floor) / 10` = 小数第1位までを切り捨て (負値は floor なので下方向)。
@@ -139,6 +157,165 @@ function atr(asc: DailyRow[]): {
 	return { atr_pct, atr_pct_baseline, atr_vs_baseline };
 }
 
+// 系列の傾きを符号で返す (最初と最後を比べ、|相対変化| が 1% 未満は flat)。OBV/AD の方向だけを LLM に渡す。
+function trendSign(series: number[]): "rising" | "flat" | "falling" | null {
+	if (series.length < 2) return null;
+	const first = series[0];
+	const last = series[series.length - 1];
+	const denom = Math.abs(first) || Math.abs(last);
+	if (denom === 0)
+		return last > first ? "rising" : last < first ? "falling" : "flat";
+	const rel = (last - first) / denom;
+	if (rel > 0.01) return "rising";
+	if (rel < -0.01) return "falling";
+	return "flat";
+}
+
+// money flow multiplier = ((close-low)-(high-close))/(high-low)。高値引けで +1、安値引けで -1。
+function mfMultiplier(r: DailyRow): number | null {
+	if (r.high == null || r.low == null || r.close == null) return null;
+	const span = r.high - r.low;
+	if (span <= 0) return 0; // 値幅ゼロの日は資金方向を測れない
+	return (r.close - r.low - (r.high - r.close)) / span;
+}
+
+// アキュムレーション系: 出来高分位・値幅/出来高・OBV/AD 傾き・CMF20。
+// asc は date 昇順。出来高や high/low/close が欠ける日は各指標内で個別にスキップする。
+function accumulation(asc: DailyRow[]): {
+	vol_pctile_60d: number | null;
+	move_per_vol: number | null;
+	obv_trend: "rising" | "flat" | "falling" | null;
+	ad_trend: "rising" | "flat" | "falling" | null;
+	cmf_20d: number | null;
+	volume_quality: DailyIndicators["volume_quality"];
+} {
+	const cur = asc[asc.length - 1];
+
+	// 出来高 60日分位: 過去60本 (最新含む) のうち最新がどの順位か。同値以下の本数 / 全体。
+	const vol60 = asc
+		.slice(-60)
+		.map((r) => r.volume)
+		.filter((v): v is number => v != null);
+	const curVol = cur?.volume ?? null;
+	const vol_pctile_60d =
+		curVol != null && vol60.length >= 5
+			? Math.floor(
+					(vol60.filter((v) => v <= curVol).length / vol60.length) * 100,
+				)
+			: null;
+
+	// 値幅あたり出来高: |最新 changePct| / vol_x_20d。vol_x は rangeAndVolume と同じ式で再計算。
+	const volWin = asc
+		.slice(-20)
+		.map((r) => r.volume)
+		.filter((v): v is number => v != null);
+	const avgvol = volWin.length
+		? volWin.reduce((a, b) => a + b, 0) / asc.slice(-20).length
+		: 0;
+	const volX = avgvol > 0 && curVol != null ? curVol / avgvol : null;
+	const chgPct = typeof cur?.changePct === "number" ? cur.changePct : null;
+	const move_per_vol =
+		chgPct != null && volX != null && volX > 0
+			? floor2(Math.abs(chgPct) / volX)
+			: null;
+
+	// OBV: 終値が上げた日は +volume、下げた日は -volume を累積。直近10点の傾き符号。
+	const obv: number[] = [];
+	let acc = 0;
+	for (let i = 1; i < asc.length; i++) {
+		const c = asc[i].close;
+		const p = asc[i - 1].close;
+		const v = asc[i].volume;
+		if (c == null || p == null || v == null) continue;
+		acc += c > p ? v : c < p ? -v : 0;
+		obv.push(acc);
+	}
+	const obv_trend = obv.length >= 2 ? trendSign(obv.slice(-10)) : null;
+
+	// A/D ライン: money flow multiplier × volume を累積。直近10点の傾き符号。
+	const ad: number[] = [];
+	let adAcc = 0;
+	for (const r of asc) {
+		const m = mfMultiplier(r);
+		if (m == null || r.volume == null) continue;
+		adAcc += m * r.volume;
+		ad.push(adAcc);
+	}
+	const ad_trend = ad.length >= 2 ? trendSign(ad.slice(-10)) : null;
+
+	// CMF20: 直近20本の Σ(mfm×volume) / Σ(volume)。プラス圏=買い優勢。
+	const cmfWin = asc.slice(-20);
+	let mfvSum = 0;
+	let vSum = 0;
+	for (const r of cmfWin) {
+		const m = mfMultiplier(r);
+		if (m == null || r.volume == null) continue;
+		mfvSum += m * r.volume;
+		vSum += r.volume;
+	}
+	const cmf_20d = vSum > 0 && cmfWin.length >= 5 ? floor2(mfvSum / vSum) : null;
+
+	const volume_quality = classifyVolumeQuality({
+		chgPct,
+		volX,
+		vol_pctile_60d,
+		obv_trend,
+		ad_trend,
+		cmf_20d,
+	});
+
+	return {
+		vol_pctile_60d,
+		move_per_vol,
+		obv_trend,
+		ad_trend,
+		cmf_20d,
+		volume_quality,
+	};
+}
+
+// 出来薄急騰の質を1ラベルに集約する決定論的分類。上げ+出来薄 (vol_x<1) の局面でのみ判定し、
+// それ以外は na。蓄積 (売り物枯渇かつ資金流入) と薄商い (枯れていない/資金流出) を、
+// vol_pctile_60d・OBV/AD 傾き・CMF の合議で振り分け、整合しなければ mixed。
+function classifyVolumeQuality(x: {
+	chgPct: number | null;
+	volX: number | null;
+	vol_pctile_60d: number | null;
+	obv_trend: "rising" | "flat" | "falling" | null;
+	ad_trend: "rising" | "flat" | "falling" | null;
+	cmf_20d: number | null;
+}): "accumulation" | "thin" | "mixed" | "na" | "insufficient" | null {
+	if (x.chgPct == null || x.volX == null) return null;
+	// 上げ + 出来薄でなければこの読みは無関係。
+	if (x.chgPct <= 0 || x.volX >= 1) return "na";
+	if (x.vol_pctile_60d == null || x.cmf_20d == null) return "insufficient";
+
+	// 各論点に強気 (+1) / 弱気 (-1) / 中立 (0) を振り、多数決。
+	const flow =
+		x.obv_trend === "rising" || x.ad_trend === "rising"
+			? 1
+			: x.obv_trend === "falling" && x.ad_trend === "falling"
+				? -1
+				: 0;
+	const exhaust = x.vol_pctile_60d <= 30 ? 1 : x.vol_pctile_60d >= 60 ? -1 : 0;
+	const cmf = x.cmf_20d > 0.05 ? 1 : x.cmf_20d < -0.05 ? -1 : 0;
+	const net = flow + exhaust + cmf;
+	if (net >= 2) return "accumulation";
+	if (net <= -2) return "thin";
+	return "mixed";
+}
+
+// 過熱が利確に転じる芽を判定する決定論的分類。高値圏 (range_pct≧80) でなければ na。
+// 高値圏かつ出来高が細った (vol_x<1) = cracking、出来高が伴う = extended。
+function classifyMomentumState(
+	range_pct: number | null,
+	vol_x_20d: number | null,
+): "cracking" | "extended" | "na" | null {
+	if (range_pct == null || vol_x_20d == null) return null;
+	if (range_pct < 80) return "na";
+	return vol_x_20d < 1 ? "cracking" : "extended";
+}
+
 // daily 行 (date DESC = 新しい順) に終値の移動平均 ma5/ma25 を付与し、新しい順の最新 n 件を返す。
 // 各日について「その日を含む過去 w 日」の終値平均を出す。期間に満たない古い日は null。
 // /latest の daily 応答 (ma 同梱) と forced-liquidation の eod 算出が同じ MA を共有するためここに置く。
@@ -175,6 +352,7 @@ export function computeDailyIndicators(
 	const asc = toAsc(rows);
 	const rv = rangeAndVolume(asc);
 	const at = atr(asc);
+	const ac = accumulation(asc);
 	return {
 		range_high_20d: rv.range_high_20d,
 		range_low_20d: rv.range_low_20d,
@@ -184,6 +362,13 @@ export function computeDailyIndicators(
 		atr_pct: at.atr_pct,
 		atr_pct_baseline: at.atr_pct_baseline,
 		atr_vs_baseline: at.atr_vs_baseline,
+		vol_pctile_60d: ac.vol_pctile_60d,
+		move_per_vol: ac.move_per_vol,
+		obv_trend: ac.obv_trend,
+		ad_trend: ac.ad_trend,
+		cmf_20d: ac.cmf_20d,
+		volume_quality: ac.volume_quality,
+		momentum_state: classifyMomentumState(rv.range_pct, rv.vol_x_20d),
 	};
 }
 
@@ -288,6 +473,138 @@ if (import.meta.vitest) {
 			expect(JSON.stringify(descInput)).toBe(snapshot);
 			// 降順入力でも昇順正規化して同じ結果になる (range_pct 高い = 最新が高値)
 			expect(out?.range_pct).toBeGreaterThan(80);
+		});
+
+		it("vol_pctile_60d: 最新が最大出来高なら 100、最小なら低い", () => {
+			const closes = Array.from({ length: 30 }, (_, i) => 10 + i);
+			const top = computeDailyIndicators(
+				series(closes, { volume: [...Array(29).fill(1000), 9999] }),
+			);
+			expect(top?.vol_pctile_60d).toBe(100); // 最新が全体で最大 → 全本が <= 自分
+			const bottom = computeDailyIndicators(
+				series(closes, { volume: [...Array(29).fill(1000), 1] }),
+			);
+			// 最新=1 のみが自分以下 → 1/30 = 3.3% → floor 3
+			expect(bottom?.vol_pctile_60d as number).toBeLessThan(10);
+		});
+
+		it("move_per_vol: changePct/vol_x。薄い出来 (vol_x<1) で上げると大きくなる", () => {
+			const closes = Array.from({ length: 20 }, (_, i) => 100 + i);
+			const rows = series(closes, {
+				volume: [...Array(19).fill(2000), 1000], // 最新だけ平均の約半分 → vol_x ~0.5
+			});
+			// 最新日の changePct を +12 に手で付与 (series は changePct を作らないため)
+			rows[rows.length - 1].changePct = 12;
+			const out = computeDailyIndicators(rows);
+			// vol_x ~ 1000/avg。avg=(19*2000+1000)/20=1950 → vol_x=0.51。12/0.51 ≈ 23.5
+			expect(out?.move_per_vol as number).toBeGreaterThan(15);
+		});
+
+		it("obv_trend / ad_trend: 単調上昇 (高値引け) は rising", () => {
+			// close を high 寄りに置く: high=close+0.1, low=close-2 で money flow multiplier > 0。
+			const closes = Array.from({ length: 30 }, (_, i) => 10 + i);
+			const rows = closes.map((c, i) => ({
+				date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+				high: c + 0.1,
+				low: c - 2,
+				close: c,
+				volume: 1000,
+			}));
+			const out = computeDailyIndicators(rows);
+			expect(out?.obv_trend).toBe("rising"); // 連日上げ → OBV 累積増
+			expect(out?.ad_trend).toBe("rising"); // 高値引け → A/D 累積増
+		});
+
+		it("cmf_20d: 高値引け継続はプラス、安値引け継続はマイナス", () => {
+			const closes = Array.from({ length: 25 }, () => 100);
+			const high = closes.map((c, i) => ({
+				date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+				high: c + 0.1, // 高値引け寄り
+				low: c - 4,
+				close: c,
+				volume: 1000,
+			}));
+			expect(computeDailyIndicators(high)?.cmf_20d as number).toBeGreaterThan(
+				0,
+			);
+			const low = closes.map((c, i) => ({
+				date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+				high: c + 4,
+				low: c - 0.1, // 安値引け寄り
+				close: c,
+				volume: 1000,
+			}));
+			expect(computeDailyIndicators(low)?.cmf_20d as number).toBeLessThan(0);
+		});
+
+		describe("volume_quality", () => {
+			// 上げ+出来薄を作る土台: 高値引けで連日上昇、最新日だけ出来高を平均より絞り changePct を付与。
+			const upThin = (
+				lows: number[], // 各日の low (close との差で money flow / cmf の符号を作る)
+				latestVolume: number,
+			): DailyRow[] => {
+				const closes = Array.from({ length: 30 }, (_, i) => 100 + i);
+				const rows: DailyRow[] = closes.map((c, i) => ({
+					date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+					high: c + 0.1,
+					low: c - lows[i % lows.length],
+					close: c,
+					volume: i === closes.length - 1 ? latestVolume : 2000,
+				}));
+				rows[rows.length - 1].changePct = 3; // 上げ
+				return rows;
+			};
+
+			it("売り物枯渇+資金流入 (高値引け・薄商い) は accumulation", () => {
+				// 最新出来高を極端に絞る → vol_x<1 かつ vol_pctile 低い。高値引け継続で OBV/AD rising・CMF+。
+				const out = computeDailyIndicators(upThin([3], 200));
+				expect(out?.volume_quality).toBe("accumulation");
+			});
+
+			it("上げでも出来高十分 (vol_x>=1) なら na", () => {
+				const out = computeDailyIndicators(upThin([3], 5000));
+				expect(out?.volume_quality).toBe("na");
+			});
+
+			it("下げ日は na", () => {
+				const rows = upThin([3], 200);
+				rows[rows.length - 1].changePct = -3;
+				expect(computeDailyIndicators(rows)?.volume_quality).toBe("na");
+			});
+
+			it("changePct/vol_x の素材が無ければ null", () => {
+				// series ヘルパは changePct を付けない → chgPct null。
+				const out = computeDailyIndicators(
+					series(Array.from({ length: 30 }, (_, i) => 100 + i)),
+				);
+				expect(out?.volume_quality).toBeNull();
+			});
+		});
+
+		describe("momentum_state", () => {
+			it("高値圏+出来薄 (最新出来高が平均未満) は cracking", () => {
+				const closes = Array.from({ length: 25 }, (_, i) => 10 + i); // 単調上昇=高値圏
+				const out = computeDailyIndicators(
+					series(closes, { volume: [...Array(24).fill(2000), 500] }), // 最新を絞る
+				);
+				expect(out?.range_pct as number).toBeGreaterThanOrEqual(80);
+				expect(out?.momentum_state).toBe("cracking");
+			});
+
+			it("高値圏+出来高十分は extended", () => {
+				const closes = Array.from({ length: 25 }, (_, i) => 10 + i);
+				const out = computeDailyIndicators(
+					series(closes, { volume: [...Array(24).fill(2000), 6000] }), // 最新が平均超
+				);
+				expect(out?.momentum_state).toBe("extended");
+			});
+
+			it("高値圏でなければ na", () => {
+				const closes = Array.from({ length: 25 }, (_, i) => 40 - i); // 単調下降=安値圏
+				expect(computeDailyIndicators(series(closes))?.momentum_state).toBe(
+					"na",
+				);
+			});
 		});
 	});
 

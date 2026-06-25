@@ -7,6 +7,11 @@ description: For one ticker, fold newly-fetched IR and news into that ticker's *
 
 Regenerate one ticker's *living context* for a SWING-trading horizon (several days to a few weeks). Do not decide buy/sell.
 
+The bar for every line is whether it moves the swing call over the next weeks, not whether it is
+true or on-topic. Carry the judgment-bearing fact, not the catalog entry behind it: drop model
+numbers, spec figures, awards, release dates, person names, and sub-product variant moves. When in
+doubt, cut.
+
 ## Inputs
 
 A `<ticker>` (the symbol this run owns), one input JSON from the Worker `/context-input` endpoint to
@@ -32,13 +37,10 @@ Read the `@<path>` JSON.
 
 ### 3. Read each new item and select what is material to the context
 
-The test for every item is whether it changes how the name should be understood over the
-next weeks. Fold in only what shifts that picture; drop restatements and noise.
-
-What earns a place is a durable fact: a management or capital decision, a move in the
-product lineup or tech roadmap, a structural supply/demand turn that outlives a single
-session, or earnings/guidance against expectations. What never belongs is a buy/sell view,
-the day's tape, or a restatement of something already recorded.
+Keep an item only when it shifts the swing call: a management or capital decision, a generation
+move in the product lineup or roadmap, a structural supply/demand turn that outlives a session, or
+earnings/guidance against expectations. Reduce each to its judgment-bearing fact. Never a buy/sell
+view, the day's tape, or a restatement of something already recorded.
 
 `published_at` governs where a fact lands, not whether it counts. A fresh material fact
 revises both its structural section AND the 直近の重大トピック list; once it is ~30 days
@@ -50,25 +52,27 @@ Securities ratings (`ir_category="rating"`) are the exception: route them to
 
 Rebuild the whole body (not incremental edits), keep the section structure below, and write it to the `body=<path>` file.
 
-Body structure (Japanese; keep these headings stable — signal-judge reads them):
+Body structure (Japanese; keep these headings stable):
 
 ```markdown
 # [<ticker> <name>] 銘柄コンテキスト
 
 ## 事業の骨格
 <rarely-changing structural facts: what the company is, where it sits in the value chain,
- production base, technology lineage>
+ production base, technology lineage. A few lines that tell a continuation from a reversal, not a
+ company profile.>
 
 ## 商品ラインナップ / 技術ロードマップ
-<product generations and roadmap; revise when a generation moves>
+<the current generation and where the next one stands; one line per product line, named by
+ generation and market position only.>
 
 ## 経営判断・資本政策
 <capex / capacity / M&A / alliances / capital policy; accumulate and revise on material events>
 
 ## 直近の重大トピック
-<rolling, newest first. Each line: `- YYYY-MM: <one-line summary> — <その先数週間への効き>`.
- Keep roughly the last ~6–10 entries; push older ones down or prune once their effect is
- absorbed into the structural sections above.>
+<rolling, newest first. Each line: `- YYYY-MM: <one-line summary> — <その先数週間への効き>`, the
+ summary tight enough to stay one line. Keep roughly the last ~6–10 entries; push older ones down or
+ prune once their effect is absorbed into the structural sections above.>
 
 ## 証券会社レーティング
 <newest first: `- YYYY-MM-DD <機関>: <格付> 目標株価 <値> [信頼度: …]`. Keep while in ~12-month

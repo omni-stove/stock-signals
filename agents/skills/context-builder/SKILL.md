@@ -9,8 +9,15 @@ Regenerate one ticker's *living context* for a SWING-trading horizon (several da
 
 The bar for every line is whether it moves the swing call over the next weeks, not whether it is
 true or on-topic. Carry the judgment-bearing fact, not the catalog entry behind it: drop model
-numbers, spec figures, awards, release dates, person names, and sub-product variant moves. When in
-doubt, cut.
+numbers, spec figures, awards, release dates, person names, fund/legal entity names, trademark
+symbols (™/®), and sub-product variant lists. When a section would enumerate variants (e.g. several
+SSD grades, several chip families), collapse them into the single line that carries the call —
+name the market shift, not the SKUs. When in doubt, cut.
+
+One fact lives in exactly one section. If the same event would fit two sections, write it where its
+*lasting* effect belongs and do not restate it elsewhere — a topic line and a structural line must
+not say the same thing. Before writing the body, scan for any fact that appears twice and keep only
+the strongest single placement.
 
 ## Inputs
 
@@ -38,9 +45,10 @@ move in the product lineup or roadmap, a structural supply/demand turn that outl
 earnings/guidance against expectations. Reduce each to its judgment-bearing fact. Never a buy/sell
 view, the day's tape, or a restatement of something already recorded.
 
-`published_at` governs where a fact lands, not whether it counts. A fresh material fact
-revises both its structural section AND the 直近の重大トピック list; once it is ~30 days
-old its lasting part stays in the structural sections and it leaves the topics list.
+`published_at` governs where a fact lands, not whether it counts. A fresh material fact lands in one
+place: the 直近の重大トピック list while its near-term effect is live, then it leaves the list once
+that effect is spent and only its lasting consequence survives — folded into a structural section,
+not duplicated as a topic. Do not carry the same fact as both a topic and a structural line at once.
 Securities ratings (`ir_category="rating"`) are the exception: route them to
 **## 証券会社レーティング** regardless of age, never the topics list.
 
@@ -66,9 +74,9 @@ Body structure (Japanese; keep these headings stable):
 <capex / capacity / M&A / alliances / capital policy; accumulate and revise on material events>
 
 ## 直近の重大トピック
-<rolling, newest first. Each line: `- YYYY-MM: <one-line summary> — <その先数週間への効き>`, the
- summary tight enough to stay one line. Keep roughly the last ~6–10 entries; push older ones down or
- prune once their effect is absorbed into the structural sections above.>
+<rolling, newest first by date. Each line: `- YYYY-MM-DD: <one-line summary> — <その先数週間への効き>`,
+ the summary tight enough to stay one line. Keep roughly the last ~6–10 entries; push older ones down
+ or prune once their effect is absorbed into the structural sections above.>
 
 ## 証券会社レーティング
 <newest first: `- YYYY-MM-DD <機関>: <格付> 目標株価 <値> [信頼度: …]`. Keep while in ~12-month

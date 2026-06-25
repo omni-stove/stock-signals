@@ -28,11 +28,14 @@ hold_style, max_position_pct, note }`. `status: none` → not set. `risk_toleran
 `note` free-text 特記事項 (e.g. 「玉は分割で建てる」「決算跨ぎは持たない」). Any field may be null.
 
 The other file is the **numeric context** JSON from `/judge-context` (the same the original call
-used, re-fetched fresh — tape/premarket/margin are current, `context_body` is read-only from D1).
-`context_body` is your primary fundamental input; 直近の重大トピック is freshest; null → say
-`context: unavailable` and answer on price + backdrop alone. Pair `market_phase` with
-`prices.quote_status` to tell why a `closed` tape is stale — about to open (premarket) vs already
-closed. `<ticker>`'s `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist.ts`.
+used, re-fetched fresh — tape/premarket/margin are current, `context_body` is read-only from D1):
+
+- **`context_body`** is your primary fundamental input; 直近の重大トピック is freshest. Null → say
+  `context: unavailable` and answer on price + backdrop alone.
+- **`ticker_note`**: qualifies the other inputs.
+- Pair **`market_phase`** with `prices.quote_status` to tell why a `closed` tape is stale — about to
+  open (premarket) vs already closed.
+- `<ticker>`'s `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist.ts`.
 
 ## What to do
 

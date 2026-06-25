@@ -14,24 +14,20 @@ Two paths are passed: the numeric context JSON to **read** (Worker `/market-cont
 fetched & normalized), and an `out=<path>` file to **write** your call to. Do not post to Slack; do
 not run any script — write the call to `out` and stop.
 
-What isn't obvious from the JSON fields:
+How to read the fields (what leads, what confirms):
 
-- **`premarket`** is last night's NY tell — the strongest single input pre-open. `sox_change_pct` is
-  the most important field for this semis-heavy watchlist: SOX leads the JP semis at the open. Read
-  `nasdaq_change_pct` / `dow_change_pct` for breadth and `nikkei_futures_price` for the home tape's
-  own gap. `status: stale` → the feed predates last night's NY close; demote it and lean on
-  `sectors` + event. `unavailable` → say so and call on `sectors` + event alone.
-- **`event_context`** is the one-line 需給イベント string (SQ週 / SQ明け / FOMC / 日銀 近接). SQ週 /
-  メジャーSQ → intraday moves as noise, tilt 様子見; near FOMC / 日銀 → lighten 持ち越し. SQ明け is
-  clean. 米メジャーSQ reaches JP only via SOX — discount it.
-- **`sectors`** is how the watchlist itself actually moved. Per sector: `tone` (SOX-derived
-  backdrop), `avg_change_pct` (直近営業日のセクター平均前日比), `avg_ret_5d_pct` (5日のトレンド), and
-  per-name `rel_strength_pct` (relative strength vs sector avg) and `vol_ratio` (出来高の盛り上がり).
-  `status: unavailable` → skip it.
-- **`market_phase`** (JST trading-day position) frames what the numbers mean: `premarket` (pre-open —
-  lead on `premarket`/event, the gap isn't in yet), `morning_session` / `afternoon_session` (場中 —
-  `sectors` is live, read the breadth directly), `closed` (引け後 — react to today's close plus
-  tonight's NY setup). `lunch_break` = morning is in, afternoon pending.
+- **`premarket`** is last night's NY tell — the strongest single input pre-open. `sox_change_pct`
+  leads this semis-heavy watchlist (SOX leads the JP semis at the open); `nasdaq_change_pct` /
+  `dow_change_pct` give breadth, `nikkei_futures_price` the home tape's own gap. `status: stale` →
+  feed predates last night's NY close, demote it; `unavailable` → call on `sectors` + event alone.
+- **`sectors`** is how the watchlist itself moved. Per sector: `tone` (SOX-derived backdrop),
+  `avg_change_pct` (直近営業日のセクター平均前日比), `avg_ret_5d_pct` (5日のトレンド); per-name
+  `rel_strength_pct` (relative strength vs sector avg) and `vol_ratio` (出来高の盛り上がり).
+- **`event_context`**: one-line 需給イベント string (SQ週 / SQ明け / FOMC / 日銀 近接).
+- **`market_phase`** (JST trading-day position) frames what the numbers mean: `premarket` (lead on
+  `premarket`/event, the gap isn't in yet), `morning_session` / `afternoon_session` / `lunch_break`
+  (場中 — `sectors` is live, read breadth directly), `closed` (引け後 — react to today's close plus
+  tonight's NY setup).
 
 ## Forming the call
 

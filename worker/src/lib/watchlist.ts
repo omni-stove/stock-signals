@@ -24,6 +24,9 @@
 //      自動更新するので手動更新は原則不要 (ここの値は人間向けの記録)。過去日が残ると制約なし扱いになる。
 //  - fair_per    : 「妥当」と判断する予想PER (倍)。null は逆算スキップ。
 //      業種水準や許容PERを踏まえて更新する主観値。
+//  - note        : 判定に毎回効かせたい固定注記 (任意)。living context は IR/news で再生成され
+//      密度基準で削られるが、これは人手で据える不変の判断材料 (例「決算先行ピアは MU、時間外が
+//      翌朝の寄りを規定」)。judge-context が当該銘柄分だけ JSON に同梱し signal-judge 等が読む。
 
 // ticker.ir の形 (site パーサキー + 取得 URL)。外部が使うのは導出後の IrSourceEntry。
 interface IrSource {
@@ -43,6 +46,7 @@ export interface Ticker {
 	news_url: string;
 	next_earnings_date: string | null;
 	fair_per: number | null;
+	note?: string;
 }
 
 export const TICKERS: Ticker[] = [
@@ -60,6 +64,8 @@ export const TICKERS: Ticker[] = [
 		next_earnings_date: "2026-08-08",
 		// 半導体メモリ。予想EPS未開示時期は逆算スキップ。市況依存が大きく仮に20倍。
 		fair_per: 20,
+		// 決算先行ピアは MU。MU 決算後の時間外の方向が翌朝の寄りを規定する。
+		note: "決算先行ピアは MU。MU 決算後の時間外の方向が翌朝の寄りを規定する。",
 	},
 	{
 		code: "6857",

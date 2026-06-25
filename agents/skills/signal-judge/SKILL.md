@@ -25,38 +25,43 @@ the line down to wait.
 Two paths are passed: the numeric context JSON to **read**, and an `out=<path>` file to **write**
 your call to. Do not post to Slack; do not run any script — write the call to `out` and stop.
 
-What isn't obvious from the JSON fields:
+How to read the fields (what to lead on, what to ignore):
 
-- **`market_regime`** (top level, object `{ regime, stance, headline }` or null) is today's
-  market-check 地合い gate. Apply it, don't merely weigh it: リスクオフ bars 追い and floors the 損切り
-  (size down, tighten); 中立 grants no boost; リスクオン permits the fuller 水準. When present, name in
-  the body how the gate moved the 水準. Null → judge on the name alone, say nothing about the gate.
-- **`event_context`** is a one-line 需給イベント string (特になし when none). Read it for near-term
-  需給 distortion and binary-event risk.
-- **`context_body` is your primary fundamental input.** 直近の重大トピック is
-  freshest and usually the heart of the call; older structural context tells you whether a move
-  continues or reverses; 証券会社レーティング is a 6–12mo view that corroborates (weight by 発行日 /
-  アップサイド% / 信頼度), never dominates. Null → `context: unavailable`, call on price alone.
-- In `prices`, **ignore `pts_price`** (use `change_pct`/`volume`/`quote_time`/`slot`). `slot` is
-  `premarket` / `regular` / `closing` — the session the snapshot belongs to.
-- `prices.quote_status: closed` → stale tape, demoted to backdrop; `market_phase` (top level, JST
-  trading-day position) says what to lead on instead — `premarket` (pre-open, digesting overnight NY
-  → lead on `premarket`/context) vs `closed` (after close → react to the close + tonight's NY setup).
-- `market_phase: afternoon_session` with a live tape → pre-close call on carrying overnight into
-  tomorrow's open: lead on the live tape, decide on what is known now. Nothing fresh near the close is
-  itself the answer; don't defer the overnight to after-close material.
-- **`premarket`**: lead on `sox_change_pct` (this sector tracks SOX). `nasdaq_change_pct` /
-  `dow_change_pct` / `nikkei_futures_price` are backdrop — read them only to confirm or qualify the
-  SOX read, never as the driver.
+- **`context_body`** carries three layers: 直近の重大トピック (freshest), older structural context,
+  証券会社レーティング (6–12mo, weight by 発行日 / アップサイド% / 信頼度). Null → emit
+  `context: unavailable` and call on price alone.
+- **`market_regime`** (`{ regime, stance, headline }`): apply it, don't merely weigh it.
+- **`event_context`**: one-line 需給イベント string (特になし when none).
+- **`ticker_note`**: qualifies the other inputs, never sets direction.
+- **`prices`**: ignore `pts_price`; use `change_pct`/`volume`/`quote_time`/`slot` (`slot` =
+  `premarket`/`regular`/`closing`). `quote_status: closed` → stale tape, demoted to backdrop.
+- **`market_phase`** (JST trading-day position) says what to lead on: `premarket` → lead on
+  `premarket`/context (digesting overnight NY); `afternoon_session` with a live tape → lead on the
+  live tape, a pre-close call on carrying overnight into tomorrow; `closed` → react to the close +
+  tonight's NY setup.
+- **`premarket`**: lead on `sox_change_pct` (this sector tracks SOX); `nasdaq_change_pct` /
+  `dow_change_pct` / `nikkei_futures_price` are backdrop confirming the SOX read, never the driver.
 - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.
 - `<ticker>`'s `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist.ts`.
 
 ## Forming the call
 
-Fresh corroborating topics (or a just-released earnings/guidance) set the strongest direction; a
-thin single line still picks a side, noted as thin; nothing materially new weakens the case.
+### Primary — sets the direction
 
-Each secondary force shifts the 水準 one step in the stated direction:
+- **`context_body`** is the heart of the call. Fresh corroborating topics in 直近の重大トピック (or a
+  just-released earnings/guidance) set the strongest direction; a thin single line still picks a side,
+  noted as thin; nothing materially new weakens the case. 証券会社レーティング only corroborates.
+
+### Secondary — moves the 水準 only
+
+Name in the body how each force that fired moved the 水準.
+
+**地合い (`market_regime` gate):**
+
+- リスクオフ bars 追い and floors the 損切り (size down, tighten); 中立 grants no boost; リスクオン
+  permits the fuller 水準.
+
+**過熱 (how stretched the move is):**
 
 - **How far the move has run** → tighter (higher buy line, shallower add). `fair_per`: above it
   tightens, below it supports a deeper dip-buy.
@@ -67,16 +72,22 @@ Each secondary force shifts the 水準 one step in the stated direction:
   Read `atr_pct` cross-sectionally against the sector when `atr_pct_baseline` is null.
 - **`daily.volume_quality`** on an 出来薄 up move: `accumulation` holds the 水準, `thin` tightens it,
   `mixed`/`na` lean neither way. Works the 過熱 read only.
-- **Margin (需給)** contradicting the context → soften the 水準 one step.
+
+**需給 (positioning / flow):**
+
+- **Margin** contradicting the context → soften the 水準 one step.
+- **Event context** — SQ週/メジャーSQ unwind distorts the tape (treat the move as noise, fall back to
+  fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX. A near 海外SOX系ピア決算
+  swings SOX next day and reaches this name via the sector — soften one step while pending; the
+  result lands in `premarket.sox_change_pct`.
+
+**イベントリスク (binary events):**
+
 - **Earnings near** is binary-event risk → tighter (smaller size, tighter 損切り); cannot set
   direction. **Just out** (`earnings_result.status: fresh`): `verdict`
   tilts one step — `beat` toward holding/adding, `miss` toward exiting; `inline` and non-`fresh` add
   nothing. Near or just-out, read the price reaction through **## 決算の特色・クセ** (the name may
   move on a metric other than EPS).
-- **Event context** — SQ週/メジャーSQ unwind distorts the tape (treat the move as noise, fall back to
-  fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX. A near 海外SOX系ピア決算
-  swings SOX next day and reaches this name via the sector — soften one step while pending; the
-  result lands in `premarket.sox_change_pct`.
 
 ## Output
 

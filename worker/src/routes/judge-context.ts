@@ -6,7 +6,7 @@
 // 取得は D1/R2 直読み (サブリクエストなし)。正規化は lib/judge-context.ts に集約。
 //
 // 出力 (event_context は需給イベント1行、market_regime は当日の market-check 地合いコール / 無ければ null):
-//   { ticker, today, market_phase, market_regime, event_context, context_body,
+//   { ticker, today, market_phase, market_regime, event_context, ticker_note, context_body,
 //     earnings, earnings_result, premarket, daily, prices, margin }
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
@@ -40,6 +40,7 @@ import {
 	premarketBackdrop,
 	prices,
 } from "../lib/schema";
+import { TICKERS } from "../lib/watchlist";
 
 export const judgeContext = new Hono<{ Bindings: Env }>();
 
@@ -177,6 +178,8 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 				}
 			: null,
 		event_context: buildEventContext(today, macroRows),
+		// 当該銘柄分の固定注記だけ同梱 (watchlist は静的、note 未設定なら null)。
+		ticker_note: TICKERS.find((t) => t.code === code)?.note ?? null,
 		context_body: contextRow?.body ?? null,
 		earnings: buildEarnings(earningsRow?.next_date ?? null, today),
 		earnings_result: buildEarningsResult(fundamentalsRows, today),

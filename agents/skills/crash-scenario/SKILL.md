@@ -39,34 +39,32 @@ earnings/premarket/daily/prices/margin + `context_body` + `event_context`, alrea
 normalized — identical to signal-judge's input), and an `out=<path>` file to **write** the scenario
 blocks to. Do not post to Slack; do not run any script — write the blocks to `out` and stop.
 
-`event_context` is a one-line 需給イベント string (SQ + 指数リバランス + nearby macro/peer; 特になし
-when none).
+**Primary — where the fault lines come from:**
 
-`market_regime` (object `{ regime, stance, headline }` or null) is today's pre-open 地合い call. A
-リスクオフ regime raises the 確度 of the macro / リスクオフ scenarios and shortens their trigger
-horizon; it does not invent 銘柄固有 risk. Null → say nothing about 地合い or the gate's absence.
+- **Living context (`context_body`), read it in full.** Mine it for the *fault lines*, not the bull
+  case: customer concentration, 単一製品依存, 受注の先食い, 設備投資の前倒し, 過去の下方修正パターン,
+  レーティングの強気度. The **直近の重大トピック** list shows what the market is currently pricing — a
+  crash often comes from *that* very topic disappointing. Null → say `context: unavailable` and build
+  scenarios from price + sector backdrop + the generic fault lines for this 業種.
 
-1. **Metadata** — `<ticker>` in `worker/src/lib/watchlist.ts` for `name`/`sector`/`sector_role`/
-   `fair_per`. Treat `fair_per` only as a rough directional hint of richness; never anchor a 想定下落
-   magnitude to a PER-vs-`fair_per` gap. A **バリュエーション剥落** scenario comes from the story
-   cracking, with how far the price has run setting the depth. `sector`/`sector_role`
-   tell you the systematic exposure (semiconductor ⇒ SOX-driven; the role says which part of the
-   cycle hits first).
-2. **Living context (`context_body`) — your primary fundamental input, read it in full.** Mine it
-   for the *fault lines*, not the bull case: customer concentration, 単一製品依存, 受注の先食い,
-   設備投資の前倒し, 過去の下方修正パターン, レーティングの強気度. The
-   **直近の重大トピック** list shows what the market is currently pricing — a crash often comes from
-   *that* very topic disappointing. Null → say `context: unavailable` and build scenarios from price
-   + sector backdrop + the generic fault lines for this 業種.
-3. **Numeric context (`@<path>`)** — each block has a `status`; skip any that's
-   `insufficient`/`stale`/`unavailable`. Key fields: `daily.range_pct`
-   (0 = bottom, 100 = top), `daily.ma_position`,
-   `daily.ma25_dev_pct` / `ma5_dev_pct`, `vol_x_20d`,
-   `earnings.days_to_earnings` (a near print is a scheduled catalyst — its own scenario),
-   `premarket.sox_change_pct`, `margin.ratio` + WoW `long_chg`/`short_chg`.
-   Top-level `market_phase` is the JST trading-day position — `premarket` makes a
-   tonight→open gap-down its own scenario; `closed` hangs the next move on tonight's NY.
-   **Ignore `pts_price`.**
+**Secondary — what raises 確度 or sets the channel, never invents 銘柄固有 risk:**
+
+- **`market_regime`** (`{ regime, stance, headline }`): a リスクオフ regime raises the 確度 of the
+  macro / リスクオフ scenarios and shortens their trigger horizon.
+- **`event_context`**: one-line 需給イベント string (SQ + 指数リバランス + nearby macro/peer; 特になし
+  when none).
+- **`ticker_note`**: qualifies the other inputs, not a scenario of its own.
+- **Metadata** (`<ticker>` in `worker/src/lib/watchlist.ts`: `name`/`sector`/`sector_role`/
+  `fair_per`): treat `fair_per` only as a rough directional hint of richness; never anchor a 想定下落
+  magnitude to a PER-vs-`fair_per` gap. `sector`/`sector_role` set the systematic exposure
+  (semiconductor ⇒ SOX-driven; the role says which part of the cycle hits first).
+- **Numeric context (`@<path>`)** — skip any block whose `status` is `insufficient`/`stale`/
+  `unavailable`; ignore `pts_price`. Key fields: `daily.range_pct` (0 = bottom, 100 = top),
+  `daily.ma_position`, `daily.ma25_dev_pct` / `ma5_dev_pct`, `vol_x_20d`,
+  `earnings.days_to_earnings` (a near print is a scheduled catalyst — its own scenario),
+  `premarket.sox_change_pct`, `margin.ratio` + WoW `long_chg`/`short_chg`. Top-level `market_phase`
+  (JST trading-day position): `premarket` makes a tonight→open gap-down its own scenario; `closed`
+  hangs the next move on tonight's NY.
 
 ## Building the scenarios
 

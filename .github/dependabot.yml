@@ -1,7 +1,13 @@
 version: 2
+registries:
+  npm-public:
+    type: npm-registry
+    url: https://registry.npmjs.org
 updates:
   - package-ecosystem: "npm"
     directory: "/"
+    registries:
+      - npm-public
     schedule:
       interval: "weekly"
     groups:
@@ -11,6 +17,8 @@ updates:
 
   - package-ecosystem: "npm"
     directory: "/worker"
+    registries:
+      - npm-public
     schedule:
       interval: "weekly"
     groups:

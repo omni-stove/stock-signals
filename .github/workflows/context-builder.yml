@@ -77,16 +77,22 @@ jobs:
             echo "::error::unknown ticker: $TICKER"; exit 1
           fi
 
-      # 既存コンテキスト本文 + カーソル以降の新規 IR/ニュースを fetch + 正規化し、1 つの JSON に
       # 入力コンテキスト (既存本文 + 2カーソル以降の新規 IR/ニュース) を Worker /context-input が
       # 1 call で返す。/context 取得・カーソル抽出・新規取得・新規0判定・次カーソル算出は Worker 側
       # (決定論的) で完結し、skill には fetch を叩かせず「新規アイテムの取捨選択と本文の再生成」だけを
       # させる。JSON は本文込みで巨大・特殊文字を含むので prompt に直接埋めず、ファイルに書いて
       # skill にパスを渡す。skill はそのファイルを Read するだけ。status (no-update / ok) で分岐する。
+      #
+      # 当該銘柄の判定メタ (name/fair_per/sector/note) は静的な watchlist.ts から
+      # scripts/watchlist-meta.sh で抜き、ticker_meta として同梱する (skill が watchlist.ts 全体を
+      # 読まずに当該銘柄分だけ受け取れる)。
       - name: Build context input
         run: |
           curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
-            "${WORKER_URL%/}/context-input?code=${TICKER}${FORCE:+&force=1}" > "$RUNNER_TEMP/ctxin.json"
+            "${WORKER_URL%/}/context-input?code=${TICKER}${FORCE:+&force=1}" > "$RUNNER_TEMP/ctxin.raw.json"
+          META="$(bash scripts/watchlist-meta.sh "$TICKER")"
+          jq --argjson meta "$META" '. + {ticker_meta:$meta}' \
+            "$RUNNER_TEMP/ctxin.raw.json" > "$RUNNER_TEMP/ctxin.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}

@@ -14,28 +14,24 @@ doubt, cut.
 
 ## Inputs
 
-A `<ticker>` (the symbol this run owns), one input JSON from the Worker `/context-input` endpoint to
-**read** (the existing context body, the two cursors, and the newly-fetched IR/news pulled since
-each cursor), and two output paths to **write**: `body=<path>` for the regenerated context body and
-`cursors=<path>` for the advanced cursors. Do not post to Slack; do not upsert; do not run any
-script — write the two files and stop.
+A `<ticker>` (the symbol this run owns), one input JSON to **read** (`ticker_meta` with the ticker's
+`name` / `fair_per` / `sector` / `note`; the existing context body; the two cursors; and the
+newly-fetched IR/news pulled since each cursor), and two output paths to **write**: `body=<path>` for
+the regenerated context body and `cursors=<path>` for the advanced cursors. Do not post to Slack; do
+not upsert; do not run any script — write the two files and stop.
 
 ## Steps
 
-### 1. Read the ticker's metadata
+### 1. Read the input JSON and branch on `status`
 
-Read the `<ticker>` entry from `worker/src/lib/watchlist.ts`; take `name` / `fair_per` / `sector`.
-
-### 2. Read the input JSON and branch on `status`
-
-Read the `@<path>` JSON.
+Read the `@<path>` JSON. Take `ticker_meta` for the heading `name` and any judgment context.
 
 - `status: "no-update"` → write neither output file, print `<ticker> ir=0 news=0 (no update)`, exit.
-- `status: "ok"` → continue to step 3.
+- `status: "ok"` → continue to step 2.
 
-`ir_items` are IR (official IR + TDnet + `rating`); `news_items` are per-ticker news. Both are already filtered to since each cursor and ordered oldest-first. Empty `context_body` means first run — build the body from scratch (step 4).
+`ir_items` are IR (official IR + TDnet + `rating`); `news_items` are per-ticker news. Both are already filtered to since each cursor and ordered oldest-first. Empty `context_body` means first run — build the body from scratch (step 3).
 
-### 3. Read each new item and select what is material to the context
+### 2. Read each new item and select what is material to the context
 
 Keep an item only when it shifts the swing call: a management or capital decision, a generation
 move in the product lineup or roadmap, a structural supply/demand turn that outlives a session, or
@@ -48,7 +44,7 @@ old its lasting part stays in the structural sections and it leaves the topics l
 Securities ratings (`ir_category="rating"`) are the exception: route them to
 **## 証券会社レーティング** regardless of age, never the topics list.
 
-### 4. Regenerate the whole body
+### 3. Regenerate the whole body
 
 Rebuild the whole body (not incremental edits), keep the section structure below, and write it to the `body=<path>` file.
 
@@ -87,7 +83,7 @@ Body structure (Japanese; keep these headings stable):
 <latest results vs expectations, current guidance, known next-earnings considerations — facts only>
 ```
 
-### 5. Write the advanced cursors
+### 4. Write the advanced cursors
 
 Write the `cursors=<path>` file: line 1 = `cursors.ir.next` verbatim, line 2 = `cursors.news.next`
 verbatim (empty line if a cursor is null).

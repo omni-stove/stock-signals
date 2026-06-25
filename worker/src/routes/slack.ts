@@ -22,12 +22,14 @@ import { type Context, Hono } from "hono";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
-import { positions, slackThreads, userProfiles } from "../lib/schema";
+import { contexts, positions, slackThreads, userProfiles } from "../lib/schema";
 import { addReaction, openView, postMessage } from "../lib/slack";
 import {
 	ACTION_ID,
 	BLOCK_ID,
 	COMMANDS,
+	CONTEXT_CMD,
+	CONTEXT_PICK,
 	type Command,
 	ephemeral,
 	POSITION_CALLBACK_ID,
@@ -57,6 +59,34 @@ async function fire(
 	return ok ? cmd.fired(ticker) : cmd.failed(ticker);
 }
 
+// /context : その銘柄の living context 本文を D1 から引いて SLACK_CONTEXT_CHANNEL へ全文投稿する
+// (dispatch せず Worker 内で完結)。本人へは ephemeral 文言を返す。command/interact 双方から使う。
+//   - SLACK_CONTEXT_CHANNEL 未設定 → 投稿先が無い旨を返す。
+//   - 行が無い / body 空      → まだコンテキストが無い旨を返す。
+//   - 投稿失敗               → 失敗の旨を返す。
+async function fireContext(env: Env, ticker: string): Promise<string> {
+	const channel = env.SLACK_CONTEXT_CHANNEL;
+	if (!channel)
+		return `${ticker} の context 投稿先が未設定です (SLACK_CONTEXT_CHANNEL を設定してください)。`;
+
+	const row =
+		(await db(env.DB)
+			.select({ body: contexts.body, updatedAt: contexts.updatedAt })
+			.from(contexts)
+			.where(eq(contexts.ticker, ticker))
+			.get()) ?? null;
+	if (!row?.body)
+		return `${ticker} の living context はまだありません (IR/ニュース取得で生成されます)。`;
+
+	const posted = await postMessage(env, {
+		channel,
+		text: `:page_facing_up: *${ticker}* の living context (更新 ${row.updatedAt})\n\n${row.body}`,
+	});
+	return posted
+		? `📄 ${ticker} の living context を context チャンネルへ流しました。`
+		: `${ticker} の context 投稿に失敗しました (SLACK_BOT_TOKEN / chat:write を確認してください)。`;
+}
+
 // 署名検証 + raw body 取得をまとめる。検証 NG なら Response を返す (呼び出し側で early return)。
 async function verified(
 	c: Context<{ Bindings: Env }>,
@@ -76,9 +106,10 @@ async function verified(
 	return { raw };
 }
 
-// POST /slack/command : スラッシュコマンド (/crash, /signal, /position) の受け口。
+// POST /slack/command : スラッシュコマンド (/crash, /signal, /context, /position, /profile) の受け口。
 // form.command (例 "/crash") の先頭 / を外して分岐する。/crash /signal は COMMANDS を引いて
-// 解析を dispatch する。/position は dispatch ではなく保有ポジション登録 modal を開く (別系統)。
+// 解析を dispatch する。/context は D1 の living context を context チャンネルへ流す (dispatch しない別系統)。
+// /position /profile は dispatch ではなく登録 modal を開く (別系統)。
 slack.post("/slack/command", async (c) => {
 	const v = await verified(c);
 	if ("err" in v) return v.err;
@@ -113,6 +144,28 @@ slack.post("/slack/command", async (c) => {
 		if (!opened)
 			return ephemeral(
 				"好み登録フォームを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
+			);
+		return c.body(null, 200);
+	}
+
+	// /context は dispatch せず Worker 内で D1 から本文を引いて context チャンネルへ流す別系統。
+	// 引数が有効な銘柄なら即取得、それ以外は銘柄ピッカー modal を開く (callback_id に context を埋める)。
+	if (cmdKey === CONTEXT_CMD) {
+		const arg = (form.get("text") ?? "").trim().toUpperCase();
+		if (WATCHLIST.includes(arg))
+			return ephemeral(await fireContext(c.env, arg));
+		const triggerId = form.get("trigger_id") ?? "";
+		const headline =
+			arg && !WATCHLIST.includes(arg)
+				? `未対応の銘柄コード: ${arg}。下から選んでください。`
+				: CONTEXT_PICK;
+		const opened = await openView(c.env, {
+			trigger_id: triggerId,
+			view: pickerView(CONTEXT_CMD, headline),
+		});
+		if (!opened)
+			return ephemeral(
+				"銘柄ピッカーを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
 			);
 		return c.body(null, 200);
 	}
@@ -393,10 +446,25 @@ slack.post("/slack/interact", async (c) => {
 
 	// callback_id "<PICKER_CALLBACK_ID>:<cmd>" の cmd 部だけ取り出す。
 	const cmdKey = (payload.view?.callback_id ?? "").split(":")[1] ?? "";
-	const cmd = COMMANDS[cmdKey];
 	const ticker =
 		payload.view?.state?.values?.[BLOCK_ID]?.[ACTION_ID]?.selected_option
 			?.value ?? "";
+
+	// /context は dispatch せず Worker 内で取得して context チャンネルへ流す別系統。
+	// 投稿の成否に関わらず modal は clear で閉じる (結果は context チャンネルで確認する)。
+	if (cmdKey === CONTEXT_CMD) {
+		if (!WATCHLIST.includes(ticker))
+			return c.json({
+				response_action: "errors",
+				errors: {
+					[BLOCK_ID]: "銘柄が取得できませんでした。選び直してください。",
+				},
+			});
+		await fireContext(c.env, ticker);
+		return c.json({ response_action: "clear" });
+	}
+
+	const cmd = COMMANDS[cmdKey];
 
 	// 不正値: 入力欄にエラーを出して modal は閉じない (押し直せるように)。
 	if (!cmd || !WATCHLIST.includes(ticker)) {

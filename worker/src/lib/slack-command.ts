@@ -94,6 +94,14 @@ export function pickerView(cmd: string, headline: string) {
 	};
 }
 
+// ── /context : 銘柄の living context 本文を取得して context チャンネルへ投稿 ──
+// /signal /crash と同じ銘柄ピッカーを使うが、dispatch ではなく Worker 内で GET /context して
+// SLACK_CONTEXT_CHANNEL へ全文を流す (update 通知と同じ覗き窓に集約する)。pickerView の
+// callback_id 接頭辞を COMMANDS とは別にして、interact 側で /context の submission だと判別する。
+export const CONTEXT_CMD = "context";
+export const CONTEXT_PICK =
+	"living context を取得する銘柄を選んでください (結果は context チャンネルに流れます)。";
+
 // ── /position : ユーザーの保有ポジション登録 modal ──────────────────────────
 // /signal /crash は「銘柄を選んで dispatch」だが /position は「建玉を入力して D1 保存」なので
 // COMMANDS とは別系統。modal の callback_id でこちらの submission だと判別する。

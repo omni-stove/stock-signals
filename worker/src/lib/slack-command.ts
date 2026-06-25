@@ -218,14 +218,18 @@ const PROF_NOTE_BLOCK = "prof_note_block";
 const PROF_NOTE_ACTION = "prof_note";
 
 // select の選択肢。先頭の「指定なし」(value="") を初期値にして、未設定を表せるようにする。
+// Slack の static_select は option/initial_option の value に空文字を許さない
+// (views.open が invalid_arguments で落ちる)。「指定なし」は sentinel 値にし、
+// parseProfileSubmission のホワイトリスト判定で null に倒す。
+const NONE = "__none__";
 const RISK_OPTIONS = [
-	{ text: "指定なし", value: "" },
+	{ text: "指定なし", value: NONE },
 	{ text: "低 (慎重)", value: "low" },
 	{ text: "中", value: "mid" },
 	{ text: "高 (積極)", value: "high" },
 ];
 const STYLE_OPTIONS = [
-	{ text: "指定なし", value: "" },
+	{ text: "指定なし", value: NONE },
 	{ text: "スイング", value: "swing" },
 	{ text: "デイトレ", value: "day" },
 	{ text: "中長期", value: "mid_long" },
@@ -349,7 +353,7 @@ export function parseProfileSubmission(
 	const errors: Record<string, string> = {};
 	const v = state ?? {};
 
-	// select: 「指定なし」(value="") / 未選択は null。既知値以外も null に倒す (防御)。
+	// select: 「指定なし」(sentinel) / 未選択は null。既知値以外も null に倒す (防御)。
 	const riskRaw =
 		v[PROF_RISK_BLOCK]?.[PROF_RISK_ACTION]?.selected_option?.value ?? "";
 	const riskTolerance =

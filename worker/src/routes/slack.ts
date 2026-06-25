@@ -23,7 +23,7 @@ import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
 import { positions, slackThreads, userProfiles } from "../lib/schema";
-import { addReaction, openView } from "../lib/slack";
+import { addReaction, openView, postMessage } from "../lib/slack";
 import {
 	ACTION_ID,
 	BLOCK_ID,
@@ -306,6 +306,15 @@ slack.post("/slack/interact", async (c) => {
 					},
 				});
 		}
+		// 登録結果を本人に DM 通知 (view_submission の応答に本文は載せられないため)。
+		// channel に user_id を渡すと chat.postMessage が DM チャンネルを開いて送る。best-effort。
+		const accountLabel = p.account === "cash" ? "現物" : "信用";
+		const sideLabel = p.side === "long" ? "買い建て" : "売り建て";
+		const posText =
+			p.qty === 0
+				? `:white_check_mark: ポジションを手仕舞いしました\n*${p.ticker}* / ${accountLabel}`
+				: `:white_check_mark: ポジションを登録しました\n*${p.ticker}* / ${accountLabel} / ${sideLabel}\n平均建値 ${p.avgPrice} 円 × ${p.qty} 株`;
+		await postMessage(c.env, { channel: userId, text: posText });
 		return c.json({ response_action: "clear" });
 	}
 
@@ -354,6 +363,31 @@ slack.post("/slack/interact", async (c) => {
 					},
 				});
 		}
+		// 登録結果を本人に DM 通知 (position と同様、view_submission の応答に本文は載せられないため)。
+		let profText: string;
+		if (allEmpty) {
+			profText = ":white_check_mark: 好み・特記事項の登録を解除しました";
+		} else {
+			const riskLabel =
+				p.riskTolerance == null
+					? "指定なし"
+					: { low: "低 (慎重)", mid: "中", high: "高 (積極)" }[p.riskTolerance];
+			const styleLabel =
+				p.holdStyle == null
+					? "指定なし"
+					: { swing: "スイング", day: "デイトレ", mid_long: "中長期" }[
+							p.holdStyle
+						];
+			const lines = [
+				":white_check_mark: 好み・特記事項を登録しました",
+				`リスク許容度: ${riskLabel}`,
+				`保有スタイル: ${styleLabel}`,
+				`最大ポジション率: ${p.maxPositionPct == null ? "指定なし" : `${p.maxPositionPct}%`}`,
+			];
+			if (p.note != null) lines.push(`特記事項: ${p.note}`);
+			profText = lines.join("\n");
+		}
+		await postMessage(c.env, { channel: userId, text: profText });
 		return c.json({ response_action: "clear" });
 	}
 

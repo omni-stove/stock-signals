@@ -24,6 +24,8 @@ const LIMIT = 20;
 contextInput.get("/context-input", async (c: Context<{ Bindings: Env }>) => {
 	const env = c.env;
 	const code = c.req.query("code") || "285A";
+	// force=1: 新規ゼロでも既存 body を返し再生成させる (手動検証用)。カーソルは据え置き。
+	const force = c.req.query("force") === "1";
 
 	// 既存コンテキスト本文 + 2カーソル。行が無ければ初回扱い (body 空・カーソル null)。
 	const row = await db(env.DB)
@@ -45,8 +47,8 @@ contextInput.get("/context-input", async (c: Context<{ Bindings: Env }>) => {
 	const irRows = await pullArticles(env, code, irCursor, LIMIT, false);
 	const newsRows = await pullArticles(env, code, newsCursor, LIMIT, true);
 
-	// 両方 0 → no-update。
-	if (irRows.length === 0 && newsRows.length === 0) {
+	// 両方 0 → no-update (force 時は既存 body 再生成のため ok で返す)。
+	if (irRows.length === 0 && newsRows.length === 0 && !force) {
 		return c.json({
 			ticker: code,
 			status: "no-update",

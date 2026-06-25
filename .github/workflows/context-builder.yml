@@ -86,12 +86,14 @@ jobs:
       - name: Build context input
         run: |
           curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
-            "${WORKER_URL%/}/context-input?code=${TICKER}" > "$RUNNER_TEMP/ctxin.json"
+            "${WORKER_URL%/}/context-input?code=${TICKER}${FORCE:+&force=1}" > "$RUNNER_TEMP/ctxin.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           # payload/inputs 由来の ticker は run へ生展開せず env 経由で渡す。
           TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
+          # 手動実行時のみ force=1: 新規ゼロでも既存 body を現行ルールで再生成する。
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
 
       - name: Run context-builder skill
         uses: anthropics/claude-code-action@v1

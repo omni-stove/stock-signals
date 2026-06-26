@@ -10,14 +10,10 @@ Regenerate one ticker's *living context* for a SWING-trading horizon (several da
 The bar for every line is whether it moves the swing call over the next weeks, not whether it is
 true or on-topic. Carry the judgment-bearing fact, not the catalog entry behind it: drop model
 numbers, spec figures, awards, release dates, person names, fund/legal entity names, trademark
-symbols (™/®), and sub-product variant lists. When a section would enumerate variants (e.g. several
-SSD grades, several chip families), collapse them into the single line that carries the call —
-name the market shift, not the SKUs. When in doubt, cut.
+symbols, and variant lists — collapse a set of variants into the one line that carries the call.
+When in doubt, cut.
 
-One fact lives in exactly one section. If the same event would fit two sections, write it where its
-*lasting* effect belongs and do not restate it elsewhere — a topic line and a structural line must
-not say the same thing. Before writing the body, scan for any fact that appears twice and keep only
-the strongest single placement.
+One fact lives in one section. Place it where its lasting effect belongs and do not restate it elsewhere.
 
 ## Inputs
 
@@ -45,16 +41,14 @@ move in the product lineup or roadmap, a structural supply/demand turn that outl
 earnings/guidance against expectations. Reduce each to its judgment-bearing fact. Never a buy/sell
 view, the day's tape, or a restatement of something already recorded.
 
-`published_at` governs where a fact lands, not whether it counts. A fresh material fact lands in one
-place: the 直近の重大トピック list while its near-term effect is live, then it leaves the list once
-that effect is spent and only its lasting consequence survives — folded into a structural section,
-not duplicated as a topic. Do not carry the same fact as both a topic and a structural line at once.
-Securities ratings (`ir_category="rating"`) are the exception: route them to
-**## 証券会社レーティング** regardless of age, never the topics list.
+A fresh material fact enters the 直近の重大トピック list while its near-term effect is live, then
+leaves once that effect is spent and only its lasting consequence remains in a structural section.
+Securities ratings (`ir_category="rating"`) route to **## 証券会社レーティング** regardless of age,
+never the topics list.
 
 ### 3. Regenerate the whole body
 
-Rebuild the whole body (not incremental edits), keep the section structure below, and write it to the `body=<path>` file.
+Rebuild the whole body, not incremental edits. Keep the section structure below; write it to `body=<path>`.
 
 Body structure (Japanese; keep these headings stable):
 

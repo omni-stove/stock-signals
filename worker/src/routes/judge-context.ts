@@ -16,6 +16,7 @@ import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
 import type { DailyRow } from "../lib/indicators";
+import { avgVolume20d } from "../lib/indicators";
 import {
 	buildDaily,
 	buildEarnings,
@@ -28,7 +29,7 @@ import {
 	type PremarketRow,
 	type PriceRow,
 } from "../lib/judge-context";
-import { resolveMarketPhase } from "../lib/market-phase";
+import { resolveMarketPhase, sessionElapsedFrac } from "../lib/market-phase";
 import {
 	contexts,
 	daily,
@@ -166,6 +167,23 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.from(macroEvents)
 		.all()) as MacroEventRow[];
 
+	// ザラ場中 (前場/昼休み/後場) で daily にまだ当日行が無いとき、当日の vol_x を
+	// prices の当日累積出来高からペース換算で組み立てて buildDaily に渡す。引け後や
+	// 当日 daily が既にあるときは null (= vol_x_20d 本体が当日確定値なので intraday 不要)。
+	const inSession =
+		marketPhase === "morning_session" ||
+		marketPhase === "lunch_break" ||
+		marketPhase === "afternoon_session";
+	const dailyLatestDate = dailyRows[0]?.date ?? null;
+	const intradayVol =
+		inSession && dailyLatestDate !== today
+			? {
+					cumVolume: priceRows[0]?.volume ?? null,
+					elapsedFrac: sessionElapsedFrac(now, epochNow),
+					avgVol20d: avgVolume20d(dailyRows),
+				}
+			: null;
+
 	return c.json({
 		ticker: code,
 		today,
@@ -184,7 +202,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		earnings: buildEarnings(earningsRow?.next_date ?? null, today),
 		earnings_result: buildEarningsResult(fundamentalsRows, today),
 		premarket: buildPremarket(premarketRow ?? null, epochNow),
-		daily: buildDaily(dailyRows),
+		daily: buildDaily(dailyRows, intradayVol),
 		prices: buildPrices(priceRows, epochNow),
 		margin: buildMargin(marginRows),
 	});

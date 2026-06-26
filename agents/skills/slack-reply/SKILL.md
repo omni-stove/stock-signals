@@ -34,7 +34,8 @@ used, re-fetched fresh — tape/premarket/margin are current, `context_body` is 
   `context: unavailable` and answer on price + backdrop alone.
 - **`ticker_note`**: qualifies the other inputs.
 - Pair **`market_phase`** with `prices.quote_status` to tell why a `closed` tape is stale — about to
-  open (premarket) vs already closed.
+  open (premarket) vs already closed. In-session, `daily` is the prior confirmed bar (so `vol_x_20d`
+  is yesterday's); for today's 出来高 read `daily.vol_x_20d_intraday`.
 - `<ticker>`'s `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist.ts`.
 
 ## What to do

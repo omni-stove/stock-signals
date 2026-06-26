@@ -39,6 +39,12 @@ How to read the fields (what to lead on, what to ignore):
   `premarket`/context (digesting overnight NY); `afternoon_session` with a live tape → lead on the
   live tape, a pre-close call on carrying overnight into tomorrow; `closed` → react to the close +
   tonight's NY setup.
+  - **During the session** (`morning_session`/`lunch_break`/`afternoon_session`) `daily` has no
+    confirmed bar for today yet, so `daily.latest_date` is the **prior** trading day and `vol_x_20d` /
+    `range_pct` / MA乖離 are all on that prior bar — do not read them as today's. For 出来高 use
+    `daily.vol_x_20d_intraday` (today's cumulative volume pace-projected to a full day ÷ 20日平均);
+    null near the open means too little has traded to project. After `closed`, `vol_x_20d` is the
+    confirmed value again and `vol_x_20d_intraday` is null.
 - **`premarket`**: lead on `sox_change_pct` (this sector tracks SOX); `nasdaq_change_pct` /
   `dow_change_pct` / `nikkei_futures_price` are backdrop confirming the SOX read, never the driver.
 - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.

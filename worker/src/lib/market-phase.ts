@@ -91,6 +91,38 @@ export function resolveMarketPhase(
 	return { today: jst.date, marketPhase: marketPhaseFrom(jst) };
 }
 
+// 東証の1日の立会時間 (前場 09:00-11:30 = 150分 + 後場 12:30-15:30 = 180分)。
+const MORNING_MIN = 150; // 09:00-11:30
+const AFTERNOON_MIN = 180; // 12:30-15:30
+const SESSION_MIN = MORNING_MIN + AFTERNOON_MIN; // 330
+
+// hm (HHMM) を「09:00 を 0 とした前場の経過分」に直す (0..150 にクランプ)。
+function morningElapsed(hm: number): number {
+	const cur = Math.floor(hm / 100) * 60 + (hm % 100);
+	const open = 9 * 60; // 09:00
+	return Math.max(0, Math.min(MORNING_MIN, cur - open));
+}
+
+// hm (HHMM) を「12:30 を 0 とした後場の経過分」に直す (0..180 にクランプ)。
+function afternoonElapsed(hm: number): number {
+	const cur = Math.floor(hm / 100) * 60 + (hm % 100);
+	const open = 12 * 60 + 30; // 12:30
+	return Math.max(0, Math.min(AFTERNOON_MIN, cur - open));
+}
+
+// now が当日ザラ場のどこまで進んだか = 経過立会分 / 330。寄り前 0、引け後 1。
+// 当日累積出来高を「1日フル換算」する分母として使う (intraday の vol_x_20d 補正)。
+// 土日や寄り前は 0 を返す (= フル換算できない)。
+export function sessionElapsedFrac(
+	now?: string | null,
+	epochNow?: number,
+): number {
+	const jst = toJstNow(now, epochNow);
+	if (jst.dow >= 6) return 0; // 土日は立会なし
+	const elapsed = morningElapsed(jst.hm) + afternoonElapsed(jst.hm);
+	return elapsed / SESSION_MIN;
+}
+
 // in-source tests。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
@@ -183,6 +215,33 @@ if (import.meta.vitest) {
 				today: "2026-06-22",
 				marketPhase: "premarket",
 			});
+		});
+	});
+
+	describe("sessionElapsedFrac", () => {
+		// 全立会 330分 (前場150 + 後場180) を 1 とする経過率。
+		it("寄り前 (09:00 前) は 0", () => {
+			expect(sessionElapsedFrac("2026-06-22 08:30")).toBe(0);
+			expect(sessionElapsedFrac("2026-06-22 09:00")).toBe(0);
+		});
+		it("前場の途中は morning 経過分 / 330", () => {
+			// 10:00 = 寄りから60分 → 60/330。
+			expect(sessionElapsedFrac("2026-06-22 10:00")).toBeCloseTo(60 / 330, 5);
+		});
+		it("前場引け (11:30) は 150/330、昼休みも 150/330 で据え置き", () => {
+			expect(sessionElapsedFrac("2026-06-22 11:30")).toBeCloseTo(150 / 330, 5);
+			expect(sessionElapsedFrac("2026-06-22 12:00")).toBeCloseTo(150 / 330, 5);
+		});
+		it("後場 15:00 は (150 + 150)/330", () => {
+			// 後場 12:30 から 150分経過。
+			expect(sessionElapsedFrac("2026-06-22 15:00")).toBeCloseTo(300 / 330, 5);
+		});
+		it("大引け (15:30) 以降は 1", () => {
+			expect(sessionElapsedFrac("2026-06-22 15:30")).toBe(1);
+			expect(sessionElapsedFrac("2026-06-22 16:00")).toBe(1);
+		});
+		it("土日は 0 (立会なし)", () => {
+			expect(sessionElapsedFrac("2026-06-20 14:00")).toBe(0); // 土
 		});
 	});
 }

@@ -335,6 +335,17 @@ export function withMovingAverages(
 	return withMa.reverse().slice(0, n); // 新しい順に戻し、要求件数へ
 }
 
+// 直近20本 (昇順末尾20本) の平均出来高。rangeAndVolume の avgvol と同じ式
+// (Σvolume / 窓長)。intraday の vol_x をペース換算で出す側 (judge-context) が
+// 分母として読む。volume が1つも無ければ null。
+export function avgVolume20d(rows: DailyRow[]): number | null {
+	const asc = toAsc(rows);
+	const win = asc.slice(-20);
+	const vols = win.map((r) => r.volume).filter((v): v is number => v != null);
+	if (vols.length === 0) return null;
+	return vols.reduce((a, b) => a + b, 0) / win.length;
+}
+
 // MA からの乖離率 (%)。judge-context.sh: (close-ma)/ma*1000 | floor / 10 = floor1。
 export function maDevPct(
 	close: number | null,
@@ -659,6 +670,29 @@ if (import.meta.vitest) {
 		it("ma が null / 0 以下なら null", () => {
 			expect(maDevPct(100, null)).toBeNull();
 			expect(maDevPct(100, 0)).toBeNull();
+		});
+	});
+
+	describe("avgVolume20d", () => {
+		it("直近20本の平均出来高を返す (窓長で割る)", () => {
+			// 全日 1000、最新だけ 2000 → (19*1000 + 2000)/20 = 1050。
+			const rows = series(
+				Array.from({ length: 20 }, (_, i) => 10 + i),
+				{ volume: [...Array(19).fill(1000), 2000] },
+			);
+			expect(avgVolume20d(rows)).toBe(1050);
+		});
+		it("20本超でも末尾20本に窓を絞る (古い飛び値は無視)", () => {
+			// 先頭に出来高 99999 を置いても末尾20本に入らなければ平均に効かない。
+			const rows = series(
+				Array.from({ length: 25 }, (_, i) => 10 + i),
+				{ volume: [99999, ...Array(24).fill(1000)] },
+			);
+			expect(avgVolume20d(rows)).toBe(1000);
+		});
+		it("volume が1つも無ければ null", () => {
+			const rows = series([10, 11, 12]).map((r) => ({ ...r, volume: null }));
+			expect(avgVolume20d(rows)).toBeNull();
 		});
 	});
 }

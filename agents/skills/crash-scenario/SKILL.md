@@ -64,7 +64,10 @@ blocks to. Do not post to Slack; do not run any script — write the blocks to `
   `earnings.days_to_earnings` (a near print is a scheduled catalyst — its own scenario),
   `premarket.sox_change_pct`, `margin.ratio` + WoW `long_chg`/`short_chg`. Top-level `market_phase`
   (JST trading-day position): `premarket` makes a tonight→open gap-down its own scenario; `closed`
-  hangs the next move on tonight's NY.
+  hangs the next move on tonight's NY. **In-session** (`morning_session`/`lunch_break`/
+  `afternoon_session`) `daily` carries the **prior** confirmed bar (`daily.latest_date` ≠ today), so
+  `vol_x_20d` / `range_pct` / MA乖離 describe yesterday — for today's 出来高 read
+  `daily.vol_x_20d_intraday` (null near the open).
 
 ## Building the scenarios
 

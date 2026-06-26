@@ -18,6 +18,34 @@ function floor1(x: number): number {
 	return Math.floor(x * 10) / 10;
 }
 
+// ザラ場中の vol_x をペース換算で出す。daily にはまだ当日行が無いので vol_x_20d は
+// 前日基準のまま (確定値)。これと別に「当日累積出来高をフル換算 (÷ 経過立会率) して
+// 20日平均で割った」当日ベースの倍率を intraday として渡し、ザラ場判断が前日値を
+// 当日値と取り違えないようにする。経過率が小さすぎる寄り直後 (<10%) は誤差が大きいので出さない。
+export interface IntradayVol {
+	// 当日の累積出来高 (prices 最新スナップショット)。
+	cumVolume: number | null;
+	// 立会経過率 (0..1)。sessionElapsedFrac。
+	elapsedFrac: number;
+	// 20日平均出来高 (avgVolume20d)。
+	avgVol20d: number | null;
+}
+
+const MIN_ELAPSED_FRAC = 0.1; // 寄り直後はペース換算の誤差が大きいので intraday を出さない閾値
+
+function intradayVolX(iv: IntradayVol): number | null {
+	if (
+		iv.cumVolume == null ||
+		iv.avgVol20d == null ||
+		iv.avgVol20d <= 0 ||
+		iv.elapsedFrac < MIN_ELAPSED_FRAC
+	) {
+		return null;
+	}
+	const projected = iv.cumVolume / iv.elapsedFrac; // 1日フル換算
+	return floor1(projected / iv.avgVol20d);
+}
+
 // --- earnings: days_to_earnings ---------------------------------------------
 export interface EarningsBlock {
 	status: "ok" | "unknown";
@@ -211,7 +239,11 @@ export function buildMargin(rows: MarginRow[]): Record<string, unknown> {
 
 // --- daily: indicators.ts を使い 20日レンジ/MA位置/RSI/ATR を組む -------------
 // rows は date DESC (新しい順)。withMovingAverages で ma5/ma25 を付与してから指標を計算する。
-export function buildDaily(rowsDesc: DailyRow[]): Record<string, unknown> {
+// intraday を渡すと、ザラ場中で daily に当日行がまだ無い局面の「当日ベース vol_x」を併記する。
+export function buildDaily(
+	rowsDesc: DailyRow[],
+	intraday?: IntradayVol | null,
+): Record<string, unknown> {
 	const n = rowsDesc?.length ?? 0;
 	if (n < 5) return { status: "insufficient", rows_n: n };
 	// ma を付与した最新行を「現在地」とする。n と同数を要求して全行に ma を載せる。
@@ -237,9 +269,14 @@ export function buildDaily(rowsDesc: DailyRow[]): Record<string, unknown> {
 				? "below"
 				: "between";
 
+	// ザラ場中 (route が intraday を渡したとき) は当日ベース vol_x を併記する。
+	// vol_x_20d 本体は前日確定足のままなので、判断側が intraday を優先して読む。
+	const volXIntraday = intraday ? intradayVolX(intraday) : null;
+
 	return {
 		status: "ok",
 		rows_n: n,
+		// latest_date は daily の最新確定足の日付。ザラ場中は当日ではなく前営業日を指す。
 		latest_date: cur.date,
 		close,
 		range_high_20d: ind.range_high_20d,
@@ -251,6 +288,9 @@ export function buildDaily(rowsDesc: DailyRow[]): Record<string, unknown> {
 		ma25_dev_pct: maDevPct(close, ma25),
 		ma5_dev_pct: maDevPct(close, ma5),
 		vol_x_20d: ind.vol_x_20d,
+		// ザラ場中のみ非 null。当日累積出来高を立会経過率でフル換算し 20日平均で割った倍率。
+		// daily が当日未確定の局面で vol_x_20d (前日基準) の代わりに読む値。
+		vol_x_20d_intraday: volXIntraday,
 		rsi_14: ind.rsi_14,
 		atr_pct: ind.atr_pct,
 		atr_pct_baseline: ind.atr_pct_baseline,
@@ -573,6 +613,40 @@ if (import.meta.vitest) {
 			const out = buildDaily(desc(closes, { volume: vols }));
 			// indicators.ts の vol_x_20d テストと同じ: (19*1000+2000)/20=1050, 2000/1050=1.9
 			expect(out.vol_x_20d).toBe(1.9);
+		});
+		it("intraday 未指定なら vol_x_20d_intraday は null", () => {
+			const out = buildDaily(
+				desc(Array.from({ length: 20 }, (_, i) => 10 + i)),
+			);
+			expect(out.vol_x_20d_intraday).toBeNull();
+		});
+		it("intraday: 累積出来高をフル換算して 20日平均で割る", () => {
+			const closes = Array.from({ length: 20 }, (_, i) => 10 + i);
+			// 全日 volume=1000 → avgVol20d=1000。経過率0.5で当日累積600 → フル換算1200 → 1200/1000=1.2。
+			const out = buildDaily(desc(closes, { volume: Array(20).fill(1000) }), {
+				cumVolume: 600,
+				elapsedFrac: 0.5,
+				avgVol20d: 1000,
+			});
+			expect(out.vol_x_20d_intraday).toBe(1.2);
+		});
+		it("intraday: 経過率が閾値未満 (寄り直後) は null", () => {
+			const closes = Array.from({ length: 20 }, (_, i) => 10 + i);
+			const out = buildDaily(desc(closes, { volume: Array(20).fill(1000) }), {
+				cumVolume: 50,
+				elapsedFrac: 0.05, // < MIN_ELAPSED_FRAC
+				avgVol20d: 1000,
+			});
+			expect(out.vol_x_20d_intraday).toBeNull();
+		});
+		it("intraday: 累積出来高 null なら vol_x_20d_intraday も null", () => {
+			const closes = Array.from({ length: 20 }, (_, i) => 10 + i);
+			const out = buildDaily(desc(closes, { volume: Array(20).fill(1000) }), {
+				cumVolume: null,
+				elapsedFrac: 0.8,
+				avgVol20d: 1000,
+			});
+			expect(out.vol_x_20d_intraday).toBeNull();
 		});
 		it("15本未満は rsi/atr が null", () => {
 			const out = buildDaily(

@@ -1,5 +1,5 @@
 // Cloudflare Worker: 手動起動 (dev検証/オンデマンド) ルート。
-//   /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|margin|premarket&code=285A[&limit=N]
+//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|margin|premarket&code=285A[&limit=N]
 //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
 //   premarket は地合い (米国指数+日経先物) を1回取得して D1 premarket_backdrop に書く。
 //   通常は寄り前 intake cron が自動取得するが、手動/dev 検証用に残す。
@@ -15,10 +15,12 @@ import { dispatchSignalUpdate } from "../lib/github-dispatch";
 import { collectAll } from "../lib/ir-collect";
 import { DEFAULT_LIMIT } from "../lib/ir-sources";
 import { collectMargin } from "../lib/margin";
+import { collectMarketNews } from "../lib/market-news";
 import { collectNews } from "../lib/news";
 import { collectPeerEarnings } from "../lib/peer-earnings";
 import { collectBackdrop } from "../lib/premarket";
 import { collectRatings } from "../lib/ratings";
+import { notifyNewsSlack } from "../lib/slack";
 import { collectTimeseries } from "../lib/timeseries";
 
 export const run = new Hono<{ Bindings: Env }>();
@@ -43,10 +45,40 @@ run.get("/", async (c) => {
 		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
 	}
 	if (kind === "news") {
-		// per_ticker ニュース収集。
-		const { results, freshTickers } = await collectNews(env, code);
-		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
+		// per_ticker ニュース収集。dispatch=1 のときだけ signal-update と Slack 通知の副作用を起こす。
+		const { results, freshTickers, freshNews } = await collectNews(env, code);
+		if (dispatch) {
+			await dispatchSignalUpdate(env, freshTickers);
+			await notifyNewsSlack(
+				env,
+				"🗞️ 新規ニュース",
+				freshNews.map((n) => ({
+					tag: n.ticker,
+					title: n.title,
+					url: n.url,
+					date: n.date,
+				})),
+			);
+		}
 		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
+	}
+	if (kind === "market-news") {
+		// 銘柄非依存の市場テーマニュースを収集 → market_news + R2 に保存。地合い判定の材料。
+		// dispatch=1 のときだけ Slack 通知の副作用を起こす。
+		const result = await collectMarketNews(env);
+		if (dispatch) {
+			await notifyNewsSlack(
+				env,
+				"🌐 市場テーマニュース",
+				result.freshNews.map((n) => ({
+					tag: n.topic,
+					title: n.title,
+					url: n.url,
+					date: n.date,
+				})),
+			);
+		}
+		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "disclosure") {
 		// 全 watchlist 銘柄の TDnet 適時開示 (kabutan nmode=3) を収集。/pull の ir カーソルに合流する。

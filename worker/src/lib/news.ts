@@ -144,16 +144,30 @@ async function saveArticle(
 		.run();
 }
 
-// 1銘柄のニュース一覧を取り、未取得分だけ本文取得→保存。新規件数を返す。
+// 今回新規保存した1記事のメタ (Slack 通知用)。
+export type FreshNews = {
+	ticker: string;
+	title: string;
+	url: string;
+	date: string;
+};
+
+// 1銘柄のニュース一覧を取り、未取得分だけ本文取得→保存。新規件数と新規記事メタを返す。
 async function collectNewsOne(
 	env: NewsEnv,
 	code: string,
-): Promise<{ found: number; written: number; skipped: number }> {
+): Promise<{
+	found: number;
+	written: number;
+	skipped: number;
+	fresh: FreshNews[];
+}> {
 	const listHtml = await fetchHtml(URL_NEWS(code), env);
 	const items = parseKabutanList(listHtml, URL_NEWS(code)).slice(0, NEWS_LIMIT);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	let written = 0;
 	let skipped = 0;
+	const fresh: FreshNews[] = [];
 	for (const it of items) {
 		if (await isSeen(env, it.url)) {
 			skipped++;
@@ -163,40 +177,51 @@ async function collectNewsOne(
 		try {
 			const artHtml = await fetchHtml(it.url, env);
 			const parsed = parseKabutanArticle(artHtml);
+			const title = parsed.title || it.title;
+			const date = normDate(parsed.published_at || it.date);
 			await saveArticle(env, {
 				url: it.url,
 				ticker: code,
-				title: parsed.title || it.title,
-				published_at: normDate(parsed.published_at || it.date),
+				title,
+				published_at: date,
 				body: parsed.body,
 			});
 			written++;
+			fresh.push({ ticker: code, title, url: it.url, date });
 		} catch (e) {
 			console.error(`news article error ${it.url}: ${(e as Error).message}`);
 		}
 	}
-	return { found: items.length, written, skipped };
+	return { found: items.length, written, skipped, fresh };
 }
 
 // watchlist 全銘柄 (codeFilter 指定時はその1銘柄) のニュースを収集。
 // 戻り値の freshTickers は今回新規があった銘柄 (= signal-report を起動すべき対象)。
+// freshNews は今回新規保存した記事のメタ (= Slack 通知に流す対象)。
 export async function collectNews(
 	env: NewsEnv,
 	codeFilter: string | null,
-): Promise<{ results: Record<string, unknown>; freshTickers: string[] }> {
+): Promise<{
+	results: Record<string, unknown>;
+	freshTickers: string[];
+	freshNews: FreshNews[];
+}> {
 	const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
 	const results: Record<string, unknown> = {};
 	const freshTickers: string[] = [];
+	const freshNews: FreshNews[] = [];
 	for (const code of codes) {
 		try {
 			const r = await collectNewsOne(env, code);
-			results[code] = r;
+			const { fresh, ...summary } = r;
+			results[code] = summary;
 			if (r.written > 0) freshTickers.push(code);
+			freshNews.push(...fresh);
 		} catch (e) {
 			results[code] = { error: (e as Error).message };
 		}
 	}
-	return { results, freshTickers };
+	return { results, freshTickers, freshNews };
 }
 
 if (import.meta.vitest) {

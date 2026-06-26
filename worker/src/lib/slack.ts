@@ -260,8 +260,70 @@ export async function notifySlack(
 	}
 }
 
+// ニュース1件の通知用の正規化形。銘柄ニュースは ticker を持ち、市場テーマニュースは topic を持つ。
+export type NewsNotifyItem = {
+	title: string;
+	url: string;
+	date: string;
+	// 銘柄ニュースなら銘柄コード、市場テーマニュースなら topic キー (semi/ai/rate 等)。見出しのタグに使う。
+	tag: string;
+};
+
+// 新規取得したニュースを Slack に通知する。専用 webhook (SLACK_NEWS_WEBHOOK_URL) 未設定なら何もしない。
+// IR(notifySlack) と別チャンネルに出す。1リクエストで全件まとめて送る (場中の連投を避ける)。
+// kind は見出しに出すラベル (例 "🗞️ 新規ニュース" / "🌐 市場テーマニュース")。
+export async function notifyNewsSlack(
+	env: Env,
+	kind: string,
+	items: NewsNotifyItem[],
+): Promise<void> {
+	const webhook = env.SLACK_NEWS_WEBHOOK_URL;
+	if (!webhook || items.length === 0) return;
+
+	const blocks: unknown[] = [
+		{
+			type: "header",
+			text: {
+				type: "plain_text",
+				text: `${kind} ${items.length}件`,
+				emoji: true,
+			},
+		},
+	];
+	for (const it of items) {
+		blocks.push({
+			type: "section",
+			text: {
+				type: "mrkdwn",
+				text: `\`${it.tag}\` \`${it.date}\`\n<${it.url}|${it.title}>`,
+			},
+		});
+	}
+
+	// フォールバック text (通知プレビュー用)。
+	const fallback = items
+		.map((it) => `[${it.tag}] ${it.date} ${it.title}`)
+		.join("\n");
+
+	try {
+		const res = await fetch(webhook, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: fallback, blocks }),
+		});
+		if (!res.ok) {
+			console.error(
+				`slack news notify failed: HTTP ${res.status} ${await res.text()}`,
+			);
+		}
+	} catch (e) {
+		// 通知失敗は収集を止めない (best-effort)。
+		console.error(`slack news notify error: ${(e as Error).message}`);
+	}
+}
+
 if (import.meta.vitest) {
-	const { describe, it, expect } = import.meta.vitest;
+	const { describe, it, expect, vi } = import.meta.vitest;
 
 	describe("appendUserReply", () => {
 		const base: SlackReply[] = [
@@ -301,6 +363,54 @@ if (import.meta.vitest) {
 		it("未知カテゴリ・空文字は default の汎用見出し", () => {
 			expect(categoryHeading("unknown")).toBe("📄 IR");
 			expect(categoryHeading("")).toBe("📄 IR");
+		});
+	});
+
+	describe("notifyNewsSlack", () => {
+		const item = {
+			tag: "285A",
+			title: "業績上方修正",
+			url: "https://kabutan.jp/news/?b=n1",
+			date: "2026-06-26",
+		};
+
+		it("webhook 未設定なら fetch を呼ばない (no-op)", async () => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyNewsSlack({} as Env, "🗞️ 新規ニュース", [item]);
+			expect(fetchMock).not.toHaveBeenCalled();
+			vi.unstubAllGlobals();
+		});
+
+		it("新着 0 件なら fetch を呼ばない (no-op)", async () => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyNewsSlack(
+				{ SLACK_NEWS_WEBHOOK_URL: "https://hooks.slack.com/x" } as Env,
+				"🗞️ 新規ニュース",
+				[],
+			);
+			expect(fetchMock).not.toHaveBeenCalled();
+			vi.unstubAllGlobals();
+		});
+
+		it("webhook 設定 + 新着ありで header + 件数分の section を1リクエストで送る", async () => {
+			const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyNewsSlack(
+				{ SLACK_NEWS_WEBHOOK_URL: "https://hooks.slack.com/x" } as Env,
+				"🗞️ 新規ニュース",
+				[item, { ...item, url: "https://kabutan.jp/news/?b=n2" }],
+			);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+			expect(body.blocks[0].type).toBe("header");
+			expect(body.blocks[0].text.text).toBe("🗞️ 新規ニュース 2件");
+			expect(
+				body.blocks.filter((b: { type: string }) => b.type === "section"),
+			).toHaveLength(2);
+			expect(body.text).toContain("[285A] 2026-06-26 業績上方修正");
+			vi.unstubAllGlobals();
 		});
 	});
 }

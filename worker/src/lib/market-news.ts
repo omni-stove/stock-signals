@@ -55,15 +55,41 @@ const TOPIC_KEYWORDS: { key: string; words: string[] }[] = [
 	{
 		key: "ai",
 		words: [
-			"ai",
-			"openai",
-			"オープンai",
+			// 一般語 (日本語見出しの「AI関連」「生成AI」等)。英語の "ai" 単独は
+			// maiko/raise 等への誤爆が多いため入れず、固有名・複合語で拾う。
 			"生成ai",
+			"ai関連",
+			"aiブーム",
+			"ai投資",
+			"ai需要",
 			"データセンター",
 			"gpu",
+			// 主要 AI 企業 (非上場・海外含む) とその製品名。
+			"openai",
+			"オープンai",
 			"chatgpt",
-			"アンスロピック",
 			"anthropic",
+			"アンスロピック",
+			"claude",
+			"クロード",
+			"gemini",
+			"ジェミニ",
+			"copilot",
+			"コパイロット",
+			"deepmind",
+			"ディープマインド",
+			"xai",
+			"grok",
+			"グロック",
+			"mistral",
+			"ミストラル",
+			"perplexity",
+			"パープレキシティ",
+			"deepseek",
+			"ディープシーク",
+			"meta ai",
+			"llama",
+			"ラマ",
 		],
 	},
 	{
@@ -220,10 +246,21 @@ async function saveArticle(
 		.run();
 }
 
-// 市場ニュース一覧を取り、topic 一致かつ未取得の記事だけ本文取得→保存。新規件数等を返す。
-export async function collectMarketNews(
-	env: MarketNewsEnv,
-): Promise<{ found: number; matched: number; written: number }> {
+// 今回新規保存した1記事のメタ (Slack 通知用)。
+export type FreshMarketNews = {
+	topic: string;
+	title: string;
+	url: string;
+	date: string;
+};
+
+// 市場ニュース一覧を取り、topic 一致かつ未取得の記事だけ本文取得→保存。新規件数等と新規記事メタを返す。
+export async function collectMarketNews(env: MarketNewsEnv): Promise<{
+	found: number;
+	matched: number;
+	written: number;
+	freshNews: FreshMarketNews[];
+}> {
 	const listHtml = await fetchHtml(URL_LIST, env);
 	const all = parseList(listHtml, URL_LIST);
 	// topic に当たったものだけを上限まで (新しい順に並んでいる前提)。
@@ -233,27 +270,31 @@ export async function collectMarketNews(
 		.slice(0, NEWS_LIMIT);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	let written = 0;
+	const freshNews: FreshMarketNews[] = [];
 	for (const it of items) {
 		if (await isSeen(env, it.url)) continue;
 		await sleep(interval);
 		try {
 			const artHtml = await fetchHtml(it.url, env);
 			const parsed = parseArticle(artHtml);
+			const title = parsed.title || it.title;
+			const date = normDate(parsed.published_at || it.date);
 			await saveArticle(env, {
 				url: it.url,
-				title: parsed.title || it.title,
+				title,
 				topic: it.topic,
-				published_at: normDate(parsed.published_at || it.date),
+				published_at: date,
 				body: parsed.body,
 			});
 			written++;
+			freshNews.push({ topic: it.topic, title, url: it.url, date });
 		} catch (e) {
 			console.error(
 				`market-news article error ${it.url}: ${(e as Error).message}`,
 			);
 		}
 	}
-	return { found: all.length, matched: items.length, written };
+	return { found: all.length, matched: items.length, written, freshNews };
 }
 
 if (import.meta.vitest) {
@@ -286,6 +327,17 @@ if (import.meta.vitest) {
 		});
 		it("大文字小文字をまたいで部分一致する", () => {
 			expect(matchTopics("NVIDIA決算受けSOX上昇")).toBe("semi");
+		});
+		it("主要AI企業の固有名 (非上場・海外含む) を ai topic で拾う", () => {
+			expect(matchTopics("Anthropic、Claude次世代モデルを発表")).toBe("ai");
+			expect(matchTopics("グーグルのGeminiが推論強化")).toBe("ai");
+			expect(matchTopics("マイクロソフトCopilot、企業導入が加速")).toBe("ai");
+			expect(matchTopics("xAIのGrokが新バージョン")).toBe("ai");
+			expect(matchTopics("DeepSeek、低コストモデルで波紋")).toBe("ai");
+		});
+		it("英語 ai 単独は誤爆させない (固有名・複合語でのみ拾う)", () => {
+			// "ai" 単独キーワードを廃したので、AI と無関係な英単語混じり見出しは ai にしない。
+			expect(matchTopics("Maiko Industries、新工場を稼働")).toBeNull();
 		});
 	});
 

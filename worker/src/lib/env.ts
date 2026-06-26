@@ -15,6 +15,10 @@ export interface Env {
 	// 未設定なら SLACK_WEBHOOK_URL にフォールバック (= 同一チャンネル)。
 	//   設定: npx wrangler secret put SLACK_IR_WEBHOOK_URL
 	SLACK_IR_WEBHOOK_URL?: string;
+	// 新規ニュース通知専用の Slack Webhook URL (Secret)。銘柄ニュース/市場テーマニュースの新着を
+	// IR・レポートと別チャンネルに出すための分離。未設定なら通知をスキップ (取得自体は動く)。
+	//   設定: npx wrangler secret put SLACK_NEWS_WEBHOOK_URL
+	SLACK_NEWS_WEBHOOK_URL?: string;
 	// Slack スラッシュコマンド /crash の署名検証シークレット (Secret)。Slack App の
 	// Basic Information → Signing Secret。/slack/* ルートはこの値で受信を検証する
 	// (Bearer 認証は通さないので、なりすまし防止はこの署名検証が担う)。未設定なら

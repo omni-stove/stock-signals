@@ -15,7 +15,41 @@ import { collectNews } from "./news";
 import { collectPeerEarnings } from "./peer-earnings";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
+import { notifyNewsSlack } from "./slack";
 import { collectTimeseries, WATCHLIST } from "./timeseries";
+
+// 銘柄ニュース + 市場テーマニュースの新着を Slack (SLACK_NEWS_WEBHOOK_URL) に通知する。
+// IR(notifySlack) と別チャンネルに分離する。webhook 未設定/新着 0 なら no-op。best-effort。
+async function notifyFreshNews(
+	env: Env,
+	news: {
+		freshNews: { ticker: string; title: string; url: string; date: string }[];
+	},
+	mnews: {
+		freshNews: { topic: string; title: string; url: string; date: string }[];
+	} | null,
+): Promise<void> {
+	await notifyNewsSlack(
+		env,
+		"🗞️ 新規ニュース",
+		news.freshNews.map((n) => ({
+			tag: n.ticker,
+			title: n.title,
+			url: n.url,
+			date: n.date,
+		})),
+	);
+	await notifyNewsSlack(
+		env,
+		"🌐 市場テーマニュース",
+		(mnews?.freshNews ?? []).map((n) => ({
+			tag: n.topic,
+			title: n.title,
+			url: n.url,
+			date: n.date,
+		})),
+	);
+}
 
 // 発火した cron 式 → 取得種別。wrangler.toml の [triggers] crons と対応させること。
 // Cloudflare の cron trigger 上限は5個。新規 cron は足せないので、複数ソースの収集は
@@ -161,6 +195,8 @@ export async function runScheduled(
 			"fresh:",
 			fresh.join(","),
 		);
+		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
+		await notifyFreshNews(env, news, mnews);
 		// intake (寄り前 8:30 / 引け後 20:00) は新規の有無によらず全銘柄を signal-update する。
 		// fresh だけを撃つと、出来高/話題の薄い銘柄 (例: 6857 が数日ニュース 0) が一度も判定されず
 		// 取り残されるため。context-builder は新規 0 なら no-update でコンテキストを触らないが、
@@ -207,6 +243,8 @@ export async function runScheduled(
 			"fresh:",
 			fresh.join(","),
 		);
+		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
+		await notifyFreshNews(env, news, mnews);
 		// JST 15:00 の引け前スロットは、新規の有無によらず全銘柄を判定する (intake と同思想)。
 		// 大引け前にその時点で判明している材料だけで「翌日の寄り越えに玉を持つか」を判断するため、
 		// ニュースの薄い銘柄も取り残さない。デバウンスも掛けない (1日1回の確定枠)。

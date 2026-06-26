@@ -116,7 +116,7 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 	return c.json({
 		asof: today,
 		market_phase: marketPhase,
-		event_context: buildEventContext(today, macroRows),
+		event_context: buildEventContext(today, macroRows, marketPhase),
 		premarket: premarketBlock,
 		sectors:
 			sectorReports.length > 0

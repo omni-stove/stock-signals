@@ -19,6 +19,7 @@ export interface MacroEventRow {
 const DAYS = 5; // マクロ/ピアの近接窓 (today〜today+DAYS)
 const IDX_LEAD = 5; // 指数リバランス: 実施前の窓 (これから歪む側。N 日前まで)
 const IDX_AFTER = 2; // 指数リバランス: 実施後の窓 (反動取りの側のみ。歪み剥落後の「実勢に戻る」だけの日は出さない)
+const PEER_AFTER = 2; // ピア決算: SOX 波及後の窓 (直近に出た決算が当日の地合いの正体である可能性を出す。未来扱いの誤読を防ぐ)
 
 // --- 日付ヘルパー (全て UTC 正午アンカーで計算。DST/端数の影響を受けない) ---
 
@@ -203,9 +204,12 @@ function push(arr: string[], v: string | null): void {
 }
 
 // --- マクロイベント (FOMC/日銀) + 海外ピア決算 を近接で拾う -------------------
+// peerResultOut: 波及日当日が「寄り後」(=前夜 NY でピア決算結果が既に出ている) なら true。
+// 寄り前 (premarket) は前夜 NY 消化中で結果未着なので false。
 function collectMacro(
 	today: string,
 	rows: MacroEventRow[],
+	peerResultOut: boolean,
 ): { macro: string[]; peer: string[] } {
 	const macro: string[] = [];
 	const peer: string[] = [];
@@ -216,15 +220,26 @@ function collectMacro(
 		// 日付パース不能はスキップ。
 		if (!/^\d{4}-\d{2}-\d{2}$/.test(eff) || Number.isNaN(d(eff).getTime()))
 			continue;
-		if (eff < today || eff > horizon) continue;
 		const daysUntil = daysDiff(today, eff);
-		const when = daysUntil === 0 ? "本日" : `${daysUntil}日後`;
 		const kind = r.kind || "";
-		if (kind.startsWith("peer_earnings:")) {
+		// ピア決算は波及後 PEER_AFTER 日まで「通過済み」を出す (当日の地合いの正体になり得るため)。
+		// それ以外 (FOMC/日銀) は近接窓 today〜horizon のみ。
+		const isPeer = kind.startsWith("peer_earnings:");
+		const lowerBound = isPeer ? addDays(today, -PEER_AFTER) : today;
+		if (eff < lowerBound || eff > horizon) continue;
+		const when = daysUntil === 0 ? "本日" : `${daysUntil}日後`;
+		if (isPeer) {
+			// 波及日当日: 寄り前 (premarket) は「これから織り込む」、寄り後は前夜 NY で結果が
+			// 出ているので「結果既出・地合いに織り込み中」と時制を分ける (未来扱いの誤読を防ぐ)。
+			const todayPeer = peerResultOut
+				? `本日${r.label}は結果既出→地合いに織り込み中(波及=${eff})`
+				: `本日${r.label}→SOX変動リスク(波及=${eff})`;
 			peer.push(
 				daysUntil === 0
-					? `本日${r.label}→SOX変動リスク(波及=${eff})`
-					: `あと${daysUntil}日で${r.label}→SOX変動リスク(波及=${eff})`,
+					? todayPeer
+					: daysUntil > 0
+						? `あと${daysUntil}日で${r.label}→SOX変動リスク(波及=${eff})`
+						: `${r.label}は通過済み(波及=${eff}/${-daysUntil}日前)→当日の地合いの正体の可能性`,
 			);
 		} else {
 			const imp =
@@ -238,14 +253,18 @@ function collectMacro(
 }
 
 // today (基準日 JST) と macro_events 行から需給イベント1行を組み立てる。
+// phase (省略可): 波及日当日のピア決算を「これから(寄り前)」/「結果既出(寄り後)」で出し分けるため
+// の市場フェーズ。"premarket" / 省略 = 寄り前扱い (これから)、それ以外 = 寄り後 (結果既出)。
 // 出力形式: "需給イベント(<today>): <...; 連結>" or "...: 特になし"。
 export function buildEventContext(
 	today: string,
 	macroRows: MacroEventRow[] = [],
+	phase?: string,
 ): string {
 	const sq = checkSq(today);
 	const idx = checkIndexRebalance(today);
-	const { macro, peer } = collectMacro(today, macroRows);
+	const peerResultOut = phase != null && phase !== "premarket";
+	const { macro, peer } = collectMacro(today, macroRows, peerResultOut);
 	const all = [...sq, ...idx, ...macro, ...peer];
 	if (all.length === 0) return `需給イベント(${today}): 特になし`;
 	return `需給イベント(${today}): ${all.join("; ")}`;
@@ -400,9 +419,35 @@ if (import.meta.vitest) {
 			expect(out).toContain("SOX変動リスク");
 			expect(out).not.toContain("マイクロン(MU) 決算(2026");
 		});
-		it("波及日当日は 本日<社名>→SOX変動リスク", () => {
+		it("波及日当日・phase省略 (寄り前扱い) は 本日<社名>→SOX変動リスク", () => {
 			expect(buildEventContext("2026-06-25", mu)).toContain(
 				"本日マイクロン(MU) 決算→SOX変動リスク",
+			);
+		});
+		it("波及日当日・premarket は これから (本日→SOX変動リスク)", () => {
+			expect(buildEventContext("2026-06-25", mu, "premarket")).toContain(
+				"本日マイクロン(MU) 決算→SOX変動リスク",
+			);
+		});
+		it("波及日当日・寄り後 (afternoon_session) は 結果既出→地合いに織り込み中", () => {
+			const out = buildEventContext("2026-06-25", mu, "afternoon_session");
+			expect(out).toContain(
+				"本日マイクロン(MU) 決算は結果既出→地合いに織り込み中",
+			);
+			expect(out).not.toContain("→SOX変動リスク(波及=2026-06-25)");
+		});
+		it("波及1日後は 通過済み (当日の地合いの正体の可能性)", () => {
+			const out = buildEventContext("2026-06-26", mu);
+			expect(out).toContain(
+				"マイクロン(MU) 決算は通過済み(波及=2026-06-25/1日前)",
+			);
+			expect(out).toContain("当日の地合いの正体の可能性");
+			expect(out).not.toContain("あと");
+		});
+		it("波及から PEER_AFTER (2日) を超えたら出さない", () => {
+			// 波及=06-25 の 3日後。剥落して当日の地合いの説明にならないので出さない。
+			expect(buildEventContext("2026-06-28", mu)).not.toContain(
+				"マイクロン(MU) 決算",
 			);
 		});
 		it("同日2社は両方出る", () => {

@@ -195,7 +195,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 					headline: regimeRow.headline,
 				}
 			: null,
-		event_context: buildEventContext(today, macroRows),
+		event_context: buildEventContext(today, macroRows, marketPhase),
 		// 当該銘柄分の固定注記だけ同梱 (watchlist は静的、note 未設定なら null)。
 		ticker_note: TICKERS.find((t) => t.code === code)?.note ?? null,
 		context_body: contextRow?.body ?? null,

@@ -24,6 +24,10 @@ How to read the fields (what leads, what confirms):
   `avg_change_pct` (直近営業日のセクター平均前日比), `avg_ret_5d_pct` (5日のトレンド); per-name
   `rel_strength_pct` (relative strength vs sector avg) and `vol_ratio` (出来高の盛り上がり).
 - **`event_context`**: one-line 需給イベント string (SQ週 / SQ明け / FOMC / 日銀 近接).
+- **`market_news`**: recent market-wide theme headlines not tied to a watchlist name, each with
+  `title` / `topic` (`semi`/`ai`/`rates`/`us`/`market`) / `published_at`. Material that colors the tilt, not
+  a driver of it: a headline aligned with the premarket/sectors lean confirms; one that cuts against
+  a strong tape is unpriced 逆風, pulling toward 様子見. Empty array → ignore.
 - **`market_phase`** (JST trading-day position) frames what the numbers mean: `premarket` (lead on
   `premarket`/event, the gap isn't in yet), `morning_session` / `afternoon_session` / `lunch_break`
   (場中 — `sectors` is live, read breadth directly), `closed` (引け後 — react to today's close plus

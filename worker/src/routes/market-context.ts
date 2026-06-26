@@ -14,7 +14,12 @@ import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
 import { resolveMarketPhase } from "../lib/market-phase";
 import { buildPremarketBlock, parseUsIndexes } from "../lib/premarket";
-import { daily, macroEvents, premarketBackdrop } from "../lib/schema";
+import {
+	daily,
+	macroEvents,
+	marketNews,
+	premarketBackdrop,
+} from "../lib/schema";
 import {
 	buildSectors,
 	type DailyBar,
@@ -83,6 +88,19 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 	}
 	const sectorReports = buildSectors(WATCHLIST_META, premarketLine, barsByCode);
 
+	// market_news 最新 8 件 (半導体/AI/金利/米国市場のテーマ見出し)。地合いの tilt を肉付けする材料。
+	// 本文ではなく見出し + topic + 日時だけ渡す (premarket が主、これは補強)。
+	const newsRows = await db(env.DB)
+		.select({
+			title: marketNews.title,
+			topic: marketNews.topic,
+			published_at: marketNews.publishedAt,
+		})
+		.from(marketNews)
+		.orderBy(desc(marketNews.fetchedAt))
+		.limit(8)
+		.all();
+
 	// macro_events 全件 (SQ/指数は today から計算、FOMC/日銀/ピアは rows から近接抽出)。
 	const macroRows = (await db(env.DB)
 		.select({
@@ -104,5 +122,6 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 			sectorReports.length > 0
 				? { status: "ok", sectors: sectorReports }
 				: { status: "unavailable", sectors: [] },
+		market_news: newsRows,
 	});
 });

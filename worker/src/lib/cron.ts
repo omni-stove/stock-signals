@@ -10,6 +10,7 @@ import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
 import { collectMacroEvents } from "./macro-events";
 import { collectMargin } from "./margin";
+import { collectMarketNews } from "./market-news";
 import { collectNews } from "./news";
 import { collectPeerEarnings } from "./peer-earnings";
 import { collectBackdrop } from "./premarket";
@@ -116,6 +117,13 @@ export async function runScheduled(
 		const ir = await collectAll(env, null, DEFAULT_LIMIT);
 		const disc = await collectDisclosures(env, null);
 		const news = await collectNews(env, null);
+		// 市場テーマニュース (半導体/AI/金利/米国市場) も収集する。銘柄非依存なので freshTickers には
+		// 効かず (signal-report は起動しない)、market-check が /market-context 経由で読む。
+		// 失敗しても intake の主収集は壊さない (catch でログのみ)。
+		const mnews = await collectMarketNews(env).catch((e) => {
+			console.error("market-news failed:", e);
+			return null;
+		});
 		// 証券会社レーティング (個社別 目標株価) も intake で収集する。日報は当日夕方〜夜に
 		// 出揃うため、引け後 (20:00) intake で拾うと取りこぼしが少ない。新規があれば
 		// 目標株価変更も判定材料なので signal-report 起動対象に含める。
@@ -146,6 +154,7 @@ export async function runScheduled(
 				ir: ir.results,
 				disclosure: disc.results,
 				news: news.results,
+				...(mnews ? { marketNews: mnews } : {}),
 				ratings: rat.results,
 				...(mgn.results ? { margin: mgn.results } : {}),
 			}),
@@ -165,6 +174,12 @@ export async function runScheduled(
 		// 場中 5分毎。価格スナップショットに加え、銘柄ニュース速報も拾う (新着で即判定するため)。
 		const p = await collectTimeseries(env, "prices", null);
 		const news = await collectNews(env, null);
+		// 市場テーマニュースも場中速報として収集する (オープンAI上場延期のような材料は場中に出る)。
+		// 銘柄非依存で dispatch には効かず、失敗しても prices の主収集は壊さない。
+		const mnews = await collectMarketNews(env).catch((e) => {
+			console.error("market-news failed:", e);
+			return null;
+		});
 		// JST 12:30 相当スロットでは IR + 適時開示 intake も相乗りさせる (昼の専用 cron を持たないため)。
 		// IR・適時開示・ニュースどの新着でも signal-report を起動するので fresh を統合して dispatch する。
 		let ir: { freshTickers: string[] } | null = null;
@@ -185,6 +200,7 @@ export async function runScheduled(
 			JSON.stringify({
 				prices: p,
 				news: news.results,
+				...(mnews ? { marketNews: mnews } : {}),
 				...(ir ? { irNoonIntake: ir } : {}),
 				...(disc ? { disclosureNoonIntake: disc } : {}),
 			}),

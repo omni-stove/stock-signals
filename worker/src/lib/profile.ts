@@ -9,6 +9,7 @@ export interface ProfileRow {
 	riskTolerance: string | null;
 	holdStyle: string | null;
 	maxPositionPct: number | null;
+	cashBalance: number | null; // 投資余力 (現金残高、円)。任意
 	note: string | null;
 }
 
@@ -21,6 +22,7 @@ export function buildProfile(
 		row.riskTolerance != null ||
 		row.holdStyle != null ||
 		row.maxPositionPct != null ||
+		row.cashBalance != null ||
 		(row.note != null && row.note !== "");
 	if (!hasAny) return { status: "none" };
 	return {
@@ -28,6 +30,7 @@ export function buildProfile(
 		risk_tolerance: row.riskTolerance ?? null,
 		hold_style: row.holdStyle ?? null,
 		max_position_pct: row.maxPositionPct ?? null,
+		cash_balance: row.cashBalance ?? null,
 		note: row.note ?? null,
 	};
 }
@@ -47,6 +50,7 @@ if (import.meta.vitest) {
 					riskTolerance: null,
 					holdStyle: null,
 					maxPositionPct: null,
+					cashBalance: null,
 					note: null,
 				}),
 			).toEqual({ status: "none" });
@@ -55,6 +59,7 @@ if (import.meta.vitest) {
 					riskTolerance: null,
 					holdStyle: null,
 					maxPositionPct: null,
+					cashBalance: null,
 					note: "",
 				}),
 			).toEqual({ status: "none" });
@@ -65,6 +70,7 @@ if (import.meta.vitest) {
 					riskTolerance: "high",
 					holdStyle: "swing",
 					maxPositionPct: 20,
+					cashBalance: 1000000,
 					note: "玉は分割で建てる",
 				}),
 			).toEqual({
@@ -72,6 +78,7 @@ if (import.meta.vitest) {
 				risk_tolerance: "high",
 				hold_style: "swing",
 				max_position_pct: 20,
+				cash_balance: 1000000,
 				note: "玉は分割で建てる",
 			});
 		});
@@ -81,6 +88,7 @@ if (import.meta.vitest) {
 					riskTolerance: null,
 					holdStyle: null,
 					maxPositionPct: null,
+					cashBalance: null,
 					note: "決算跨ぎは持たない",
 				}),
 			).toEqual({
@@ -88,7 +96,26 @@ if (import.meta.vitest) {
 				risk_tolerance: null,
 				hold_style: null,
 				max_position_pct: null,
+				cash_balance: null,
 				note: "決算跨ぎは持たない",
+			});
+		});
+		it("現金残高だけでも ok", () => {
+			expect(
+				buildProfile({
+					riskTolerance: null,
+					holdStyle: null,
+					maxPositionPct: null,
+					cashBalance: 500000,
+					note: null,
+				}),
+			).toEqual({
+				status: "ok",
+				risk_tolerance: null,
+				hold_style: null,
+				max_position_pct: null,
+				cash_balance: 500000,
+				note: null,
 			});
 		});
 	});

@@ -73,6 +73,7 @@ threadContext.get("/thread-context", async (c: Context<{ Bindings: Env }>) => {
 					riskTolerance: userProfiles.riskTolerance,
 					holdStyle: userProfiles.holdStyle,
 					maxPositionPct: userProfiles.maxPositionPct,
+					cashBalance: userProfiles.cashBalance,
 					note: userProfiles.note,
 				})
 				.from(userProfiles)

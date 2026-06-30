@@ -65,9 +65,10 @@ buy/sell 判定、コンテキスト更新、新規IR通知。これらは Worke
 | `/signal [銘柄]`     | 任意のタイミングで buy/sell 判定を出す(自動判定と同じ skill を手動起動) |
 | `/crash [銘柄]`      | 暴落プリモーテム。崩れる道筋を銘柄固有/マクロの両面で3〜5本列挙するリスク棚卸し |
 | `/context [銘柄]`    | その銘柄の保存済み living context 全文を context チャンネル(`SLACK_CONTEXT_CHANNEL`)へ流す。解析は走らず D1 の保存結果を表示するだけ |
-| `/position`          | 保有建玉を登録する(Slack ユーザー単位)。スレッド返信時に本人の含み損益として効き、引け後のポジション評価 DM の対象になる |
-| `/profile`           | 好み・特記事項(リスク許容度/保有スタイル/最大ポジション率/メモ)を登録する(Slack ユーザー単位)。スレッド返信時に本人の売買スタイルとして効く |
-| `/mystatus`          | 登録済みのプロフィールと全保有建玉(銘柄ごとの含み損益%付き)を本人にだけ表示する。`/position` `/profile` の確認用で、登録は変えない |
+| `/position`          | 保有建玉を登録する(Slack ユーザー単位)。平均建値・株数を直接上書きする。スレッド返信時に本人の含み損益として効き、引け後のポジション評価 DM の対象になる。株数 0 で手仕舞い |
+| `/trade`             | 約定 1 回(買い増し / 部分決済)を既存建玉に反映する。増しは加重平均で平均建値を再計算、減らしは平均建値据え置きで株数だけ減算(0 株で手仕舞い)。対象が無い増しは新規建玉になる |
+| `/profile`           | 好み・特記事項(リスク許容度/保有スタイル/最大ポジション率/投資余力(現金残高)/メモ)を登録する(Slack ユーザー単位)。スレッド返信時に本人の売買スタイルとして効く |
+| `/mystatus`          | 登録済みのプロフィールと全保有建玉(建玉金額・含み損益(円/%)付き)を本人にだけ表示する。`/position` `/profile` の確認用で、登録は変えない |
 | 解析投稿にスレッド返信 | 同じスレッドで Claude と対話する。コンテキスト+数値+本人の建玉と好みを読んで答える |
 
 ### 監視銘柄の追加
@@ -107,7 +108,7 @@ LLM が行う (GitHub Actions の position-review、ユーザーは直列)。
 | パス | 中身 |
 | ---- | ---- |
 | `worker/`            | Cloudflare Worker (収集) |
-| `.github/workflows/` | LLM判定の Actions(market-check / context-builder / signal-judge / crash-scenario / slack-reply)・CI・デプロイ。判定ルールは各ワークフローの prompt にベタ書きし、数値コンテキストは `@` でファイルから取り込む |
+| `.github/workflows/` | LLM判定の Actions(market-check / context-builder / signal-judge / crash-scenario / slack-reply / position-review)・CI・デプロイ。判定ルールは各ワークフローの prompt にベタ書きし、数値コンテキストは `@` でファイルから取り込む |
 | `agents/skills/`     | 手動運用の Claude Code skill(`add-ticker` ほか。`.claude/skills/` は symlink) |
 | `scripts/`           | Slack 投稿整形・判定 dispatch・手動ツール・品質ゲート(`verify.sh` 等) |
 | `config/`            | sources / events / peers の人間向け設定。銘柄一覧の真ソースは `worker/src/lib/watchlist.ts` の `TICKERS` |

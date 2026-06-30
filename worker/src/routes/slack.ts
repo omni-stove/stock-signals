@@ -23,6 +23,7 @@ import { type ContextSection, sectionsToBlocks } from "../lib/context-format";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
+import { applyTrade } from "../lib/positions";
 import type { ProfileRow } from "../lib/profile";
 import {
 	contexts,
@@ -48,11 +49,15 @@ import {
 	PROFILE_CALLBACK_ID,
 	parsePositionSubmission,
 	parseProfileSubmission,
+	parseTradeSubmission,
 	pickerView,
 	positionFormView,
 	profileFormView,
 	type SlackEventEnvelope,
 	shouldHandleReply,
+	TRADE_ACTION_BLOCK,
+	TRADE_CALLBACK_ID,
+	tradeFormView,
 } from "../lib/slack-command";
 import { verifySlackSignature } from "../lib/slack-verify";
 import { WATCHLIST } from "../lib/timeseries";
@@ -127,6 +132,7 @@ async function fireMe(env: Env, userId: string): Promise<string> {
 				riskTolerance: userProfiles.riskTolerance,
 				holdStyle: userProfiles.holdStyle,
 				maxPositionPct: userProfiles.maxPositionPct,
+				cashBalance: userProfiles.cashBalance,
 				note: userProfiles.note,
 			})
 			.from(userProfiles)
@@ -215,6 +221,21 @@ slack.post("/slack/command", async (c) => {
 		if (!opened)
 			return ephemeral(
 				"ポジション登録フォームを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
+			);
+		return c.body(null, 200);
+	}
+
+	// /trade は約定 (買い増し / 部分決済) を既存建玉に反映する modal を開く。view_submission は
+	// /slack/interact が TRADE_CALLBACK_ID で判別し、applyTrade で建玉を再計算して D1 へ保存する。
+	if (cmdKey === "trade") {
+		const triggerId = form.get("trigger_id") ?? "";
+		const opened = await openView(c.env, {
+			trigger_id: triggerId,
+			view: tradeFormView(),
+		});
+		if (!opened)
+			return ephemeral(
+				"約定反映フォームを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
 			);
 		return c.body(null, 200);
 	}
@@ -465,6 +486,93 @@ slack.post("/slack/interact", async (c) => {
 		return c.json({ response_action: "clear" });
 	}
 
+	// /trade の約定反映 submission。対象建玉 (userId×ticker×account) を引き、applyTrade で
+	// 加重平均 (増し) / 株数減算 (減らし) を計算して保存する。0 株になれば行削除。
+	// 建玉キーは /position と同じ (userId, ticker, account) で side は含めない (両建て非対応)。
+	if (payload.view?.callback_id === TRADE_CALLBACK_ID) {
+		const userId = payload.user?.id ?? "";
+		const parsed = parseTradeSubmission(payload.view?.state?.values, WATCHLIST);
+		if (!parsed.ok)
+			return c.json({ response_action: "errors", errors: parsed.errors });
+		if (!userId)
+			return c.json({
+				response_action: "errors",
+				errors: { [BLOCK_ID]: "ユーザー情報を取得できませんでした。" },
+			});
+		const t = parsed.value;
+		const drizzle = db(c.env.DB);
+		// 対象建玉 (現値ではなく登録済みの建値・株数) を引く。無ければ null (増しは新規建玉)。
+		const cur =
+			(await drizzle
+				.select({ avgPrice: positions.avgPrice, qty: positions.qty })
+				.from(positions)
+				.where(
+					and(
+						eq(positions.userId, userId),
+						eq(positions.ticker, t.ticker),
+						eq(positions.account, t.account),
+					),
+				)
+				.get()) ?? null;
+
+		const result = applyTrade(cur, t.action, t.execPrice, t.execQty);
+		if (!result.ok) {
+			// 約定種別ブロックにエラーを出す (減らす建玉が無い / 保有超過)。
+			const msg =
+				result.reason === "no_position"
+					? "減らせる建玉がありません。先に /position か買い増しで建ててください。"
+					: result.reason === "over_reduce"
+						? "保有株数を超えて減らせません。約定株数を見直してください。"
+						: "約定の入力が不正です。";
+			return c.json({
+				response_action: "errors",
+				errors: { [TRADE_ACTION_BLOCK]: msg },
+			});
+		}
+
+		const accountLabel = t.account === "cash" ? "現物" : "信用";
+		const sideLabel = t.side === "long" ? "買い建て" : "売り建て";
+		const actionLabel = t.action === "add" ? "買い増し" : "部分決済";
+		let tradeText: string;
+		if (result.qty === 0) {
+			await drizzle
+				.delete(positions)
+				.where(
+					and(
+						eq(positions.userId, userId),
+						eq(positions.ticker, t.ticker),
+						eq(positions.account, t.account),
+					),
+				);
+			tradeText = `:white_check_mark: ${actionLabel}で手仕舞いしました\n*${t.ticker}* / ${accountLabel}\n約定 ${t.execPrice} 円 × ${t.execQty} 株`;
+		} else {
+			const now = new Date().toISOString();
+			await drizzle
+				.insert(positions)
+				.values({
+					userId,
+					ticker: t.ticker,
+					account: t.account,
+					side: t.side,
+					avgPrice: result.avgPrice,
+					qty: result.qty,
+					updatedAt: now,
+				})
+				.onConflictDoUpdate({
+					target: [positions.userId, positions.ticker, positions.account],
+					set: {
+						side: t.side,
+						avgPrice: result.avgPrice,
+						qty: result.qty,
+						updatedAt: now,
+					},
+				});
+			tradeText = `:white_check_mark: ${actionLabel}を反映しました\n*${t.ticker}* / ${accountLabel} / ${sideLabel}\n約定 ${t.execPrice} 円 × ${t.execQty} 株 → 平均建値 ${result.avgPrice} 円 × ${result.qty} 株`;
+		}
+		await postMessage(c.env, { channel: userId, text: tradeText });
+		return c.json({ response_action: "clear" });
+	}
+
 	// /profile の登録フォーム submission。全項目任意で upsert する。全項目空 (全 null) は
 	// プロフィール解除として行を削除する。clear で modal を閉じる (position と同様、本文は返せない)。
 	if (payload.view?.callback_id === PROFILE_CALLBACK_ID) {
@@ -484,6 +592,7 @@ slack.post("/slack/interact", async (c) => {
 			p.riskTolerance == null &&
 			p.holdStyle == null &&
 			p.maxPositionPct == null &&
+			p.cashBalance == null &&
 			p.note == null;
 		if (allEmpty) {
 			await drizzle.delete(userProfiles).where(eq(userProfiles.userId, userId));
@@ -496,6 +605,7 @@ slack.post("/slack/interact", async (c) => {
 					riskTolerance: p.riskTolerance,
 					holdStyle: p.holdStyle,
 					maxPositionPct: p.maxPositionPct,
+					cashBalance: p.cashBalance,
 					note: p.note,
 					updatedAt: now,
 				})
@@ -505,6 +615,7 @@ slack.post("/slack/interact", async (c) => {
 						riskTolerance: p.riskTolerance,
 						holdStyle: p.holdStyle,
 						maxPositionPct: p.maxPositionPct,
+						cashBalance: p.cashBalance,
 						note: p.note,
 						updatedAt: now,
 					},
@@ -530,6 +641,7 @@ slack.post("/slack/interact", async (c) => {
 				`リスク許容度: ${riskLabel}`,
 				`保有スタイル: ${styleLabel}`,
 				`最大ポジション率: ${p.maxPositionPct == null ? "指定なし" : `${p.maxPositionPct}%`}`,
+				`投資余力 (現金残高): ${p.cashBalance == null ? "指定なし" : `${p.cashBalance.toLocaleString("en-US")} 円`}`,
 			];
 			if (p.note != null) lines.push(`特記事項: ${p.note}`);
 			profText = lines.join("\n");

@@ -2,7 +2,7 @@
 // ルート (routes/slack.ts) は署名検証・D1・dispatch を担い、view 組み立て・コマンド定義・
 // イベント判定といった副作用のない部分はここに集約してテストを同伴させる。
 
-import { pnlPct } from "./positions";
+import { pnlAmount, pnlPct } from "./positions";
 import type { ProfileRow } from "./profile";
 import { WATCHLIST, WATCHLIST_NAMES } from "./timeseries";
 
@@ -211,6 +211,71 @@ export function positionFormView() {
 	};
 }
 
+// ── /trade : 約定 (買い増し / 部分決済) を既存建玉に反映 ──────────────────────
+// /position が「平均建値を直接上書き」なのに対し、/trade は「約定 1 回」を入力し、既存建玉に
+// 加重平均で反映する (増し=平均建値を再計算して株数加算 / 減らし=平均建値据え置きで株数減算)。
+// 計算は applyTrade (positions.ts) に集約。対象建玉は (銘柄×口座×方向) で /position と同じキー。
+export const TRADE_CALLBACK_ID = "trade_form";
+// applyTrade の検証エラー (建玉が無い/超過) を表示する先として routes も参照するので export。
+export const TRADE_ACTION_BLOCK = "trade_action_block";
+const TRADE_ACTION_ACTION = "trade_action";
+const TRADE_PRICE_BLOCK = "trade_price_block";
+const TRADE_PRICE_ACTION = "trade_price";
+const TRADE_QTY_BLOCK = "trade_qty_block";
+const TRADE_QTY_ACTION = "trade_qty";
+
+// 約定種別 (value は applyTrade の TradeAction とそろえる)。
+const TRADE_ACTION_OPTIONS = [
+	{ text: "買い増し / 増し建て (add)", value: "add" },
+	{ text: "部分決済 / 減らし (reduce)", value: "reduce" },
+];
+
+// /trade の入力 modal。銘柄/口座/方向で対象建玉を指定し、約定種別・約定単価・約定株数を入れる。
+export function tradeFormView() {
+	return {
+		type: "modal",
+		callback_id: TRADE_CALLBACK_ID,
+		title: { type: "plain_text", text: "約定を反映" },
+		submit: { type: "plain_text", text: "反映" },
+		close: { type: "plain_text", text: "閉じる" },
+		blocks: [
+			{
+				type: "section",
+				text: {
+					type: "mrkdwn",
+					text: "約定 1 回を既存建玉に反映します (増し=平均建値を再計算、減らし=平均建値据え置き)。対象が無い増しは新規建玉になります。",
+				},
+			},
+			{
+				type: "input",
+				block_id: BLOCK_ID,
+				label: { type: "plain_text", text: "銘柄" },
+				element: {
+					type: "static_select",
+					action_id: ACTION_ID,
+					placeholder: { type: "plain_text", text: "銘柄を選択" },
+					options: tickerOptions(),
+				},
+			},
+			selectInput(
+				POS_ACCOUNT_BLOCK,
+				POS_ACCOUNT_ACTION,
+				"口座",
+				ACCOUNT_OPTIONS,
+			),
+			selectInput(POS_SIDE_BLOCK, POS_SIDE_ACTION, "方向", SIDE_OPTIONS),
+			selectInput(
+				TRADE_ACTION_BLOCK,
+				TRADE_ACTION_ACTION,
+				"約定種別",
+				TRADE_ACTION_OPTIONS,
+			),
+			plainTextInput(TRADE_PRICE_BLOCK, TRADE_PRICE_ACTION, "約定単価 (円)"),
+			plainTextInput(TRADE_QTY_BLOCK, TRADE_QTY_ACTION, "約定株数"),
+		],
+	};
+}
+
 // ── /profile : ユーザーの好み・特記事項 登録 modal ───────────────────────────
 // /position と同系統 (modal を開いて D1 保存)。玉の持ち方・リスク許容度を登録し、slack-reply が
 // 本人の返信に効かせる。callback_id でこちらの submission だと判別する。
@@ -224,6 +289,8 @@ const PROF_STYLE_BLOCK = "prof_style_block";
 const PROF_STYLE_ACTION = "prof_style";
 const PROF_MAXPCT_BLOCK = "prof_maxpct_block";
 const PROF_MAXPCT_ACTION = "prof_maxpct";
+const PROF_CASH_BLOCK = "prof_cash_block";
+const PROF_CASH_ACTION = "prof_cash";
 const PROF_NOTE_BLOCK = "prof_note_block";
 const PROF_NOTE_ACTION = "prof_note";
 
@@ -329,6 +396,12 @@ export function profileFormView() {
 				false,
 			),
 			optionalTextInput(
+				PROF_CASH_BLOCK,
+				PROF_CASH_ACTION,
+				"投資余力 (現金残高、円)",
+				false,
+			),
+			optionalTextInput(
 				PROF_NOTE_BLOCK,
 				PROF_NOTE_ACTION,
 				"特記事項 (例: 玉は分割で建てる / 決算跨ぎは持たない)",
@@ -369,6 +442,11 @@ const SIDE_LABEL: Record<string, string> = {
 	short: "売り建て",
 };
 
+// 金額を 3 桁区切りの文字列に (例 1234567 → "1,234,567")。
+function yen(n: number): string {
+	return Math.round(n).toLocaleString("en-US");
+}
+
 // /me の本文を組む純粋関数。profile (null=未登録) と全建玉行を Slack mrkdwn テキストにまとめる。
 // 含み損益% は pnlPct を再利用 (現値無しは「現値なし」と表示)。両方空なら未登録の旨を返す。
 export function buildMeText(
@@ -382,6 +460,7 @@ export function buildMeText(
 		(profile.riskTolerance != null ||
 			profile.holdStyle != null ||
 			profile.maxPositionPct != null ||
+			profile.cashBalance != null ||
 			(profile.note != null && profile.note !== ""));
 	lines.push("*プロフィール*");
 	if (hasProfile && profile) {
@@ -393,6 +472,9 @@ export function buildMeText(
 		);
 		lines.push(
 			`• 最大ポジション率: ${profile.maxPositionPct == null ? "指定なし" : `${profile.maxPositionPct}%`}`,
+		);
+		lines.push(
+			`• 投資余力 (現金残高): ${profile.cashBalance == null ? "指定なし" : `${yen(profile.cashBalance)} 円`}`,
 		);
 		if (profile.note != null && profile.note !== "")
 			lines.push(`• 特記事項: ${profile.note}`);
@@ -410,13 +492,15 @@ export function buildMeText(
 			const head = name ? `${p.ticker} ${name}` : p.ticker;
 			const account = ACCOUNT_LABEL[p.account] ?? p.account;
 			const side = SIDE_LABEL[p.side] ?? p.side;
+			const cost = Math.round(p.avgPrice * p.qty); // 建玉金額 (建値 × 株数)
 			const pnl = pnlPct(p.side, p.avgPrice, p.price);
+			const amt = pnlAmount(p.side, p.avgPrice, p.qty, p.price);
 			const pnlText =
-				pnl == null
+				pnl == null || amt == null
 					? "現値なし"
-					: `${pnl >= 0 ? "+" : ""}${pnl}%${p.price == null ? "" : ` (現値 ${p.price} 円)`}`;
+					: `${amt >= 0 ? "+" : ""}${yen(amt)} 円 (${pnl >= 0 ? "+" : ""}${pnl}% / 現値 ${yen(p.price ?? 0)} 円)`;
 			lines.push(
-				`• *${head}* / ${account} / ${side} — 建値 ${p.avgPrice} 円 × ${p.qty} 株 / 含み損益 ${pnlText}`,
+				`• *${head}* / ${account} / ${side} — 建値 ${yen(p.avgPrice)} 円 × ${p.qty} 株 = ${yen(cost)} 円 / 含み損益 ${pnlText}`,
 			);
 		}
 	}
@@ -432,6 +516,7 @@ type ProfileInput = {
 	riskTolerance: string | null;
 	holdStyle: string | null;
 	maxPositionPct: number | null;
+	cashBalance: number | null;
 	note: string | null;
 };
 export type ProfileParse =
@@ -477,6 +562,20 @@ export function parseProfileSubmission(
 		else maxPositionPct = n;
 	}
 
+	// 投資余力 (現金残高): 空なら null。入力があれば 0 以上の数値。
+	const cashRaw = (v[PROF_CASH_BLOCK]?.[PROF_CASH_ACTION]?.value ?? "").replace(
+		/[,\s円]/g,
+		"",
+	);
+	let cashBalance: number | null = null;
+	if (cashRaw !== "") {
+		const n = Number(cashRaw);
+		if (!Number.isFinite(n) || n < 0)
+			errors[PROF_CASH_BLOCK] =
+				"投資余力は 0 以上の数値で入力してください (空欄可)。";
+		else cashBalance = n;
+	}
+
 	// 特記事項: 空なら null。前後空白を落とす。
 	const noteRaw = (v[PROF_NOTE_BLOCK]?.[PROF_NOTE_ACTION]?.value ?? "").trim();
 	const note = noteRaw === "" ? null : noteRaw;
@@ -484,7 +583,7 @@ export function parseProfileSubmission(
 	if (Object.keys(errors).length > 0) return { ok: false, errors };
 	return {
 		ok: true,
-		value: { riskTolerance, holdStyle, maxPositionPct, note },
+		value: { riskTolerance, holdStyle, maxPositionPct, cashBalance, note },
 	};
 }
 
@@ -554,6 +653,77 @@ export function parsePositionSubmission(
 
 	if (Object.keys(errors).length > 0) return { ok: false, errors };
 	return { ok: true, value: { ticker, account, side, avgPrice, qty } };
+}
+
+// view_submission の state から /trade 入力を取り出して検証する純粋関数。
+// 対象建玉キー (ticker/account/side) + 約定 (action/execPrice/execQty) を返す。
+// 既存建玉との突き合わせ・加重平均は routes が applyTrade で行う (ここは入力検証のみ)。
+type TradeInput = {
+	ticker: string;
+	account: string;
+	side: string;
+	action: "add" | "reduce";
+	execPrice: number;
+	execQty: number;
+};
+export type TradeParse =
+	| { ok: true; value: TradeInput }
+	| { ok: false; errors: Record<string, string> };
+
+export function parseTradeSubmission(
+	state:
+		| Record<
+				string,
+				Record<string, { value?: string; selected_option?: { value?: string } }>
+		  >
+		| undefined,
+	knownTickers: readonly string[],
+): TradeParse {
+	const errors: Record<string, string> = {};
+	const v = state ?? {};
+
+	const ticker = v[BLOCK_ID]?.[ACTION_ID]?.selected_option?.value ?? "";
+	if (!knownTickers.includes(ticker))
+		errors[BLOCK_ID] = "銘柄を選んでください。";
+
+	const account =
+		v[POS_ACCOUNT_BLOCK]?.[POS_ACCOUNT_ACTION]?.selected_option?.value ?? "";
+	if (account !== "cash" && account !== "margin")
+		errors[POS_ACCOUNT_BLOCK] = "口座を選んでください。";
+
+	const side =
+		v[POS_SIDE_BLOCK]?.[POS_SIDE_ACTION]?.selected_option?.value ?? "";
+	if (side !== "long" && side !== "short")
+		errors[POS_SIDE_BLOCK] = "方向を選んでください。";
+
+	const actionRaw =
+		v[TRADE_ACTION_BLOCK]?.[TRADE_ACTION_ACTION]?.selected_option?.value ?? "";
+	if (actionRaw !== "add" && actionRaw !== "reduce")
+		errors[TRADE_ACTION_BLOCK] = "約定種別を選んでください。";
+	const action = actionRaw as "add" | "reduce";
+
+	// 約定単価: 正の数のみ。
+	const priceRaw = (
+		v[TRADE_PRICE_BLOCK]?.[TRADE_PRICE_ACTION]?.value ?? ""
+	).replace(/[,\s]/g, "");
+	const execPrice = Number(priceRaw);
+	if (!priceRaw || !Number.isFinite(execPrice) || execPrice <= 0)
+		errors[TRADE_PRICE_BLOCK] = "約定単価は正の数で入力してください。";
+
+	// 約定株数: 1 以上の整数 (0 は約定にならない)。
+	const qtyRaw = (v[TRADE_QTY_BLOCK]?.[TRADE_QTY_ACTION]?.value ?? "").replace(
+		/[,\s]/g,
+		"",
+	);
+	const execQty = Number(qtyRaw);
+	if (qtyRaw === "" || !Number.isInteger(execQty) || execQty <= 0)
+		errors[TRADE_QTY_BLOCK] = "約定株数は 1 以上の整数で入力してください。";
+
+	if (Object.keys(errors).length > 0) return { ok: false, errors };
+	return {
+		ok: true,
+		value: { ticker, account, side, action, execPrice, execQty },
+	};
 }
 
 // Slack Events API (message.channels) の受信エンベロープ。
@@ -730,6 +900,7 @@ if (import.meta.vitest) {
 				prof_risk_block: { prof_risk: sel("high") },
 				prof_style_block: { prof_style: sel("swing") },
 				prof_maxpct_block: { prof_maxpct: txt("20") },
+				prof_cash_block: { prof_cash: txt("1,000,000") },
 				prof_note_block: { prof_note: txt("玉は分割で建てる") },
 			});
 			expect(r).toEqual({
@@ -738,6 +909,7 @@ if (import.meta.vitest) {
 					riskTolerance: "high",
 					holdStyle: "swing",
 					maxPositionPct: 20,
+					cashBalance: 1000000,
 					note: "玉は分割で建てる",
 				},
 			});
@@ -748,6 +920,7 @@ if (import.meta.vitest) {
 				prof_risk_block: { prof_risk: sel("") },
 				prof_style_block: { prof_style: sel("") },
 				prof_maxpct_block: { prof_maxpct: txt("") },
+				prof_cash_block: { prof_cash: txt("") },
 				prof_note_block: { prof_note: txt("   ") },
 			});
 			expect(r).toEqual({
@@ -756,6 +929,7 @@ if (import.meta.vitest) {
 					riskTolerance: null,
 					holdStyle: null,
 					maxPositionPct: null,
+					cashBalance: null,
 					note: null,
 				},
 			});
@@ -768,6 +942,7 @@ if (import.meta.vitest) {
 					riskTolerance: null,
 					holdStyle: null,
 					maxPositionPct: null,
+					cashBalance: null,
 					note: null,
 				},
 			});
@@ -806,17 +981,112 @@ if (import.meta.vitest) {
 			});
 			expect(r.ok).toBe(false);
 		});
+
+		it("現金残高はカンマ・円付きを受ける", () => {
+			const r = parseProfileSubmission({
+				prof_cash_block: { prof_cash: txt("1,500,000円") },
+			});
+			expect(r.ok).toBe(true);
+			if (r.ok) expect(r.value.cashBalance).toBe(1500000);
+		});
+
+		it("現金残高 0 は受ける", () => {
+			const r = parseProfileSubmission({
+				prof_cash_block: { prof_cash: txt("0") },
+			});
+			expect(r.ok).toBe(true);
+			if (r.ok) expect(r.value.cashBalance).toBe(0);
+		});
+
+		it("負の現金残高 / 数値でない現金残高はエラー", () => {
+			expect(
+				parseProfileSubmission({
+					prof_cash_block: { prof_cash: txt("-100") },
+				}).ok,
+			).toBe(false);
+			expect(
+				parseProfileSubmission({
+					prof_cash_block: { prof_cash: txt("いっぱい") },
+				}).ok,
+			).toBe(false);
+		});
+	});
+
+	describe("parseTradeSubmission", () => {
+		const sel = (value: string) => ({ selected_option: { value } });
+		const txt = (value: string) => ({ value });
+		const code = WATCHLIST[0];
+
+		it("全項目を正規値で取り出す", () => {
+			const r = parseTradeSubmission(
+				{
+					ticker_block: { ticker_select: sel(code) },
+					pos_account_block: { pos_account: sel("cash") },
+					pos_side_block: { pos_side: sel("long") },
+					trade_action_block: { trade_action: sel("add") },
+					trade_price_block: { trade_price: txt("1,010") },
+					trade_qty_block: { trade_qty: txt("100") },
+				},
+				WATCHLIST,
+			);
+			expect(r).toEqual({
+				ok: true,
+				value: {
+					ticker: code,
+					account: "cash",
+					side: "long",
+					action: "add",
+					execPrice: 1010,
+					execQty: 100,
+				},
+			});
+		});
+
+		it("未知の銘柄 / 不正な約定種別はエラー", () => {
+			const r = parseTradeSubmission(
+				{
+					ticker_block: { ticker_select: sel("XXXX") },
+					trade_action_block: { trade_action: sel("foo") },
+				},
+				WATCHLIST,
+			);
+			expect(r.ok).toBe(false);
+			if (!r.ok) {
+				expect(r.errors.ticker_block).toBeDefined();
+				expect(r.errors.trade_action_block).toBeDefined();
+			}
+		});
+
+		it("約定単価 0 / 約定株数 0 はエラー", () => {
+			const r = parseTradeSubmission(
+				{
+					ticker_block: { ticker_select: sel(code) },
+					pos_account_block: { pos_account: sel("cash") },
+					pos_side_block: { pos_side: sel("long") },
+					trade_action_block: { trade_action: sel("reduce") },
+					trade_price_block: { trade_price: txt("0") },
+					trade_qty_block: { trade_qty: txt("0") },
+				},
+				WATCHLIST,
+			);
+			expect(r.ok).toBe(false);
+			if (!r.ok) {
+				expect(r.errors.trade_price_block).toBeDefined();
+				expect(r.errors.trade_qty_block).toBeDefined();
+			}
+		});
 	});
 
 	describe("buildMeText", () => {
 		const code = WATCHLIST[0];
 
-		it("profile と建玉を含み損益つきで整形する", () => {
+		it("profile と建玉を金額・含み損益つきで整形する", () => {
 			const out = buildMeText(
 				{
 					riskTolerance: "high",
 					holdStyle: "swing",
 					maxPositionPct: 20,
+					cashBalance: 1000000,
 					note: "玉は分割で建てる",
 				},
 				[
@@ -833,10 +1103,12 @@ if (import.meta.vitest) {
 			expect(out).toContain("リスク許容度: 高 (積極)");
 			expect(out).toContain("保有スタイル: スイング");
 			expect(out).toContain("最大ポジション率: 20%");
+			expect(out).toContain("投資余力 (現金残高): 1,000,000 円");
 			expect(out).toContain("特記事項: 玉は分割で建てる");
 			expect(out).toContain("現物");
 			expect(out).toContain("買い建て");
-			expect(out).toContain("含み損益 +10% (現値 1100 円)");
+			expect(out).toContain("建値 1,000 円 × 100 株 = 100,000 円");
+			expect(out).toContain("含み損益 +10,000 円 (+10% / 現値 1,100 円)");
 		});
 
 		it("profile 未登録・建玉なしは登録案内を出す", () => {
@@ -851,11 +1123,27 @@ if (import.meta.vitest) {
 					riskTolerance: null,
 					holdStyle: null,
 					maxPositionPct: null,
+					cashBalance: null,
 					note: null,
 				},
 				[],
 			);
 			expect(out).toContain("未登録 (`/profile` で登録できます)");
+		});
+
+		it("現金残高だけの profile も登録扱いで表示する", () => {
+			const out = buildMeText(
+				{
+					riskTolerance: null,
+					holdStyle: null,
+					maxPositionPct: null,
+					cashBalance: 500000,
+					note: null,
+				},
+				[],
+			);
+			expect(out).toContain("投資余力 (現金残高): 500,000 円");
+			expect(out).not.toContain("未登録 (`/profile` で登録できます)");
 		});
 
 		it("現値が無い建玉は含み損益を現値なしと表示する", () => {
@@ -885,7 +1173,7 @@ if (import.meta.vitest) {
 					price: 900,
 				},
 			]);
-			expect(out).toContain("含み損益 -10% (現値 900 円)");
+			expect(out).toContain("含み損益 -10,000 円 (-10% / 現値 900 円)");
 		});
 	});
 }

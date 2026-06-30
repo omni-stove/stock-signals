@@ -311,6 +311,7 @@ export const userProfiles = sqliteTable("user_profiles", {
 	riskTolerance: text("risk_tolerance"), // low | mid | high (リスク許容度)
 	holdStyle: text("hold_style"), // swing | day | mid_long (保有スタイル = 玉の持ち方の基本)
 	maxPositionPct: real("max_position_pct"), // 1銘柄あたり最大ポジション率 (%)。任意
+	cashBalance: real("cash_balance"), // 投資余力 (現金残高、円)。任意
 	note: text("note"), // 自由記述の特記事項。任意
 	updatedAt: text("updated_at").notNull(), // 最終更新時刻 (ISO8601)
 });

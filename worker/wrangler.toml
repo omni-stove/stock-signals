@@ -20,13 +20,6 @@ compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]   # cheerio 等の Node API 互換のため
 account_id = "020120735d111b7d06111196719171c1"  # admin@omnistove.com
 
-# CPU 時間上限。引け後 (20:00) intake は IR/開示/ニュース/市場ニュース/レーティング/信用残を
-# 全銘柄直列でフル収集する最重量 cron で、既定の 30 秒では超過して打ち切られる (収集後段の
-# dispatchSignalUpdate ごと飛んで再発火が止まっていた)。Standard プランは最大 300 秒まで設定可。
-# 収集の完走を担保するため引き上げる (実測の全収集は ~80 秒。余裕を見て 120 秒)。
-[limits]
-cpu_ms = 120000
-
 # Cron Triggers。cron は UTC 基準 (JST = UTC+9)。発火した cron 式を
 # scheduled() 内で event.cron により判別し、取得種別を振り分ける。
 # ※Cloudflare Cron は曜日の範囲指定 (0-4 等) を弾く (invalid cron string)。よって

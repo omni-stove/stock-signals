@@ -32,7 +32,8 @@ function round1(x: number): number {
 }
 
 // 1 行分の含み損益%。avg<=0 や price 無しは null。
-function pnlPct(
+// /me (slack-command.ts) も全建玉の含み損益表示に使うので export する。
+export function pnlPct(
 	side: string,
 	avgPrice: number,
 	price: number | null | undefined,

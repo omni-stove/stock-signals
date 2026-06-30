@@ -16,6 +16,7 @@ import { judgeContext } from "./routes/judge-context";
 import { latest } from "./routes/latest";
 import { marketContext } from "./routes/market-context";
 import { misc } from "./routes/misc";
+import { position } from "./routes/position";
 import { pull } from "./routes/pull";
 import { run } from "./routes/run";
 import { slack } from "./routes/slack";
@@ -43,6 +44,7 @@ app.route("/", judgeContext); // /judge-context (signal-judge/crash/slack-reply 
 app.route("/", contextInput); // /context-input (context-builder 用バンドル)
 app.route("/", marketContext); // /market-context (market-check 用バンドル)
 app.route("/", threadContext); // /thread-context (slack-reply 用バンドル)
+app.route("/", position); // /position-users, /position-context (position-review 用バンドル)
 app.route("/", misc); // /dispatch-test, /test-slack
 
 // 未捕捉例外を一元処理する。各ルートが投げる HTTPException (res に Response.json を載せている)
@@ -64,7 +66,7 @@ app.onError((err, c) => {
 
 app.notFound((c) =>
 	c.text(
-		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /context?code= /judge-context?code=&now= /context-input?code= /market-context?now= /thread-context?channel=&thread_ts=&kind=&text= /index-rebalance?now= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
+		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /context?code= /judge-context?code=&now= /context-input?code= /market-context?now= /thread-context?channel=&thread_ts=&kind=&text= /position-users /position-context?userId= /index-rebalance?now= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
 		404,
 	),
 );

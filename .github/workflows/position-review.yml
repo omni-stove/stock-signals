@@ -1,0 +1,197 @@
+# ユーザーの建玉 × 最新判定 (signals) × 当日 close → Claude Code Action でポジション評価 → 各ユーザーへ DM。
+#
+# 引け後 (eod cron) に Worker が建玉を持つユーザーがいれば repository_dispatch (event_type=position-review)
+# を 1 回撃つ。このワークフローはまず fan-out ジョブで Worker /position-users から userId 配列を引き、
+# review ジョブを userId ごとに matrix 展開する (max-parallel: 1 = 1 ユーザーずつ直列、OAuth レート安全側)。
+#
+# 各 review ジョブは Worker /position-context?userId= で「全建玉 × 最新判定 × close × 含み損益 × 順行/逆行」
+# を 1 JSON で受け取り (数値・向きはすべて Worker 側=決定論で算出済み)、判定ルールを prompt にベタ書きした
+# Claude Code Action がそれを @ で読んで、ポートフォリオ所見 + 各建玉のアクション/優先度を structured_output で
+# 返す。投稿 (DM) は後続ステップ (post-position-review.sh)。**このワークフローは signals/positions を一切
+# 書き換えない** (出力は Slack DM のみ)。
+#
+# 認証は Claude サブスク (OAuth) 方式: ローカルで `claude setup-token` → 生成トークンを
+# リポジトリ Secret CLAUDE_CODE_OAUTH_TOKEN に設定する。
+#
+# 必要な設定 (Settings → Secrets and variables → Actions):
+#   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
+#   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
+#   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+# DM 投稿は post-position-review.sh が Worker /slack/post に投げる (Bot 投稿)。Worker 側の追加設定:
+# SLACK_BOT_TOKEN。未設定 (503) なら投稿スキップ。
+# 発火元 (eod cron) は GitHub App ("omnistove-internal-auth") で repos/.../dispatches を叩く。
+
+name: position-review
+
+on:
+  # eod cron (Worker) が建玉ユーザーありのとき叩く。手動でも実行できる (検証用)。
+  repository_dispatch:
+    types: [position-review]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # claude-code-action@v1 が OIDC トークン取得に要求する
+
+jobs:
+  # 建玉を持つユーザーの userId 配列を Worker から引き、review の matrix に渡す。
+  # 対象ゼロなら users=[] を出し、review は matrix 空でスキップされる。
+  fan-out:
+    runs-on: ubuntu-latest
+    outputs:
+      users: ${{ steps.collect.outputs.users }}
+    steps:
+      - name: Collect position users
+        id: collect
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          users="$(curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/position-users" | jq -c '.users // []')"
+          echo "users=$users" >> "$GITHUB_OUTPUT"
+          echo "::notice::position-review targets: $users"
+
+  review:
+    needs: fan-out
+    # 対象ユーザーが 1 人以上いるときだけ走る (空配列なら matrix が空でジョブ自体がスキップ)。
+    if: ${{ needs.fan-out.outputs.users != '[]' && needs.fan-out.outputs.users != '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # 1 ユーザーの失敗で他ユーザーの評価を巻き込まない
+      max-parallel: 1 # 1 ユーザーずつ直列 (OAuth レート安全側)
+      matrix:
+        userId: ${{ fromJSON(needs.fan-out.outputs.users) }}
+    # 同一ユーザーの評価は 1 本に抑え、走行中に新しい要求が来たら古いジョブをキャンセルする
+    # (DM を出すだけで状態を持たないのでキャンセルしても整合は崩れない)。
+    concurrency:
+      group: position-review-${{ matrix.userId }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+
+      # Action 実行時は CLAUDE.md / AGENTS.md の指示が評価の邪魔になりうるので退避する (共通アクション)。
+      - uses: ./.github/actions/stash-claude-md
+
+      # ユーザーの全建玉 × 最新判定 × 当日 close × 含み損益 × 順行/逆行を Worker /position-context が
+      # 1 call で正規化して返す。数値・向きはすべて Worker 側 (決定論的) で算出済み。skill には curl を
+      # 叩かせず判断だけをさせる。userId が実在しない / 建玉ゼロなら 404 でここが落ち、当該ユーザーは
+      # スキップされる (fail-fast: false なので他ユーザーには波及しない)。JSON は特殊文字を含むので
+      # prompt に直接埋めず、ファイルに書いて skill にパスを渡す。
+      - name: Build position context
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # matrix.userId は /position-users が返した実在 userId。env 経由で run へ渡す
+          # (prompt へは展開せず、context JSON にだけ載る userId を skill が読む)。
+          USER_ID: ${{ matrix.userId }}
+        run: |
+          curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/position-context?userId=${USER_ID}" > "$RUNNER_TEMP/posctx.json"
+
+      - name: Run position-review
+        id: review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # eod cron 発の repository_dispatch は GitHub App ("omnistove-internal-auth") 発なので
+          # その Bot を許可する。手動/github.token 経由の github-actions[bot] も許す。
+          allowed_bots: "omnistove-internal-auth,github-actions[bot]"
+          # 判定ルールは prompt にベタ書きする (skill ファイルは持たない)。実行時に変わる建玉/判定の数値
+          # コンテキストだけを @ でファイルから取り込む。skill には curl/sh を叩かせない (投稿は次ステップ):
+          # Bash は渡さず Read のみ許可、ファイルも書かせない。
+          prompt: |
+            # position-review — 1 ユーザーの保有ポジション評価
+
+            You read one user's holdings, each tagged with the latest market 判定 (signal-judge call) and the
+            day's close, and return **what to do with each position** plus a one-line **portfolio 所見**. The
+            signal-judge has already chosen the market direction (buy-場 / sell-場) per name; your job is the
+            *position* layer it deliberately left out: read that direction against this user's 建玉 (建値, 含み損益,
+            現物/信用, 買建/売建) and pick the action — and how urgent it is — that the direction implies for *this*
+            holder.
+
+            Judge on what you can see now — 建値・含み損益・the signal's direction/line/stop/rr/headline — never on
+            hindsight. Do not invent a market call; the signal already set the direction. If a position has no signal
+            (`judge: null`), say 判定待ち and do not guess a direction for it.
+
+            ## Inputs
+
+            The position context JSON is embedded inline below. Do not post to Slack; do not run any script; do not
+            write any file — return your evaluation as structured output and stop.
+
+            How to read each position row:
+
+            - **`side`** (long=買建 / short=売建), **`account`** (cash=現物 / margin=信用), **`avgPrice`** 建値,
+              **`price`** 参照現値 (当日 close; null なら現値不明として扱う), **`pnlPct`** 含み損益%
+              (long は上昇で益 / short は下落で益; null なら算出不可).
+            - **`stance`** is a deterministic hint: 順行 = the signal agrees with the holder's direction, 逆行 =
+              it opposes it, 判定待ち = no signal. Apply it; the signal-judge already validated the direction.
+            - **`judge`** (null when no signal): `side` (buy/sell), `exec` (now/wait), `line` (wait の指値),
+              `stop` (損切りライン), `rr` (リスクリワード 良/可/薄), `headline` (判定 1 行). Lead on `headline`
+              for the reasoning, and let `stop`/`rr` tighten how hard you push an exit or an add.
+
+            ## Forming the call (per position)
+
+            - **順行 (signal agrees):** 継続 by default; an add (増し玉) only when 含み損益 has room and `rr` is 良/可
+              and `exec: now`. 含み益 that has run far argues 一部利確 over adding. `exec: wait` says the signal wants
+              a pullback to `line` — favor 継続/待ち over chasing.
+            - **逆行 (signal opposes):** lean to exit — 利確 if 含み益, 損切り検討 if 含み損 (esp. past `stop`).
+              信用 (margin) 逆行 with a loss is the most urgent (追証リスク); 現物 含み益 逆行 is a calmer 一部利確.
+            - **判定待ち (no signal):** say 判定待ち; do not assign an action beyond 現状維持.
+            - **`urgency`**: 高 = act tomorrow's open (信用逆行の含み損 / past 損切りライン), 中 = watch and act on
+              confirmation, 低 = no rush (順行継続 / 判定待ち).
+
+            ## Forming the 所見 (portfolio line, one string)
+
+            Read across all positions: セクター/方向の偏り (e.g. 半導体ロングに集中, 信用の逆行が複数), how many are
+            逆行 vs 順行, the overall 含み損益 の傾き. One Japanese line the user can read first to know "今夜の宿題".
+
+            ## Output
+
+            Return structured output and stop; the schema fixes the shape. `portfolio` = the 所見 line. `positions[]`
+            = one entry per holding in the input, same `ticker`, with `action` (利確/一部利確/損切り検討/継続/増し玉/
+            現状維持/判定待ち のいずれか相当の短い日本語), `urgency` (高/中/低), and `reason` (1 行、なぜそのアクションか:
+            建値からの距離・含み損益・判定の向きを名指しで). Keep every input position represented.
+
+            ## ポジションコンテキスト
+
+            @${{ runner.temp }}/posctx.json
+          # --json-schema で出力の形を縛る。portfolio=所見 1 行、positions[]=建玉ごとの評価。
+          # 検証済み JSON は steps.review.outputs.structured_output で受ける。skill には curl/sh を
+          # 叩かせない (投稿は次ステップ): Bash は渡さず Read のみ許可、ファイルも書かせない。
+          claude_args: >-
+            --model opus --effort high --allowedTools Read --max-turns 40
+            --json-schema '{
+              "type":"object","additionalProperties":false,
+              "required":["portfolio","positions"],
+              "properties":{
+                "portfolio":{"type":"string","description":"ポートフォリオ全体の所見 1 行 (日本語)。偏り・逆行件数・含み損益の傾き"},
+                "positions":{"type":"array","minItems":1,"items":{
+                  "type":"object","additionalProperties":false,
+                  "required":["ticker","action","urgency","reason"],
+                  "properties":{
+                    "ticker":{"type":"string","description":"銘柄コード (入力と一致)"},
+                    "name":{"type":["string","null"],"description":"銘柄名 (任意)"},
+                    "action":{"type":"string","description":"利確/一部利確/損切り検討/継続/増し玉/現状維持/判定待ち 相当の短い日本語"},
+                    "urgency":{"enum":["高","中","低"],"description":"対応の急ぎ度"},
+                    "reason":{"type":"string","description":"そのアクションの根拠 1 行 (建値からの距離・含み損益・判定の向き)"}
+                  }
+                }}
+              }
+            }'
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+
+      # skill の構造化出力 (structured_output) を当該ユーザーへ DM 投稿する (curl/jq/blocks 組み立て/
+      # フォールバックは script が持つ)。第1引数 = DM 先 userId、第2引数 = 評価 JSON。
+      - name: Post review DM
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          USER_ID: ${{ matrix.userId }}
+          REVIEW_JSON: ${{ steps.review.outputs.structured_output }}
+        run: |
+          printf '%s' "$REVIEW_JSON" > "$RUNNER_TEMP/review.json"
+          bash scripts/post-position-review.sh "$USER_ID" "$RUNNER_TEMP/review.json"

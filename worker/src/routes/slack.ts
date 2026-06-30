@@ -17,22 +17,32 @@
 // dispatch 実体は GitHub Actions の各ワークフロー (repository_dispatch: <event_type>)。
 // このルートは「起動するだけ」で、解析本文は skill が Slack に投稿する。
 
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { type ContextSection, sectionsToBlocks } from "../lib/context-format";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
-import { contexts, positions, slackThreads, userProfiles } from "../lib/schema";
+import type { ProfileRow } from "../lib/profile";
+import {
+	contexts,
+	daily,
+	positions,
+	prices,
+	slackThreads,
+	userProfiles,
+} from "../lib/schema";
 import { addReaction, openView, postMessage } from "../lib/slack";
 import {
 	ACTION_ID,
 	BLOCK_ID,
+	buildMeText,
 	COMMANDS,
 	CONTEXT_CMD,
 	CONTEXT_PICK,
 	type Command,
 	ephemeral,
+	type MePosition,
 	POSITION_CALLBACK_ID,
 	PROF_RISK_BLOCK,
 	PROFILE_CALLBACK_ID,
@@ -105,6 +115,63 @@ async function fireContext(env: Env, ticker: string): Promise<string> {
 		: `${ticker} の context 投稿に失敗しました (SLACK_BOT_TOKEN / chat:write を確認してください)。`;
 }
 
+// /mystatus : 本人 (userId) の登録済みプロフィール + 全保有建玉を引いて確認テキストを組む。
+// dispatch せず Worker 内で完結し、結果は本人にだけ ephemeral で返す (登録系の /position /profile の
+// 読み取り対になる)。各建玉の参照現値は thread-context と同じく prices(live) → daily close の順。
+async function fireMe(env: Env, userId: string): Promise<string> {
+	const drizzle = db(env.DB);
+
+	const profileRow =
+		((await drizzle
+			.select({
+				riskTolerance: userProfiles.riskTolerance,
+				holdStyle: userProfiles.holdStyle,
+				maxPositionPct: userProfiles.maxPositionPct,
+				note: userProfiles.note,
+			})
+			.from(userProfiles)
+			.where(eq(userProfiles.userId, userId))
+			.get()) as ProfileRow | undefined) ?? null;
+
+	const posRows = await drizzle
+		.select({
+			ticker: positions.ticker,
+			account: positions.account,
+			side: positions.side,
+			avgPrice: positions.avgPrice,
+			qty: positions.qty,
+		})
+		.from(positions)
+		.where(eq(positions.userId, userId))
+		.all();
+
+	// 各建玉の参照現値を銘柄ごとに引く (prices live → daily close → null)。
+	const mePositions: MePosition[] = [];
+	for (const r of posRows) {
+		const live = await drizzle
+			.select({ price: prices.price })
+			.from(prices)
+			.where(eq(prices.ticker, r.ticker))
+			.orderBy(desc(prices.fetchedAt))
+			.limit(1)
+			.get();
+		let price = live?.price ?? null;
+		if (price == null) {
+			const close = await drizzle
+				.select({ close: daily.close })
+				.from(daily)
+				.where(eq(daily.ticker, r.ticker))
+				.orderBy(desc(daily.date))
+				.limit(1)
+				.get();
+			price = close?.close ?? null;
+		}
+		mePositions.push({ ...r, price });
+	}
+
+	return buildMeText(profileRow, mePositions);
+}
+
 // 署名検証 + raw body 取得をまとめる。検証 NG なら Response を返す (呼び出し側で early return)。
 async function verified(
 	c: Context<{ Bindings: Env }>,
@@ -124,10 +191,11 @@ async function verified(
 	return { raw };
 }
 
-// POST /slack/command : スラッシュコマンド (/crash, /signal, /context, /position, /profile) の受け口。
+// POST /slack/command : スラッシュコマンド (/crash, /signal, /context, /position, /profile, /mystatus) の受け口。
 // form.command (例 "/crash") の先頭 / を外して分岐する。/crash /signal は COMMANDS を引いて
 // 解析を dispatch する。/context は D1 の living context を context チャンネルへ流す (dispatch しない別系統)。
-// /position /profile は dispatch ではなく登録 modal を開く (別系統)。
+// /position /profile は dispatch ではなく登録 modal を開く (別系統)。/mystatus は登録済みの profile/建玉を
+// 本人に ephemeral で確認表示する読み取り専用 (dispatch も modal も無い)。
 slack.post("/slack/command", async (c) => {
 	const v = await verified(c);
 	if ("err" in v) return v.err;
@@ -164,6 +232,14 @@ slack.post("/slack/command", async (c) => {
 				"好み登録フォームを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
 			);
 		return c.body(null, 200);
+	}
+
+	// /mystatus は dispatch も modal も挟まず、本人の登録済みプロフィール + 全建玉を引いて ephemeral で
+	// 返す読み取り専用コマンド (/position /profile の確認対)。user_id は form に必ず載る。
+	if (cmdKey === "mystatus") {
+		const userId = form.get("user_id") ?? "";
+		if (!userId) return ephemeral("ユーザー情報を取得できませんでした。");
+		return ephemeral(await fireMe(c.env, userId));
 	}
 
 	// /context は dispatch せず Worker 内で D1 から本文を引いて context チャンネルへ流す別系統。

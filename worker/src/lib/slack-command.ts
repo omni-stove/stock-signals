@@ -2,6 +2,8 @@
 // ルート (routes/slack.ts) は署名検証・D1・dispatch を担い、view 組み立て・コマンド定義・
 // イベント判定といった副作用のない部分はここに集約してテストを同伴させる。
 
+import { pnlPct } from "./positions";
+import type { ProfileRow } from "./profile";
 import { WATCHLIST, WATCHLIST_NAMES } from "./timeseries";
 
 // スラッシュコマンドごとの定義。command (Slack 登録名、先頭 / 抜き) で引く。
@@ -334,6 +336,92 @@ export function profileFormView() {
 			),
 		],
 	};
+}
+
+// ── /mystatus : 本人の好み・特記事項 + 全保有建玉を ephemeral でまとめて返す ──────────
+// /position /profile は「登録」、/mystatus は登録済みの内容を本人だけに「確認表示」する読み取り専用。
+// dispatch も modal も挟まず、routes が D1 から本人行を引いて buildMeText に渡し ephemeral で返す。
+// ラベル (リスク許容度/口座/方向) の語彙は登録時の DM 通知 (routes/slack.ts) と揃える。
+
+// /mystatus 表示用の建玉 1 行 (routes が select + 銘柄ごとの参照現値で組む)。
+export interface MePosition {
+	ticker: string;
+	account: string; // cash | margin
+	side: string; // long | short
+	avgPrice: number;
+	qty: number;
+	price: number | null; // 銘柄ごとの参照現値 (live → daily close、無ければ null)
+}
+
+const RISK_LABEL: Record<string, string> = {
+	low: "低 (慎重)",
+	mid: "中",
+	high: "高 (積極)",
+};
+const STYLE_LABEL: Record<string, string> = {
+	swing: "スイング",
+	day: "デイトレ",
+	mid_long: "中長期",
+};
+const ACCOUNT_LABEL: Record<string, string> = { cash: "現物", margin: "信用" };
+const SIDE_LABEL: Record<string, string> = {
+	long: "買い建て",
+	short: "売り建て",
+};
+
+// /me の本文を組む純粋関数。profile (null=未登録) と全建玉行を Slack mrkdwn テキストにまとめる。
+// 含み損益% は pnlPct を再利用 (現値無しは「現値なし」と表示)。両方空なら未登録の旨を返す。
+export function buildMeText(
+	profile: ProfileRow | null,
+	positions: MePosition[],
+): string {
+	const lines: string[] = [];
+
+	const hasProfile =
+		profile != null &&
+		(profile.riskTolerance != null ||
+			profile.holdStyle != null ||
+			profile.maxPositionPct != null ||
+			(profile.note != null && profile.note !== ""));
+	lines.push("*プロフィール*");
+	if (hasProfile && profile) {
+		lines.push(
+			`• リスク許容度: ${profile.riskTolerance == null ? "指定なし" : (RISK_LABEL[profile.riskTolerance] ?? profile.riskTolerance)}`,
+		);
+		lines.push(
+			`• 保有スタイル: ${profile.holdStyle == null ? "指定なし" : (STYLE_LABEL[profile.holdStyle] ?? profile.holdStyle)}`,
+		);
+		lines.push(
+			`• 最大ポジション率: ${profile.maxPositionPct == null ? "指定なし" : `${profile.maxPositionPct}%`}`,
+		);
+		if (profile.note != null && profile.note !== "")
+			lines.push(`• 特記事項: ${profile.note}`);
+	} else {
+		lines.push("• 未登録 (`/profile` で登録できます)");
+	}
+
+	lines.push("");
+	lines.push("*保有ポジション*");
+	if (positions.length === 0) {
+		lines.push("• なし (`/position` で登録できます)");
+	} else {
+		for (const p of positions) {
+			const name = WATCHLIST_NAMES[p.ticker];
+			const head = name ? `${p.ticker} ${name}` : p.ticker;
+			const account = ACCOUNT_LABEL[p.account] ?? p.account;
+			const side = SIDE_LABEL[p.side] ?? p.side;
+			const pnl = pnlPct(p.side, p.avgPrice, p.price);
+			const pnlText =
+				pnl == null
+					? "現値なし"
+					: `${pnl >= 0 ? "+" : ""}${pnl}%${p.price == null ? "" : ` (現値 ${p.price} 円)`}`;
+			lines.push(
+				`• *${head}* / ${account} / ${side} — 建値 ${p.avgPrice} 円 × ${p.qty} 株 / 含み損益 ${pnlText}`,
+			);
+		}
+	}
+
+	return lines.join("\n");
 }
 
 // view_submission の state から /profile 入力を取り出して検証する純粋関数。
@@ -717,6 +805,87 @@ if (import.meta.vitest) {
 				prof_maxpct_block: { prof_maxpct: txt("たくさん") },
 			});
 			expect(r.ok).toBe(false);
+		});
+	});
+
+	describe("buildMeText", () => {
+		const code = WATCHLIST[0];
+
+		it("profile と建玉を含み損益つきで整形する", () => {
+			const out = buildMeText(
+				{
+					riskTolerance: "high",
+					holdStyle: "swing",
+					maxPositionPct: 20,
+					note: "玉は分割で建てる",
+				},
+				[
+					{
+						ticker: code,
+						account: "cash",
+						side: "long",
+						avgPrice: 1000,
+						qty: 100,
+						price: 1100,
+					},
+				],
+			);
+			expect(out).toContain("リスク許容度: 高 (積極)");
+			expect(out).toContain("保有スタイル: スイング");
+			expect(out).toContain("最大ポジション率: 20%");
+			expect(out).toContain("特記事項: 玉は分割で建てる");
+			expect(out).toContain("現物");
+			expect(out).toContain("買い建て");
+			expect(out).toContain("含み損益 +10% (現値 1100 円)");
+		});
+
+		it("profile 未登録・建玉なしは登録案内を出す", () => {
+			const out = buildMeText(null, []);
+			expect(out).toContain("未登録 (`/profile` で登録できます)");
+			expect(out).toContain("なし (`/position` で登録できます)");
+		});
+
+		it("全フィールド空の profile も未登録扱い", () => {
+			const out = buildMeText(
+				{
+					riskTolerance: null,
+					holdStyle: null,
+					maxPositionPct: null,
+					note: null,
+				},
+				[],
+			);
+			expect(out).toContain("未登録 (`/profile` で登録できます)");
+		});
+
+		it("現値が無い建玉は含み損益を現値なしと表示する", () => {
+			const out = buildMeText(null, [
+				{
+					ticker: code,
+					account: "margin",
+					side: "short",
+					avgPrice: 1200,
+					qty: 50,
+					price: null,
+				},
+			]);
+			expect(out).toContain("信用");
+			expect(out).toContain("売り建て");
+			expect(out).toContain("含み損益 現値なし");
+		});
+
+		it("含み損益マイナスは符号付きで出す", () => {
+			const out = buildMeText(null, [
+				{
+					ticker: code,
+					account: "cash",
+					side: "long",
+					avgPrice: 1000,
+					qty: 100,
+					price: 900,
+				},
+			]);
+			expect(out).toContain("含み損益 -10% (現値 900 円)");
 		});
 	});
 }

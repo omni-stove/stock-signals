@@ -255,24 +255,30 @@ export async function collectRatings(
 	}
 
 	// 2. 見つけた日報を1本取得し、その関連リンクから同日の日報を全種類に拡張する。
+	// 取得した HTML はステップ3で使い回し、同じ記事を二度 fetch しない (sleep+fetch を1回省く)。
+	const htmlCache = new Map<string, string>();
 	if (reportIds.size > 0) {
 		const firstId = [...reportIds][0];
 		try {
 			await new Promise((res) => setTimeout(res, interval));
 			const html = await fetchHtml(URL_ARTICLE(firstId), env);
+			htmlCache.set(firstId, html);
 			for (const id of extractReportIds(html)) reportIds.add(id);
 		} catch (e) {
 			console.error(`ratings: expand related failed: ${(e as Error).message}`);
 		}
 	}
 
-	// 3. 各日報をパースし watchlist 行だけ保存。
+	// 3. 各日報をパースし watchlist 行だけ保存。ステップ2で取得済みの記事は sleep+fetch を省く。
 	const perTickerWritten: Record<string, number> = {};
 	let scannedRows = 0;
 	for (const id of reportIds) {
-		await new Promise((res) => setTimeout(res, interval));
 		try {
-			const html = await fetchHtml(URL_ARTICLE(id), env);
+			let html = htmlCache.get(id);
+			if (html === undefined) {
+				await new Promise((res) => setTimeout(res, interval));
+				html = await fetchHtml(URL_ARTICLE(id), env);
+			}
 			const ratings = parseReport(html);
 			scannedRows += ratings.length;
 			for (const r of ratings) {

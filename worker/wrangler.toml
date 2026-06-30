@@ -20,6 +20,13 @@ compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]   # cheerio 等の Node API 互換のため
 account_id = "020120735d111b7d06111196719171c1"  # admin@omnistove.com
 
+# CPU 時間上限。引け後 (20:00) intake は IR/開示/ニュース/市場ニュース/レーティング/信用残を
+# 全銘柄直列でフル収集する最重量 cron で、既定の 30 秒では超過して打ち切られる (収集後段の
+# dispatchSignalUpdate ごと飛んで再発火が止まっていた)。Standard プランは最大 300 秒まで設定可。
+# 収集の完走を担保するため引き上げる (実測の全収集は ~80 秒。余裕を見て 120 秒)。
+[limits]
+cpu_ms = 120000
+
 # Cron Triggers。cron は UTC 基準 (JST = UTC+9)。発火した cron 式を
 # scheduled() 内で event.cron により判別し、取得種別を振り分ける。
 # ※Cloudflare Cron は曜日の範囲指定 (0-4 等) を弾く (invalid cron string)。よって
@@ -66,7 +73,10 @@ bucket_name = "stock-signals-articles"
 
 [vars]
 USER_AGENT = "stock-signals-bot/0.1 (personal research; contact: admin@omnistove.com)"
-MIN_INTERVAL_MS = "5000"
+# kabutan への連続アクセス間隔 (記事ごとの fetch 直前に待つ)。引け後 (20:00) intake は全収集を
+# 直列に回すため、この値が大きいと待ち時間が積み上がり (ratings だけで sleep×8 ≒ 40 秒)、収集全体が
+# 80 秒級になっていた。礼儀の範囲で 2 秒に抑え、intake 全体のウォールクロックを圧縮する。
+MIN_INTERVAL_MS = "2000"
 # GitHub App (omnistove-internal-auth) で signal-update を repository_dispatch 起動する。
 # App ID と installation ID は秘密でないので vars。private key だけ Secret:
 #   npx wrangler secret put GH_APP_PRIVATE_KEY   (.pem の中身を貼る)

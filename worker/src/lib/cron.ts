@@ -13,7 +13,7 @@ import { collectMargin } from "./margin";
 import { collectMarketNews } from "./market-news";
 import { collectNews } from "./news";
 import { collectPeerEarnings } from "./peer-earnings";
-import { reviewPositions } from "./position-review";
+import { listPositionUsers } from "./position-review";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
 import { notifyNewsSlack } from "./slack";
@@ -147,6 +147,19 @@ export async function runScheduled(
 				event.scheduledTime,
 			).catch((e) => console.error("market-check dispatch failed:", e));
 		}
+		// intake (寄り前 8:30 / 引け後 20:00) は新規の有無によらず全銘柄を signal-update する。
+		// fresh だけを撃つと、出来高/話題の薄い銘柄 (例: 6857 が数日ニュース 0) が一度も判定されず
+		// 取り残されるため。signal-judge はワークフロー側で無条件に発火する (context-builder.yml の
+		// dispatch ステップ) ので、価格/地合いの変化だけは寄り前/引け後ごとに必ず拾える。場中
+		// (prices, 5分毎) は LLM コストを抑えるため新規ベース (下の分岐)。
+		//
+		// この dispatch は「収集より先」に撃つ。全銘柄無条件なので fresh 集計に依存しない。収集
+		// (IR/ニュース等の全銘柄フル取得) は重く、引け後 (20:00) は market_news まで相乗りして
+		// CPU 時間上限に達しうる。収集後に dispatch を置くと、収集が上限超過で打ち切られた回に
+		// dispatch ごと飛んで再発火が止まる。先に撃てば収集が途中で力尽きても判定だけは必ず発火
+		// する。寄り前 (8:30) の地合い dispatch (market-check) は上で既に撃ち終えており、順序
+		// (地合い→個別) も保たれる。
+		await dispatchSignalUpdate(env, WATCHLIST);
 		// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) のいずれかに新規があった
 		// 銘柄をまとめて signal-report を起動する。適時開示は /pull の ir カーソルに合流する。
 		const ir = await collectAll(env, null, DEFAULT_LIMIT);
@@ -198,13 +211,6 @@ export async function runScheduled(
 		);
 		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
 		await notifyFreshNews(env, news, mnews);
-		// intake (寄り前 8:30 / 引け後 20:00) は新規の有無によらず全銘柄を signal-update する。
-		// fresh だけを撃つと、出来高/話題の薄い銘柄 (例: 6857 が数日ニュース 0) が一度も判定されず
-		// 取り残されるため。context-builder は新規 0 なら no-update でコンテキストを触らないが、
-		// signal-judge はワークフロー側で無条件に発火する (context-builder.yml の dispatch ステップ)
-		// ので、価格/地合いの変化だけは寄り前/引け後ごとに必ず拾える。
-		// 場中 (prices, 5分毎) は LLM コストを抑えるため新規ベース (下の分岐)。
-		await dispatchSignalUpdate(env, WATCHLIST);
 		return;
 	}
 	if (kind === "prices") {
@@ -285,12 +291,23 @@ export async function runScheduled(
 			console.error("forced-liquidation failed:", err);
 			return null;
 		});
-		// 全ユーザーのポジション評価を当夜にまとめて各ユーザーへ DM する。signal-judge が当日出した
-		// 最新判定 (signals) を建玉 (positions) に当てて利確/損切り/継続を読み替える。判定は intake/場中
-		// で signals に溜まっており、引け後に出揃った最新足 close を参照現値にする。SLACK_BOT_TOKEN
-		// 未設定なら no-op。失敗しても eod の主収集は壊さない (catch でログのみ)。
-		const pr = await reviewPositions(env).catch((err) => {
-			console.error("position-review failed:", err);
+		// ポジション評価は当夜に GitHub Actions (position-review) へ委譲する。建玉を持つユーザーが
+		// いれば repository_dispatch (position-review) を 1 回撃つだけ。ワークフローが /position-users で
+		// userId を引き、ユーザーごとに /position-context を読んで LLM 評価し各ユーザーへ DM する。
+		// signals は intake/場中で溜まっており、引け後に出揃った最新足 close を参照現値にする。建玉ゼロや
+		// App 認証情報未設定なら撃たない。失敗しても eod の主収集は壊さない (catch でログのみ)。
+		const pr = await (async () => {
+			const users = await listPositionUsers(env);
+			if (users.length === 0) return { dispatched: false, users: 0 };
+			const ok = await dispatchEventPayload(
+				env,
+				"position-review",
+				{},
+				event.scheduledTime,
+			);
+			return { dispatched: ok, users: users.length };
+		})().catch((err) => {
+			console.error("position-review dispatch failed:", err);
 			return null;
 		});
 		console.log(

@@ -98,27 +98,103 @@ jobs:
           USER_ID: ${{ github.event.client_payload.user }}
           TEXT: ${{ github.event.client_payload.text }}
 
-      - name: Run slack-reply skill
+      # 返信ルールは prompt にベタ書きする (skill ファイルは持たない)。実行時に変わる入力 (スレッド
+      # 履歴 / 数値コンテキスト) だけを @ でファイルから取り込む (Slack ユーザーの自由入力を含む外部由来
+      # JSON を ${{ }} で prompt に生展開せず YAML 破壊・prompt インジェクションを防ぐ)。ticker は
+      # Validate 済みなので prose に展開してよい。skill は @ で読み込んで structured_output で返すだけ。
+      - name: Run slack-reply
+        id: reply
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Worker (GitHub App "omnistove-internal-auth") 発の repository_dispatch の actor は
           # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
-          # @ で始まる第2引数にスレッドJSON、第3引数に数値コンテキスト JSON (コンテキスト本文同梱) の
-          # パスを渡す。skill は両 JSON を Read するだけ。out= は返信本文の出力先。
-          # skill はここに Write するだけで投稿しない。投稿は次ステップが同スレッドへ行う。
-          prompt: "/slack-reply ${{ github.event.client_payload.ticker }} -- @${{ runner.temp }}/thread.json @${{ runner.temp }}/numctx.json out=${{ runner.temp }}/reply.out"
-          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash は渡さず Read,Write のみ許可。
-          claude_args: "--model opus --effort high --allowedTools Read,Write --max-turns 40"
+          prompt: |
+            # slack-reply — 対象銘柄 ${{ github.event.client_payload.ticker }}
+
+            A user replied in-thread to your earlier analysis for this ticker. Match the user's language (usually 日本語).
+
+            ## Inputs
+
+            Two JSON inputs are embedded inline below. Do not post to Slack; do not run any script; do not write
+            any file — return your reply as structured output and stop. Answer only on what these inputs show
+            now; never on hindsight or a later result.
+
+            The **thread JSON** is `{ channel, thread_ts, kind, replies: [...], positions }`. `replies` is
+            `[{ user, text, ts }, ...]`; `kind` (`signal-judge` / `crash-scenario`) is what the user is replying to; the last `replies` entry is the
+            question to answer, the earlier ones the original analysis and any back-and-forth. Empty `replies` →
+            ask what they want to know, in one line, and stop.
+
+            `positions` is the user's own holdings for this ticker: `{ status, ref_price, positions: [{ account,
+            side, avg_price, qty, pnl_pct }, ...] }`. `status: none` → no holdings. `pnl_pct` is from
+            `ref_price`; null when no price was available.
+
+            `profile` is the user's own trading preferences, set via `/profile`: `{ status, risk_tolerance,
+            hold_style, max_position_pct, note }`. `status: none` → not set. `risk_tolerance` is `low`/`mid`/`high`,
+            `hold_style` is `swing`/`day`/`mid_long` (玉の持ち方の基本), `max_position_pct` a per-name size cap (%),
+            `note` free-text 特記事項. Any field may be null.
+
+            The other JSON is the **numeric context** — `tape`/`premarket`/`margin` are current values,
+            `context_body` is the fixed accumulated context:
+
+            - **`context_body`** is your primary fundamental input, lead on it; 直近の重大トピック is freshest.
+              Null → say `context: unavailable` and answer on price + backdrop alone.
+            - **`ticker_note`**: qualifies the other inputs, never leads.
+            - **`prices` / `premarket` / `margin`** confirm the fundamental read with the current tape; don't let
+              them flip it. Pair **`market_phase`** with `prices.quote_status`: a `closed`/stale tape is about to
+              open (premarket) vs already closed — demote a stale tape, don't read a fresh move into it.
+              In-session, `daily` is the prior confirmed bar (so `vol_x_20d` is yesterday's); for today's 出来高
+              read `daily.vol_x_20d_intraday`.
+            - the ticker's `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist.ts`.
+
+            ## What to do
+
+            - Answer the user's actual question; don't re-run the whole analysis unless asked. If they push
+              back on the call, weigh their point against the data honestly — concede where they're right, hold
+              where the data holds, and say which. Don't shift your earlier direction to please them.
+            - When holdings are present, weigh the answer against the user's own entry, size, and unrealized
+              P&L, not just the generic call. Don't assume holdings beyond what's registered.
+            - When `profile` is set, frame the answer to the user's risk tolerance, hold style, size cap, and
+              特記事項. Don't override the data — surface where their preference and the call diverge.
+            - Stay consistent with the original `kind`: a signal-judge thread is about the buy/sell direction
+              and 水準; a crash-scenario thread is about the crash paths, triggers, and defenses. Don't
+              silently switch frames.
+            - Keep it to a few sentences unless they asked for depth; no preamble.
+
+            ## Output
+
+            Return your reply as structured output and stop; the schema fixes the shape.
+
+            ## スレッド文脈
+
+            @${{ runner.temp }}/thread.json
+
+            ## 数値コンテキスト
+
+            @${{ runner.temp }}/numctx.json
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず Read のみ許可。
+          # --json-schema で出力の形を縛る。reply = 同スレッドへ貼る返信本文 (日本語)。
+          claude_args: >-
+            --model opus --effort high --allowedTools Read --max-turns 40
+            --json-schema '{
+              "type":"object","additionalProperties":false,
+              "required":["reply"],
+              "properties":{
+                "reply":{"type":"string","description":"同スレッドへ貼る返信本文。見出し・JSON なしの本文のみ"}
+              }
+            }'
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
 
-      # skill が書いた返信本文を読んで同スレッドへ投稿する (channel/thread_ts は thread.json から)。
+      # skill の構造化出力 (structured_output {reply}) を同スレッドへ投稿する (channel/thread_ts は thread.json から)。
       - name: Post reply to thread
-        run: bash scripts/post-reply.sh reply "$RUNNER_TEMP/thread.json" "$RUNNER_TEMP/reply.out"
+        run: |
+          printf '%s' "$REPLY_JSON" > "$RUNNER_TEMP/reply.json"
+          bash scripts/post-reply.sh reply "$RUNNER_TEMP/thread.json" "$RUNNER_TEMP/reply.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          REPLY_JSON: ${{ steps.reply.outputs.structured_output }}

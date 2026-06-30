@@ -1,11 +1,17 @@
-// Cloudflare Worker: 市場テーマニュース収集 (kabutan 市場ニュース総合)
+// Cloudflare Worker: 市場テーマニュース収集 (kabutan 市場ニュース総合 + ITmedia AI+ RSS)
 //
-// 銘柄ページ (news.ts) に載らない市場全体・テーマニュース (例: 「オープンAI上場延期」)
-// を拾う。半導体/AI/金利/米国市場のテーマに当たった見出しだけを market_news テーブル
-// + R2 に保存し、地合い判定 (market-check) が /market-context 経由で最新数件を読む。
+// 銘柄ページ (news.ts) に載らない市場全体・テーマニュースを拾う。半導体/AI/金利/米国市場の
+// テーマに当たった見出しだけを market_news テーブル + R2 に保存し、地合い判定 (market-check) が
+// /market-context 経由で最新数件を読む。
 //   source は持たない (銘柄非依存)。重複排除は market_news.url PK + INSERT OR IGNORE。
 //
-// 市場ニュースの記事ページは銘柄ニュース (news.ts) と DOM が異なる:
+// 収集元は2系統:
+//   - kabutan 市場ニュース総合 (国内市況・材料が中心)。HTML をスクレイプし記事本文も取る。
+//   - ITmedia AI+ RSS (OpenAI/Anthropic/Gemini 等の海外AI企業動向を日本語で直接カバー)。
+//     kabutan は AI 企業の単独動向を従属句でしか扱わず新着リスト依存で取りこぼすため、これを補完。
+//     RSS は item に title/link/description/pubDate が揃うので、本文 = description を使い記事再取得は不要。
+//
+// kabutan 記事ページは銘柄ニュース (news.ts) と DOM が異なる:
 //   タイトル = article h1 (【市況】等のカテゴリ接頭辞付き)、本文 = article .body、
 //   日付 = time.s_news_date[datetime] (これは銘柄ニュースと共通)。
 // 銘柄ニュース用 parseKabutanArticle は #shijyo_news_text / h1.pdbt0 を見るため流用できない。
@@ -24,6 +30,8 @@ export interface MarketNewsEnv {
 }
 
 const URL_LIST = "https://kabutan.jp/news/marketnews/";
+// 海外AI企業動向の補完 RSS (OpenAI/Anthropic/Gemini 等を日本語見出しで直接カバー)。
+const URL_AIPLUS_RSS = "https://rss.itmedia.co.jp/rss/2.0/aiplus.xml";
 
 // 一覧から本文取得する最大件数 (新しい順、topic 一致後)。場中の連投を避けるため控えめに。
 const NEWS_LIMIT = 12;
@@ -171,6 +179,36 @@ function parseList(
 	return out;
 }
 
+// RSS 2.0 の <item> を url/title/date/body に抽出 (cheerio の xmlMode)。ITmedia AI+ 用。
+// body は description をそのまま使う (記事ページ再取得は不要)。date は pubDate を YYYY-MM-DD に正規化。
+function parseRss(
+	xml: string,
+): { url: string; title: string; date: string; body: string }[] {
+	const $ = cheerio.load(xml, { xmlMode: true });
+	const out: { url: string; title: string; date: string; body: string }[] = [];
+	$("item").each((_, el) => {
+		const $it = $(el);
+		const url = $it.find("link").first().text().trim();
+		const title = $it.find("title").first().text().trim();
+		if (!url || !title) return;
+		out.push({
+			url,
+			title,
+			date: rssDate($it.find("pubDate").first().text().trim()),
+			body: $it.find("description").first().text().trim(),
+		});
+	});
+	return out;
+}
+
+// RFC822 pubDate ("Fri, 26 Jun 2026 13:35:00 +0900") を YYYY-MM-DD に正規化。取れなければ "unknown"。
+// Date.now/new Date(無引数) と違い引数つき new Date は使えるので Date でパースする。
+function rssDate(raw: string): string {
+	const ms = Date.parse(raw);
+	if (Number.isNaN(ms)) return "unknown";
+	return new Date(ms).toISOString().slice(0, 10);
+}
+
 // 市場ニュースの記事本文ページを抽出 (銘柄ニュースと DOM が異なる、冒頭コメント参照)。
 function parseArticle(html: string): {
 	title: string;
@@ -294,7 +332,54 @@ export async function collectMarketNews(env: MarketNewsEnv): Promise<{
 			);
 		}
 	}
-	return { found: all.length, matched: items.length, written, freshNews };
+
+	// ITmedia AI+ RSS を補完収集する。topic 一致 (主に ai) かつ未取得のものだけ保存。RSS は item に
+	// title/link/description/pubDate が揃うので記事ページ再取得は不要 (本文 = description)。
+	// 失敗しても kabutan 側の収集結果は壊さない (catch でログのみ)。
+	let aiFound = 0;
+	let aiMatched = 0;
+	try {
+		const rss = await fetchHtml(URL_AIPLUS_RSS, env);
+		const rssItems = parseRss(rss);
+		aiFound = rssItems.length;
+		const aiHits = rssItems
+			.map((it) => ({ ...it, topic: matchTopics(it.title) }))
+			.filter((it): it is typeof it & { topic: string } => it.topic !== null)
+			.slice(0, NEWS_LIMIT);
+		aiMatched = aiHits.length;
+		for (const it of aiHits) {
+			if (await isSeen(env, it.url)) continue;
+			try {
+				await saveArticle(env, {
+					url: it.url,
+					title: it.title,
+					topic: it.topic,
+					published_at: it.date,
+					body: it.body,
+				});
+				written++;
+				freshNews.push({
+					topic: it.topic,
+					title: it.title,
+					url: it.url,
+					date: it.date,
+				});
+			} catch (e) {
+				console.error(
+					`market-news (aiplus) article error ${it.url}: ${(e as Error).message}`,
+				);
+			}
+		}
+	} catch (e) {
+		console.error(`market-news aiplus rss error: ${(e as Error).message}`);
+	}
+
+	return {
+		found: all.length + aiFound,
+		matched: items.length + aiMatched,
+		written,
+		freshNews,
+	};
 }
 
 if (import.meta.vitest) {
@@ -356,6 +441,44 @@ if (import.meta.vitest) {
 					date: "06/26 11:47",
 				},
 			]);
+		});
+	});
+
+	describe("parseRss", () => {
+		const xml = [
+			'<?xml version="1.0" encoding="utf-8" ?>',
+			'<rss version="2.0"><channel>',
+			"<item>",
+			"<title>OpenAI、GPT-5.5 Instant をアップデート</title>",
+			"<link>https://www.itmedia.co.jp/news/articles/2606/26/news091.html</link>",
+			"<description>OpenAI は GPT-5.5 を更新した。</description>",
+			"<pubDate>Fri, 26 Jun 2026 13:35:00 +0900</pubDate>",
+			"</item>",
+			"<item>",
+			"<title>link 欠落は除外される</title>",
+			"<description>本文</description>",
+			"</item>",
+			"</channel></rss>",
+		].join("");
+
+		it("item から url/title/date(YYYY-MM-DD)/body を抽出する", () => {
+			expect(parseRss(xml)).toEqual([
+				{
+					url: "https://www.itmedia.co.jp/news/articles/2606/26/news091.html",
+					title: "OpenAI、GPT-5.5 Instant をアップデート",
+					date: "2026-06-26",
+					body: "OpenAI は GPT-5.5 を更新した。",
+				},
+			]);
+		});
+	});
+
+	describe("rssDate", () => {
+		it("RFC822 pubDate を YYYY-MM-DD に正規化する", () => {
+			expect(rssDate("Fri, 26 Jun 2026 13:35:00 +0900")).toBe("2026-06-26");
+		});
+		it("パースできなければ unknown", () => {
+			expect(rssDate("日付不明")).toBe("unknown");
 		});
 	});
 

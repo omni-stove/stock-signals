@@ -4,9 +4,10 @@
 # repository_dispatch (event_type=signal-judge、client_payload.ticker に単一銘柄) でこのワークフローを
 # 起動する。手動でも実行できる。
 #
-# 起動後は .claude/skills/signal-judge が対象銘柄のコンテキスト(context-builder が育てたもの)を
-# 読み、Worker /latest で価格/日足/地合い/決算日/信用残を引いて buy/sell の方向を1本にまとめ、
-# Slack に通知する。**このワークフローはコンテキストを一切書き換えない**(出力は Slack のみ)。
+# 起動後は判定ルールを prompt にベタ書きした Claude Code Action が対象銘柄の数値コンテキスト
+# (context-builder が育てたコンテキスト本文 + Worker /judge-context の価格/日足/地合い/決算日/信用残)
+# を @ で読み、buy/sell の方向を1本にまとめて structured_output で返す。投稿は後続ステップ
+# (post-signal.sh)。**このワークフローはコンテキストを一切書き換えない**(出力は Slack のみ)。
 # context-builder がコンテキストを書き、signal-judge が Slack を書く、という役割の固定により、
 # judge → context の編集ループは発生しない。
 #
@@ -102,7 +103,8 @@ jobs:
           # payload/inputs 由来の ticker は run へ生展開せず env 経由で渡す。
           TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
 
-      - name: Run signal-judge skill
+      - name: Run signal-judge
+        id: judge
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -113,23 +115,147 @@ jobs:
           # Slack スラッシュコマンド /signal 経由は Worker (GitHub App "omnistove-internal-auth")
           # 発の dispatch なので、その App の Bot も許可する (slack-reply.yml と同じ)。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
-          # 発火時は client_payload.ticker、手動実行時は inputs.ticker。@ で始まる引数は数値
-          # コンテキスト (event_context / context_body 同梱) のファイルパス。skill は Read するだけ。
-          # out= は判定の出力先 (1 行目 headline + 本文)。skill はここに Write するだけで投稿しない。
-          # 自由文字列を prompt に素埋めしないことで -- / @ の衝突を避ける。
-          prompt: "/signal-judge ${{ github.event.client_payload.ticker || inputs.ticker }} @${{ runner.temp }}/numctx.json out=${{ runner.temp }}/signal.out"
-          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash は渡さず Read,Write のみ許可。
-          claude_args: "--model opus --effort high --allowedTools Read,Write --max-turns 40"
+          # 判定ルールは prompt にベタ書きする (skill ファイルは持たない)。実行時に変わる数値コンテキスト
+          # だけを @ でファイルから取り込む (外部由来 JSON を ${{ }} で prompt に生展開せず YAML 破壊・
+          # prompt インジェクションを防ぐ)。ticker は Validate 済みなので prose に展開してよい。
+          prompt: |
+            # signal-judge — 対象銘柄 ${{ github.event.client_payload.ticker || inputs.ticker }}
+
+            Judge the market side only — buy-場 or sell-場 at this level — and output a **direction** plus a
+            **price line**, never a 動詞. The reader maps `sell`→利確/損切り, `buy`→新規/増し玉 against their own
+            position; do not choose that verb for them.
+
+            Judge on what you can see now — context, numbers, `event_context` — never on hindsight ("priced in,"
+            "unexplained" volume, a top being "in"). "after it falls further" / "once it settles" is not a verdict;
+            tomorrow's open, next week, the quarter ahead never decide. Default to `exec: now` (約定可能 at the
+            current price); take `exec: wait` only when a named support/MA sits just under, and put that line in
+            `line`. 過熱・地合い・不確実性 tighten the 損切り or size you down — they never push the entry down to wait.
+
+            ## Inputs
+
+            The numeric context JSON is embedded inline below. Do not post to Slack; do not run any script; do
+            not write any file — return your call as structured output and stop.
+
+            How to read the fields (what to lead on, what to ignore):
+
+            - **`context_body`** carries three layers: 直近の重大トピック (freshest), older structural context,
+              証券会社レーティング (6–12mo, weight by 発行日 / アップサイド% / 信頼度). Null → emit
+              `context: unavailable` and call on price alone.
+            - **`market_regime`** (`{ regime, stance, headline }`): apply it, don't merely weigh it.
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`; a `特になし` tail
+              means no event fired — ignore it.
+            - **`ticker_note`**: qualifies the other inputs, never sets direction.
+            - **`prices`**: ignore `pts_price`; use `change_pct`/`volume`/`quote_time`/`slot` (`slot` =
+              `premarket`/`regular`/`closing`). `quote_status: closed` → stale tape, demoted to backdrop.
+            - **`market_phase`** (JST trading-day position) says what to lead on: `premarket` → lead on
+              `premarket`/context (digesting overnight NY); `afternoon_session` with a live tape → lead on the
+              live tape, a pre-close call on carrying overnight into tomorrow; `closed` → react to the close +
+              tonight's NY setup.
+              - **During the session** (`morning_session`/`lunch_break`/`afternoon_session`) `daily` has no
+                confirmed bar for today yet, so `daily.latest_date` is the **prior** trading day and `vol_x_20d` /
+                `range_pct` / MA乖離 are all on that prior bar — do not read them as today's. For 出来高 use
+                `daily.vol_x_20d_intraday` (today's cumulative volume pace-projected to a full day ÷ 20日平均);
+                null near the open means too little has traded to project. After `closed`, `vol_x_20d` is the
+                confirmed value again and `vol_x_20d_intraday` is null.
+            - **`premarket`**: lead on `sox_change_pct` (this sector tracks SOX); `nasdaq_change_pct` /
+              `dow_change_pct` / `nikkei_futures_price` are backdrop confirming the SOX read, never the driver.
+            - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.
+            - the ticker's `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist.ts`.
+
+            ## Forming the call
+
+            ### Primary — sets the direction
+
+            - **`context_body`** is the heart of the call. Fresh corroborating topics in 直近の重大トピック (or a
+              just-released earnings/guidance) set the strongest direction; a thin single line still picks a side,
+              noted as thin; nothing materially new weakens the case. 証券会社レーティング only corroborates.
+
+            ### Secondary — moves the 水準 only
+
+            Name in the body how each force that fired moved the 水準.
+
+            **地合い (`market_regime` gate):**
+
+            - リスクオフ bars 追い and floors the 損切り (size down, tighten); 中立 grants no boost; リスクオン
+              permits the fuller 水準.
+
+            **過熱 (how stretched the move is):**
+
+            - **How far the move has run** → tighter (higher buy line, shallower add). `fair_per`: above it
+              tightens, below it supports a deeper dip-buy.
+            - **Overbought** argues against adding, not holding.
+              `daily.momentum_state`: `extended` = trend still working, `cracking` = turn toward exiting (so is
+              the driving topic dropping out of 直近の重大トピック). The gate sets how hard it bites — リスクオン
+              reads `extended` as the trend working, リスクオフ as the first 投げ; name which regime set the read.
+              Read `atr_pct` cross-sectionally against the sector when `atr_pct_baseline` is null.
+            - **`daily.volume_quality`** on an 出来薄 up move: `accumulation` holds the 水準, `thin` tightens it,
+              `mixed`/`na` lean neither way. Works the 過熱 read only.
+
+            **需給 (positioning / flow):**
+
+            - **Margin** contradicting the context → soften the 水準 one step.
+            - **`forced`** (status `none` → skip): `summary` already states the forced-flow timing
+              (投げ/踏み, ~何営業日後のどのセッション, building=これから / exhausted=出尽くし); take it as given and
+              lead the 水準 to that dip rather than chasing into it. Never sets direction.
+            - **Event context** — SQ週/メジャーSQ unwind distorts the tape (treat the move as noise, fall back to
+              fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX. A near 海外SOX系ピア決算
+              swings SOX next day and reaches this name via the sector — soften one step while pending; the
+              result lands in `premarket.sox_change_pct`.
+
+            **イベントリスク (binary events):**
+
+            - **Earnings near** is binary-event risk → tighter (smaller size, tighter 損切り); cannot set
+              direction. **Just out** (`earnings_result.status: fresh`): `verdict`
+              tilts one step — `beat` toward holding/adding, `miss` toward exiting; `inline` and non-`fresh` add
+              nothing. Near or just-out, read the price reaction through **## 決算の特色・クセ** (the name may
+              move on a metric other than EPS).
+
+            ## Output
+
+            One direction (`buy`/`sell`) with `exec` and, when `exec: wait`, the `line`. Add the risk frame: a
+            損切り level (price or MA/range line) and a one-word リスクリワード (良/可/薄) from upside-to-損切り.
+
+            Return it as structured output and stop; the schema fixes the shape. Carry the same call in both the
+            structured fields and the Japanese Slack prose — drive on the driving topics, the
+            price/backdrop/earnings tilt, why this line (a 需給 line if 信用残 mattered, how the gate moved the
+            水準), and the 損切り/RR read. The prose and the fields are the one call; keep them consistent.
+
+            ## 数値コンテキスト
+
+            @${{ runner.temp }}/numctx.json
+          # --json-schema で出力の形を縛る (= signal-judge の構造化スキーマの唯一の定義場所)。
+          # side/line/stop/rr が機械可読な判定、headline/body が同じ判定の Slack 表示用日本語。
+          # 検証済み JSON は steps.judge.outputs.structured_output で受ける。skill には curl/sh を
+          # 叩かせない (投稿/保存は次ステップ): Bash は渡さず Read のみ許可、ファイルも書かせない。
+          claude_args: >-
+            --model opus --effort high --allowedTools Read --max-turns 40
+            --json-schema '{
+              "type":"object","additionalProperties":false,
+              "required":["side","exec","line","stop","rr","headline","body"],
+              "properties":{
+                "side":{"enum":["buy","sell"],"description":"買い場 buy / 売り場 sell の方向 1 本"},
+                "exec":{"enum":["now","wait"],"description":"now=現値約定 / wait=line で指値待ち"},
+                "line":{"type":["number","null"],"description":"wait の指値価格。now なら null"},
+                "stop":{"type":["string","null"],"description":"損切りライン (価格 or MA/range 表現)。無ければ null"},
+                "rr":{"enum":["良","可","薄"],"description":"リスクリワード"},
+                "headline":{"type":"string","description":"Slack 1 行目。exact format で verbatim: 🧭 <ticker> <name> signal: <buy|sell> (now|wait@<line>; 損切り=<line> / RR<良|可|薄>)"},
+                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3,"description":"Slack 本文。1〜3 行の判断根拠 (日本語)"}
+              }
+            }'
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
 
-      # skill が書いた判定ファイルを読んで Slack に投稿する (curl/jq/フォールバックは script が持つ)。
-      # 第3引数は前段で並行取得した指数リバランス窓の JSON (judge には渡していない観測事実)。
+      # skill の構造化出力 (structured_output) を Slack に投稿し、判定を Worker に保存する
+      # (curl/jq/blocks 組み立て/フォールバックは script が持つ)。第2引数 = 判定 JSON、
+      # 第3引数 = 前段で並行取得した指数リバランス窓の JSON (judge には渡していない観測事実)。
       - name: Post signal to Slack
-        run: bash scripts/post-signal.sh "$TICKER" "$RUNNER_TEMP/signal.out" "$RUNNER_TEMP/rebalance.json"
+        run: |
+          printf '%s' "$SIGNAL_JSON" > "$RUNNER_TEMP/signal.json"
+          bash scripts/post-signal.sh "$TICKER" "$RUNNER_TEMP/signal.json" "$RUNNER_TEMP/rebalance.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
+          SIGNAL_JSON: ${{ steps.judge.outputs.structured_output }}

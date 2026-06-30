@@ -180,10 +180,10 @@ export const margin = sqliteTable(
 
 // ── forced_liquidation (強制決済スコア。冪等キー = (ticker, date)) ───────────
 // 「他プレイヤーの強制的な売買フロー」(追証売り=買い方のロスカット / 踏み上げ=売り方のロスカット)
-// を eod cron で決定論的に算出して保存する。judge (signal-judge=LLM) には渡さない (daily 指標から
-// 自前で読めるので判断材料としては冗長)。代わりに post-signal.sh が投稿時にここから最新行を引き、
-// stance!=none のとき観測行を本文末尾に貼る。direction は long(投げ)/short(踏み上げ)、
-// stance は building(これから出る)/exhausted(出尽くし)/none(対象外)。
+// を eod cron で決定論的に算出して保存する。judge-context が最新行を forced ブロックとして
+// judge (signal-judge=LLM) に渡し「投げ/踏みが今日いつ出るか」の推論材料にする。post-signal.sh も
+// 投稿時にここから最新行を引き、stance!=none のとき観測行を本文末尾に貼る。direction は
+// long(投げ)/short(踏み上げ)、stance は building(これから出る)/exhausted(出尽くし)/none(対象外)。
 export const forcedLiquidation = sqliteTable(
 	"forced_liquidation",
 	{
@@ -226,11 +226,16 @@ export const macroEvents = sqliteTable(
 );
 
 // ── contexts (銘柄 living document。PK = ticker) ─────────────────────────────
-// 銘柄の living document。本文(markdown)と IR/news の2カーソルを同じ行に持ち、
-// 本文の全面上書きとカーソル前進を1 upsert で原子的に行う。
+// 銘柄の living document。本文と IR/news の2カーソルを同じ行に持ち、本文の全面上書きと
+// カーソル前進を1 upsert で原子的に行う。
+//   body     … 見出し+本文を素テキスト連結したもの。judge-context が LLM へ、context-builder が
+//              再生入力としてそのまま読む (人間向け装飾を混ぜない)。
+//   sections … 同じ内容を [{heading, lines[]}] で持つ JSON。Slack 通知の blocks 化に使う
+//              (body からは見出し境界を機械復元できないため別に持つ)。lib/context-format.ts で両者を生成。
 export const contexts = sqliteTable("contexts", {
 	ticker: text("ticker").primaryKey(),
 	body: text("body").notNull(),
+	sections: text("sections"),
 	irLastFetchedAt: text("ir_last_fetched_at"),
 	newsLastFetchedAt: text("news_last_fetched_at"),
 	updatedAt: text("updated_at").notNull(),
@@ -245,6 +250,25 @@ export const marketRegime = sqliteTable("market_regime", {
 	stance: text("stance").notNull(),
 	headline: text("headline").notNull(),
 	fetchedAt: text("fetched_at").notNull(),
+});
+
+// ── signals (signal-judge の最新判定。PK = ticker) ───────────────────────────
+// signal-judge が銘柄ごとに出す方向 (buy/sell) + 価格ラインを 1 銘柄 1 行で控える。
+// 判定本体は GitHub Actions の signal-judge スキルが out-file に書き、その末尾に機械可読な
+// signal JSON (side/line/stop/rr) を 1 行で添える。post-signal.sh がその JSON を抜き出して
+// /slack/post に signal フィールドとして渡し、投稿経路 (misc.ts /slack/post) がここに upsert
+// する (market_regime を同経路で控えるのと同じ流儀)。判定の度に当該銘柄を上書きするので、常に
+// 各銘柄の最新コールが 1 行残る。ポジション評価 (eod cron) がこの行を引き、ユーザーの建値
+// (positions) と決定論的に突き合わせて利確/損切り/継続を DM する。
+export const signals = sqliteTable("signals", {
+	ticker: text("ticker").primaryKey(), // 銘柄コード (例 285A)
+	side: text("side").notNull(), // buy (買い場) | sell (売り場) — judge の方向 1 本
+	exec: text("exec").notNull().default("now"), // now (現値約定) | wait (line で指値待ち) — 約定タイミング
+	line: text("line"), // 約定価格 (数値文字列)。now=現値なので null、wait=その指値。読めなければ null
+	stop: text("stop"), // 損切りライン (価格 or MA/range 表現)。読めなければ null
+	rr: text("rr"), // リスクリワード 良 | 可 | 薄。読めなければ null
+	headline: text("headline").notNull(), // 判定の headline 全文 (DM 文面に流用)
+	judgedAt: text("judged_at").notNull(), // 保存時刻 (ISO8601)
 });
 
 // ── positions (ユーザーの保有ポジション。冪等キー = (userId, ticker, account)) ──

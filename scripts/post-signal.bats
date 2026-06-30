@@ -22,14 +22,15 @@ setup() {
 }
 
 # dryrun で post-signal.sh を実行。stderr も取り込む。
-# 引数: $1=ticker $2=headline $3=body。headline+body を 1 ファイル (1 行目 headline、
-# 2 行目以降 body) に書き、script には <ticker> <body-file> を渡す。リテラル "\n" は
-# 実改行へ展開してから書く (script 側の gsub 正規化と等価な入力をテストに与えるため
-# ではなく、複数行ファイルとして渡すため)。
+# 引数: $1=ticker $2=headline $3=body。body は "\n" 区切りの本文を body[] 配列に分解した
+# 構造化 JSON (signal-judge の structured_output 相当) を組んで signal-file に書き、script には
+# <ticker> <signal-file> を渡す。side/line/stop/rr はテスト用のダミー (保存経路は worker 側でテスト)。
 run_ps() {
   local ticker="$1" headline="$2" body="$3"
-  local f="$BATS_TEST_TMPDIR/signal.out"
-  { printf '%s\n' "$headline"; printf '%b' "${body//\\n/$'\n'}"; printf '\n'; } > "$f"
+  local f="$BATS_TEST_TMPDIR/signal.json"
+  jq -n --arg h "$headline" --arg b "$body" \
+    '{side:"buy",exec:"now",line:1000,stop:"MA25",rr:"可",headline:$h,
+      body:($b | gsub("\\\\n";"\n") | split("\n") | map(select(length>0)))}' > "$f"
   run env \
     WORKER_URL="http://test.invalid" \
     SYNC_TOKEN="${SYNC_TOKEN:-}" \
@@ -37,6 +38,12 @@ run_ps() {
     FETCH_FORCED_JSON="${FETCH_FORCED_JSON:-}" \
     FETCH_REBALANCE_JSON="${FETCH_REBALANCE_JSON:-}" \
     bash "$SCRIPT" "$ticker" "$f" 2>&1
+}
+
+# テスト用の signal-file を 1 個書く (headline + 単一 body 行)。rebalance-file 経路のテスト用。
+write_signal() {
+  jq -n --arg h "$1" --arg b "$2" \
+    '{side:"buy",exec:"now",line:1000,stop:"MA25",rr:"可",headline:$h,body:[$b]}'
 }
 
 # stderr に出た "POST <url> <json>" 行のうち、url 末尾が $1 のものの JSON を返す。
@@ -52,19 +59,25 @@ payload_for() {
   [ "$status" -ne 0 ]
 }
 
-@test "args: missing body-file fails" {
+@test "args: missing signal-file fails" {
   run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A
   [ "$status" -ne 0 ]
 }
 
-@test "args: nonexistent body-file fails" {
-  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A "$BATS_TEST_TMPDIR/nope.out"
+@test "args: nonexistent signal-file fails" {
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A "$BATS_TEST_TMPDIR/nope.json"
+  [ "$status" -ne 0 ]
+}
+
+@test "args: invalid JSON signal-file fails" {
+  printf 'not json' > "$BATS_TEST_TMPDIR/bad.json"
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A "$BATS_TEST_TMPDIR/bad.json"
   [ "$status" -ne 0 ]
 }
 
 @test "args: missing WORKER_URL fails" {
-  printf 'HEAD\nbody\n' > "$BATS_TEST_TMPDIR/m.out"
-  run env POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A "$BATS_TEST_TMPDIR/m.out"
+  write_signal "HEAD" "body" > "$BATS_TEST_TMPDIR/m.json"
+  run env POST_SIGNAL_DRYRUN=1 bash "$SCRIPT" 285A "$BATS_TEST_TMPDIR/m.json"
   [ "$status" -ne 0 ]
 }
 
@@ -79,6 +92,10 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.ticker')" = "285A" ]
   [ "$(printf '%s' "$p" | jq -r '.text')" = "HEAD line" ]
   [ "$(printf '%s' "$p" | jq -r '.blocks[0].text.text')" = "HEAD line" ]
+  # 判定 (side/line/stop/rr) は signal フィールドに載る (Worker が signals に保存する)。
+  [ "$(printf '%s' "$p" | jq -r '.signal.side')" = "buy" ]
+  [ "$(printf '%s' "$p" | jq -r '.signal.line')" = "1000" ]
+  [ "$(printf '%s' "$p" | jq -r '.signal.rr')" = "可" ]
   printf '%s\n' "$output" | grep -q "slack skipped"
 }
 
@@ -192,8 +209,8 @@ payload_for() {
 
 # 第3引数のファイルが窓内 note を持てば観測行が付く (FETCH_REBALANCE_JSON 未設定で経路を見る)
 @test "rebalance-file: in-window note from file appends an observation line" {
-  local f="$BATS_TEST_TMPDIR/signal.out" rf="$BATS_TEST_TMPDIR/rebalance.json"
-  printf 'HEAD\nalpha\n' > "$f"
+  local f="$BATS_TEST_TMPDIR/signal.json" rf="$BATS_TEST_TMPDIR/rebalance.json"
+  write_signal "HEAD" "alpha" > "$f"
   printf '%s' '{"ok":true,"note":"FTSE/Russellリバランス(実施=本日)"}' > "$rf"
   # FETCH_REBALANCE_JSON を空にして rebalance-file 読みの経路を通す (注入口が優先されるため)。
   run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
@@ -207,8 +224,8 @@ payload_for() {
 
 # 第3引数のファイルが空 note (窓外) なら何も足さない
 @test "rebalance-file: empty note from file appends nothing" {
-  local f="$BATS_TEST_TMPDIR/signal.out" rf="$BATS_TEST_TMPDIR/rebalance.json"
-  printf 'HEAD\nalpha\n' > "$f"
+  local f="$BATS_TEST_TMPDIR/signal.json" rf="$BATS_TEST_TMPDIR/rebalance.json"
+  write_signal "HEAD" "alpha" > "$f"
   printf '%s' '{"ok":true,"note":""}' > "$rf"
   run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
     FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON="" \
@@ -220,8 +237,8 @@ payload_for() {
 
 # 第3引数を省略しても (rebalance-file なし) 何も足さず正常終了する
 @test "rebalance-file: omitted arg appends nothing" {
-  local f="$BATS_TEST_TMPDIR/signal.out"
-  printf 'HEAD\nalpha\n' > "$f"
+  local f="$BATS_TEST_TMPDIR/signal.json"
+  write_signal "HEAD" "alpha" > "$f"
   run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
     FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON="" \
     bash "$SCRIPT" 285A "$f" 2>&1

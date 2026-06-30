@@ -237,6 +237,38 @@ export function buildMargin(rows: MarginRow[]): Record<string, unknown> {
 	};
 }
 
+// --- forced: 強制決済フローのスコア (forced_liquidation 最新行) ---------------
+// 「投げ/踏みが今日いつ出るか」を judge が読むための材料。direction=long(投げ)/short(踏み上げ)、
+// stance=building(燃料+着火が揃い、これから出る)/exhausted(出尽くし)。fuel/fire/exhaust は 0..3。
+// settle_warning_in_days は building のときだけ非 null (追証→強制決済の猶予営業日数)。
+export interface ForcedRow {
+	date: string;
+	direction?: string | null;
+	stance?: string | null;
+	fuel?: number | null;
+	fire?: number | null;
+	exhaust?: number | null;
+	settle_warning_in_days?: number | null;
+	summary?: string | null;
+}
+
+export function buildForced(
+	row: ForcedRow | null | undefined,
+): Record<string, unknown> {
+	if (!row || (row.stance ?? "none") === "none") return { status: "none" };
+	return {
+		status: "ok",
+		date: row.date,
+		direction: row.direction ?? null,
+		stance: row.stance ?? null,
+		fuel: row.fuel ?? null,
+		fire: row.fire ?? null,
+		exhaust: row.exhaust ?? null,
+		settle_warning_in_days: row.settle_warning_in_days ?? null,
+		summary: row.summary ?? null,
+	};
+}
+
 // --- daily: indicators.ts を使い 20日レンジ/MA位置/RSI/ATR を組む -------------
 // rows は date DESC (新しい順)。withMovingAverages で ma5/ma25 を付与してから指標を計算する。
 // intraday を渡すと、ザラ場中で daily に当日行がまだ無い局面の「当日ベース vol_x」を併記する。
@@ -564,6 +596,33 @@ if (import.meta.vitest) {
 		});
 		it("行なしは unavailable", () => {
 			expect(buildMargin([])).toEqual({ status: "unavailable" });
+		});
+	});
+
+	describe("buildForced", () => {
+		it("stance!=none はスコアを通す", () => {
+			const out = buildForced({
+				date: "2026-06-29",
+				direction: "long",
+				stance: "building",
+				fuel: 3,
+				fire: 3,
+				exhaust: 0,
+				settle_warning_in_days: 2,
+				summary: "🔻投げ警戒 285A [fuel3/fire3/exhaust0]",
+			});
+			expect(out.status).toBe("ok");
+			expect(out.direction).toBe("long");
+			expect(out.stance).toBe("building");
+			expect(out.settle_warning_in_days).toBe(2);
+		});
+		it("stance=none は none に潰す", () => {
+			expect(buildForced({ date: "2026-06-29", stance: "none" })).toEqual({
+				status: "none",
+			});
+		});
+		it("行なしは none", () => {
+			expect(buildForced(null)).toEqual({ status: "none" });
 		});
 	});
 

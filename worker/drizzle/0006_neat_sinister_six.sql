@@ -1,0 +1,1 @@
+ALTER TABLE `signals` ADD `exec` text DEFAULT 'now' NOT NULL;

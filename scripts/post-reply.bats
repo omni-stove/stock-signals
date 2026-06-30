@@ -39,28 +39,43 @@ payload() {
   printf '%s\n' "$output" | grep -q "unknown mode"
 }
 
-@test "args: crash missing blocks-file fails" {
+@test "args: crash missing signal-file fails" {
   run env WORKER_URL="http://test.invalid" POST_REPLY_DRYRUN=1 bash "$SCRIPT" crash 285A "キオクシア"
   [ "$status" -ne 0 ]
 }
 
-@test "args: crash nonexistent blocks-file fails" {
+@test "args: crash nonexistent signal-file fails" {
   run env WORKER_URL="http://test.invalid" POST_REPLY_DRYRUN=1 bash "$SCRIPT" crash 285A "キオクシア" "$BATS_TEST_TMPDIR/nope.json"
   [ "$status" -ne 0 ]
-  printf '%s\n' "$output" | grep -q "blocks-json-file not found"
+  printf '%s\n' "$output" | grep -q "signal-file not found"
 }
 
-@test "args: reply missing text-file fails" {
+@test "args: crash signal-file without blocks array fails" {
+  printf '{"foo":1}' >"$BATS_TEST_TMPDIR/bad.json"
+  run env WORKER_URL="http://test.invalid" POST_REPLY_DRYRUN=1 bash "$SCRIPT" crash 285A "キオクシア" "$BATS_TEST_TMPDIR/bad.json"
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -q "lacks blocks array"
+}
+
+@test "args: reply missing signal-file fails" {
   printf '{"channel":"C1","thread_ts":"12.34"}' >"$BATS_TEST_TMPDIR/t.json"
   run env WORKER_URL="http://test.invalid" POST_REPLY_DRYRUN=1 bash "$SCRIPT" reply "$BATS_TEST_TMPDIR/t.json"
   [ "$status" -ne 0 ]
 }
 
-@test "args: reply nonexistent text-file fails" {
+@test "args: reply nonexistent signal-file fails" {
   printf '{"channel":"C1","thread_ts":"12.34"}' >"$BATS_TEST_TMPDIR/t.json"
-  run env WORKER_URL="http://test.invalid" POST_REPLY_DRYRUN=1 bash "$SCRIPT" reply "$BATS_TEST_TMPDIR/t.json" "$BATS_TEST_TMPDIR/nope.txt"
+  run env WORKER_URL="http://test.invalid" POST_REPLY_DRYRUN=1 bash "$SCRIPT" reply "$BATS_TEST_TMPDIR/t.json" "$BATS_TEST_TMPDIR/nope.json"
   [ "$status" -ne 0 ]
-  printf '%s\n' "$output" | grep -q "text-file not found"
+  printf '%s\n' "$output" | grep -q "signal-file not found"
+}
+
+@test "args: reply empty reply fails" {
+  printf '{"channel":"C1","thread_ts":"12.34"}' >"$BATS_TEST_TMPDIR/t.json"
+  printf '{"reply":""}' >"$BATS_TEST_TMPDIR/r.json"
+  run env WORKER_URL="http://test.invalid" POST_REPLY_DRYRUN=1 bash "$SCRIPT" reply "$BATS_TEST_TMPDIR/t.json" "$BATS_TEST_TMPDIR/r.json"
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -q "empty reply"
 }
 
 @test "args: reply missing thread-json file fails" {
@@ -73,9 +88,9 @@ payload() {
 
 # ticker/kind が載り、ヘッダ (text + 先頭ブロック) を script が組み、N は配列長-1
 @test "crash: script builds header and prepends header block" {
-  # scenario 2 ブロック + 総括 1 = 3 要素 → N=2。blocks はファイルで渡す。
+  # scenario 2 ブロック + 総括 1 = 3 要素 → N=2。structured_output {blocks:[...]} で渡す。
   printf '%s' \
-    '[{"type":"section","text":{"type":"mrkdwn","text":"s1"}},{"type":"section","text":{"type":"mrkdwn","text":"s2"}},{"type":"section","text":{"type":"mrkdwn","text":"総括"}}]' \
+    '{"blocks":[{"type":"section","text":{"type":"mrkdwn","text":"s1"}},{"type":"section","text":{"type":"mrkdwn","text":"s2"}},{"type":"section","text":{"type":"mrkdwn","text":"総括"}}]}' \
     >"$BATS_TEST_TMPDIR/blocks.json"
   run_pr crash 285A "キオクシア" "$BATS_TEST_TMPDIR/blocks.json"
   [ "$status" -eq 0 ]
@@ -93,11 +108,11 @@ payload() {
 # === reply mode =============================================================
 
 # channel / thread_ts は thread-json から抜く。text のみ引数。kind は付けない
-@test "reply: pulls channel/thread_ts from thread-json, text from arg" {
+@test "reply: pulls channel/thread_ts from thread-json, text from signal-file" {
   printf '{"channel":"C123","thread_ts":"1718000000.0001","kind":"signal-judge","replies":[]}' \
     >"$BATS_TEST_TMPDIR/t.json"
-  printf '押し目で見てます' >"$BATS_TEST_TMPDIR/reply.txt"
-  run_pr reply "$BATS_TEST_TMPDIR/t.json" "$BATS_TEST_TMPDIR/reply.txt"
+  printf '{"reply":"押し目で見てます"}' >"$BATS_TEST_TMPDIR/reply.json"
+  run_pr reply "$BATS_TEST_TMPDIR/t.json" "$BATS_TEST_TMPDIR/reply.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload)"
   [ "$(printf '%s' "$p" | jq -r '.channel')" = "C123" ]
@@ -111,7 +126,7 @@ payload() {
 # 両 mode とも /slack/post に投げる
 @test "url: posts to /slack/post" {
   printf '{"channel":"C1","thread_ts":"1.0"}' >"$BATS_TEST_TMPDIR/t.json"
-  printf 'x' >"$BATS_TEST_TMPDIR/reply.txt"
-  run_pr reply "$BATS_TEST_TMPDIR/t.json" "$BATS_TEST_TMPDIR/reply.txt"
+  printf '{"reply":"x"}' >"$BATS_TEST_TMPDIR/reply.json"
+  run_pr reply "$BATS_TEST_TMPDIR/t.json" "$BATS_TEST_TMPDIR/reply.json"
   printf '%s\n' "$output" | grep -q "POST http://test.invalid/slack/post"
 }

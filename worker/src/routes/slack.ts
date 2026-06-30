@@ -19,6 +19,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
+import { type ContextSection, sectionsToBlocks } from "../lib/context-format";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { dispatchEvent, dispatchEventPayload } from "../lib/github-dispatch";
@@ -71,17 +72,34 @@ async function fireContext(env: Env, ticker: string): Promise<string> {
 
 	const row =
 		(await db(env.DB)
-			.select({ body: contexts.body, updatedAt: contexts.updatedAt })
+			.select({
+				body: contexts.body,
+				sections: contexts.sections,
+				updatedAt: contexts.updatedAt,
+			})
 			.from(contexts)
 			.where(eq(contexts.ticker, ticker))
 			.get()) ?? null;
 	if (!row?.body)
 		return `${ticker} の living context はまだありません (IR/ニュース取得で生成されます)。`;
 
-	const posted = await postMessage(env, {
-		channel,
-		text: `:page_facing_up: *${ticker}* の living context (更新 ${row.updatedAt})\n\n${row.body}`,
-	});
+	// sections があれば update 通知と同じ blocks で投稿し、見え方を揃える。
+	// 旧データ (sections null) は素テキスト body にフォールバック。
+	const parsed = row.sections
+		? (JSON.parse(row.sections) as {
+				title: string;
+				sections: ContextSection[];
+			})
+		: null;
+	const posted = parsed
+		? await postMessage(env, {
+				channel,
+				...sectionsToBlocks(parsed.title, parsed.sections),
+			})
+		: await postMessage(env, {
+				channel,
+				text: `:page_facing_up: *${ticker}* の living context (更新 ${row.updatedAt})\n\n${row.body}`,
+			});
 	return posted
 		? `📄 ${ticker} の living context を context チャンネルへ流しました。`
 		: `${ticker} の context 投稿に失敗しました (SLACK_BOT_TOKEN / chat:write を確認してください)。`;

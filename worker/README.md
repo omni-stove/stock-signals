@@ -7,12 +7,13 @@ LLM 判定を GitHub Actions に移した。**ローカル常駐プロセスも�
 - 収集: kabutan / kioxia をスクレイプ (IR / per_ticker ニュース / prices / daily / fundamentals / premarket / earnings)
 - 保存: 記事本文JSON → **R2** (`ARTICLES`)、メタ・時系列・重複排除キー → **D1** (`DB`)
 - 発火: Cron Triggers (下記) + 手動 `/run`
-- 判定: 新規 IR/ニュースがあれば `repository_dispatch(signal-update)` で **GitHub Actions の context-builder** を起動 (`.claude/skills/context-builder`)。context-builder が `/pull` `/pull-news` で材料を引いて銘柄ごとの **D1 コンテキスト** (`POST /context`、`contexts` テーブル) を更新し、更新後の本文全文を Slack のコンテキスト更新チャンネルへ投稿、続けて `repository_dispatch(signal-judge)` で signal-judge を起動。signal-judge が `/latest` と `/context` を引いて buy/sell を判定し Slack へ通知 (コンテキストは触らない)。
+- 判定: 新規 IR/ニュースがあれば `repository_dispatch(signal-update)` で **GitHub Actions の context-builder** を起動する。判定ルールはワークフローの `prompt` にベタ書きされ、`/context-input` の正規化済み JSON を `@` で読んで銘柄ごとの **D1 コンテキスト** (`POST /context`、`contexts` テーブル) を再生成、`post-context.sh` が更新後の全文をセクション区切りの blocks で Slack のコンテキスト更新チャンネルへ投稿、続けて `repository_dispatch(signal-judge)` で signal-judge を起動。signal-judge が `/judge-context` を引いて buy/sell を構造化判定し、`post-signal.sh` が Slack へ通知しつつ `/slack/post` 経由でその判定を `signals` テーブルへ保存する (コンテキストは触らない)。
+- 評価: 引け後 eod cron が `signals` の最新判定を各ユーザーの建玉 (`positions`) に当てて利確/損切り/継続を読み替え、本人へ DM する (`reviewPositions`)。
 
 ## エンドポイント
 
 HTTP 層は `src/routes/` に分かれる。各ルートと用途はファイル冒頭コメントに書く
-(ルーティングの一覧は `src/index.ts`)。収集系 (`/run`)・skill 用バンドル
+(ルーティングの一覧は `src/index.ts`)。収集系 (`/run`)・判定 prompt 用バンドル
 (`/judge-context` `/context-input` `/market-context`)・Slack 連携 (`/slack/*`) などがある。
 
 `/health` 以外は本番では `SYNC_TOKEN` を要求する (`Authorization: Bearer <token>` ヘッダ、
@@ -112,4 +113,4 @@ watchlist (4銘柄) と URL テンプレートは各 src (`timeseries.ts` / `new
 
 需給イベント (SQ/指数リバランス/FOMC/日銀/ピア決算)・セクター相対強弱・数値正規化といった
 決定論的な前処理はすべて Worker 側 (バンドルエンドポイントと `src/lib/`) に寄せてある。
-skill は curl 1 発で正規化済み JSON を受け取り、解釈だけを行う。
+判定はワークフローが `@` で正規化済み JSON を受け取り、解釈だけを行う。

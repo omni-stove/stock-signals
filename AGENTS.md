@@ -12,7 +12,8 @@
 - No LLM in collection (Worker). Judgment runs only in the GitHub Actions `claude-code-action`.
 - `scripts/*.sh`: preprocessing called from Actions.
 - `scripts/*.ts`: tools run via `pnpm run`, never called by Actions at runtime.
-- Edit skills at `agents/skills/<name>/SKILL.md` (`.claude/skills/` is a symlink).
+- LLM judgment rules live inline in each workflow's `prompt:` (`.github/workflows/*.yml`); runtime numeric context is pulled in with `@<path>`. Edit the prompt there, not a skill file.
+- Manual-run skills live at `agents/skills/<name>/SKILL.md` (`.claude/skills/` is a symlink).
 - D1 schema changes: edit `worker/src/lib/schema.ts`, then `pnpm db:generate`.
 
 ## Code & docs

@@ -11,6 +11,7 @@
 import { eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { type ContextSection, sectionsToText } from "../lib/context-format";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { contexts } from "../lib/schema";
@@ -55,7 +56,12 @@ context.get("/context", async (c: Context<{ Bindings: Env }>) => {
 	});
 });
 
-// POST /context  body(JSON): { code, body, ir_cursor?, news_cursor? }
+// POST /context  body(JSON): { code, title, sections, ir_cursor?, news_cursor? }
+//   title    … 見出しタイトル (例 "[285A キオクシア] 銘柄コンテキスト")。
+//   sections … [{heading, lines[]}] (context-builder の構造化出力。Markdown 記号なし)。
+//   body は保存しない: sections から sectionsToText で素テキストを組んで D1 に入れる
+//     (judge-context / context-builder 再生入力が読む本文) のと同時に、sections JSON も控える
+//     (Slack 通知の blocks 化用)。
 //   ir_cursor / news_cursor は次回 /pull の since (= 今回引いた行の max fetched_at)。
 //   0 件だった kind は現行値を据え置くため、呼び出し側が現行カーソルをそのまま渡すこと。
 //   省略 (undefined) は null として保存される。
@@ -63,14 +69,20 @@ context.post("/context", async (c: Context<{ Bindings: Env }>) => {
 	const env = c.env;
 	const b = (await c.req.json().catch(() => ({}))) as {
 		code?: string;
-		body?: string;
+		title?: string;
+		sections?: ContextSection[];
 		ir_cursor?: string | null;
 		news_cursor?: string | null;
 	};
-	if (!b.code || typeof b.body !== "string") {
+	if (
+		!b.code ||
+		typeof b.title !== "string" ||
+		!Array.isArray(b.sections) ||
+		b.sections.length === 0
+	) {
 		throw new HTTPException(400, {
 			res: Response.json(
-				{ ok: false, error: "code and body (string) required" },
+				{ ok: false, error: "code, title (string), sections (array) required" },
 				{ status: 400 },
 			),
 		});
@@ -78,12 +90,15 @@ context.post("/context", async (c: Context<{ Bindings: Env }>) => {
 	const updatedAt = new Date().toISOString();
 	const irCursor = b.ir_cursor ?? null;
 	const newsCursor = b.news_cursor ?? null;
+	const body = sectionsToText(b.title, b.sections);
+	const sectionsJson = JSON.stringify({ title: b.title, sections: b.sections });
 
 	await db(env.DB)
 		.insert(contexts)
 		.values({
 			ticker: b.code,
-			body: b.body,
+			body,
+			sections: sectionsJson,
 			irLastFetchedAt: irCursor,
 			newsLastFetchedAt: newsCursor,
 			updatedAt,
@@ -91,7 +106,8 @@ context.post("/context", async (c: Context<{ Bindings: Env }>) => {
 		.onConflictDoUpdate({
 			target: contexts.ticker,
 			set: {
-				body: b.body,
+				body,
+				sections: sectionsJson,
 				irLastFetchedAt: irCursor,
 				newsLastFetchedAt: newsCursor,
 				updatedAt,

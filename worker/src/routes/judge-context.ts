@@ -5,9 +5,10 @@
 //
 // 取得は D1/R2 直読み (サブリクエストなし)。正規化は lib/judge-context.ts に集約。
 //
-// 出力 (event_context は需給イベント1行、market_regime は当日の market-check 地合いコール / 無ければ null):
-//   { ticker, today, market_phase, market_regime, event_context, ticker_note, context_body,
-//     earnings, earnings_result, premarket, daily, prices, margin }
+// 出力 (event_context は需給イベント1行、market_regime は当日の market-check 地合いコール / 無ければ null、
+// forced は強制決済フローのスコア / stance==none なら {status:"none"}):
+//   { ticker, today, market_phase, market_regime, event_context, ticker_note,
+//     context_body, earnings, earnings_result, premarket, daily, prices, margin, forced }
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
 import { desc, eq } from "drizzle-orm";
@@ -21,9 +22,11 @@ import {
 	buildDaily,
 	buildEarnings,
 	buildEarningsResult,
+	buildForced,
 	buildMargin,
 	buildPremarket,
 	buildPrices,
+	type ForcedRow,
 	type FundamentalsSnapshot,
 	type MarginRow,
 	type PremarketRow,
@@ -34,6 +37,7 @@ import {
 	contexts,
 	daily,
 	earnings,
+	forcedLiquidation,
 	fundamentals,
 	macroEvents,
 	margin,
@@ -143,6 +147,25 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.limit(4)
 		.all()) as MarginRow[];
 
+	// 強制決済フローの最新スコア (eod cron が算出済み)。「投げ/踏みが今日いつ出るか」を
+	// judge が読む材料として渡す。post-signal.sh が末尾に貼る観測行とは別経路。
+	const forcedRow = (await db(env.DB)
+		.select({
+			date: forcedLiquidation.date,
+			direction: forcedLiquidation.direction,
+			stance: forcedLiquidation.stance,
+			fuel: forcedLiquidation.fuel,
+			fire: forcedLiquidation.fire,
+			exhaust: forcedLiquidation.exhaust,
+			settle_warning_in_days: forcedLiquidation.settleWarningInDays,
+			summary: forcedLiquidation.summary,
+		})
+		.from(forcedLiquidation)
+		.where(eq(forcedLiquidation.ticker, code))
+		.orderBy(desc(forcedLiquidation.date))
+		.limit(1)
+		.get()) as ForcedRow | undefined;
+
 	// 当日の地合いコール (market-check が寄り前に書いたもの)。前段ゲートとして signal-judge /
 	// crash-scenario に market_regime として渡す。当日分が無ければ null (= 銘柄単体で判断)。
 	const regimeRow = await db(env.DB)
@@ -205,5 +228,6 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		daily: buildDaily(dailyRows, intradayVol),
 		prices: buildPrices(priceRows, epochNow),
 		margin: buildMargin(marginRows),
+		forced: buildForced(forcedRow ?? null),
 	});
 });

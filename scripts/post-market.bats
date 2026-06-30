@@ -18,12 +18,13 @@ setup() {
 }
 
 # dryrun で post-market.sh を実行。stderr も取り込む。引数: $1=headline $2=body。
-# headline+body を 1 ファイル (1 行目 headline、2 行目以降 body) に書き、script には
-# <body-file> を渡す。リテラル "\n" は実改行へ展開して複数行ファイルにする。
+# 構造化 JSON (market-check の structured_output 相当 {headline, body[]}) を組んで signal-file に
+# 書き、script には <signal-file> を渡す。リテラル "\n" は body 配列の分割点にする。
 run_pm() {
   local headline="$1" body="$2"
-  local f="$BATS_TEST_TMPDIR/market.out"
-  { printf '%s\n' "$headline"; printf '%b' "${body//\\n/$'\n'}"; printf '\n'; } > "$f"
+  local f="$BATS_TEST_TMPDIR/market.json"
+  jq -n --arg h "$headline" --arg b "$body" \
+    '{headline:$h, body:($b | gsub("\\\\n";"\n") | split("\n") | map(select(length>0)))}' > "$f"
   run env \
     WORKER_URL="http://test.invalid" \
     SYNC_TOKEN="${SYNC_TOKEN:-}" \
@@ -38,19 +39,31 @@ payload() {
 
 # === 引数 / 前提チェック ====================================================
 
-@test "args: missing body-file fails with usage" {
+@test "args: missing signal-file fails with usage" {
   run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT"
   [ "$status" -ne 0 ]
 }
 
-@test "args: nonexistent body-file fails" {
-  run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$BATS_TEST_TMPDIR/nope.out"
+@test "args: nonexistent signal-file fails" {
+  run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$BATS_TEST_TMPDIR/nope.json"
+  [ "$status" -ne 0 ]
+}
+
+@test "args: invalid JSON signal-file fails" {
+  printf 'not json' > "$BATS_TEST_TMPDIR/bad.json"
+  run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$BATS_TEST_TMPDIR/bad.json"
+  [ "$status" -ne 0 ]
+}
+
+@test "args: empty headline fails" {
+  jq -n '{headline:"", body:["x"]}' > "$BATS_TEST_TMPDIR/m.json"
+  run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$BATS_TEST_TMPDIR/m.json"
   [ "$status" -ne 0 ]
 }
 
 @test "args: missing WORKER_URL fails" {
-  printf 'HEAD\nbody\n' > "$BATS_TEST_TMPDIR/m.out"
-  run env POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$BATS_TEST_TMPDIR/m.out"
+  jq -n '{headline:"HEAD", body:["body"]}' > "$BATS_TEST_TMPDIR/m.json"
+  run env POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$BATS_TEST_TMPDIR/m.json"
   [ "$status" -ne 0 ]
 }
 

@@ -12,10 +12,10 @@
 #       premarket が stale なら skill 側が demote する。
 #   - workflow_dispatch … 手動実行 (検証用)。引数なし。
 #
-# 起動後は .claude/skills/market-check が scripts/market-context.sh の出した地合い JSON
-# (premarket + 需給イベント + セクター内の値動きの広がり) を読み、リスクオン/中立/リスクオフと
-# 今日の売買可否 (拾い場/様子見/守り) を 1 本にまとめて Slack に通知する。
-# **このワークフローはコンテキストを一切書き換えない** (出力は Slack のみ)。
+# 起動後は判定ルールを prompt にベタ書きした Claude Code Action が Worker /market-context の出した
+# 地合い JSON (premarket + 需給イベント + セクター内の値動きの広がり) を @ で読み、リスクオン/中立/
+# リスクオフと今日の売買可否 (拾い場/様子見/守り) を 1 本にまとめて structured_output で返す。
+# 投稿は後続ステップ (post-market.sh)。**このワークフローはコンテキストを一切書き換えない** (出力は Slack のみ)。
 #
 # 認証・Secret は signal-judge.yml と同じ:
 #   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
@@ -61,26 +61,109 @@ jobs:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-      - name: Run market-check skill
+      # 判定ルールは prompt にベタ書きする (skill ファイルは持たない)。実行時に変わる数値コンテキスト
+      # だけを @ でファイルから取り込む (外部由来 JSON を ${{ }} で prompt に生展開せず、YAML 破壊と
+      # prompt インジェクションを防ぐ)。skill は @ で読み込んだ JSON を地合い判定して structured_output
+      # で返すだけ — curl も file write もしない (投稿は次ステップ)。
+      - name: Run market-check
+        id: check
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # 起動 actor: repository_dispatch は Worker の GitHub App (omnistove-internal-auth)、
           # 手動 workflow_dispatch は github-actions[bot]。既定では Bot 起動を Action が弾くので両方許可する。
           allowed_bots: "omnistove-internal-auth,github-actions[bot]"
-          # @ で始まる引数は地合い数値コンテキストのファイルパス。skill は Read するだけ。
-          # out= は地合い判定の出力先 (1 行目 headline + 本文)。skill はここに Write するだけで投稿しない。
-          prompt: "/market-check @${{ runner.temp }}/marketctx.json out=${{ runner.temp }}/market.out"
-          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash は渡さず Read,Write のみ許可。
-          claude_args: "--model opus --effort high --allowedTools Read,Write --max-turns 30"
+          prompt: |
+            # market-check
+
+            Read **the room, not a name**: one honest call on today's backdrop. The 前段ゲート for whether
+            today's tape favors acting at all. The notes below say where the inputs mislead; commit to one read.
+
+            ## Inputs
+
+            The numeric context JSON is embedded inline below. Do not post to Slack; do not run any script; do
+            not write any file — return your call as
+            structured output and stop. Judge only on what these inputs show now; never on hindsight or a later
+            result. When every field is stale or unavailable, return `中立`.
+
+            How to read the fields (what leads, what confirms):
+
+            - **`premarket`** is last night's NY tell — the strongest single input pre-open, lead on it.
+              `sox_change_pct` leads this semis-heavy watchlist; `nasdaq_change_pct` / `dow_change_pct` give
+              breadth, `nikkei_futures_price` the home tape's own gap. `status: stale` → demote it; `unavailable`
+              → call on `sectors` + event alone.
+            - **`sectors`** is how the watchlist itself moved; confirms or contradicts the premarket tilt. Per
+              sector: `tone` (SOX-derived backdrop), `avg_change_pct` (直近営業日のセクター平均前日比),
+              `avg_ret_5d_pct` (5日のトレンド); per-name `rel_strength_pct` (relative strength vs sector avg)
+              and `vol_ratio` (出来高の盛り上がり). Missing or empty → lean on `premarket` + event alone.
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>` (SQ週 / SQ明け / FOMC /
+              日銀 近接); a `特になし` tail means no event fired — ignore it.
+            - **`market_news`**: recent market-wide theme headlines not tied to a watchlist name, each with
+              `title` / `topic` (`semi`/`ai`/`rates`/`us`/`market`) / `published_at`. Material that colors the tilt, not
+              a driver of it: a headline aligned with the premarket/sectors lean confirms; one that cuts against
+              a strong tape is unpriced 逆風, pulling toward 様子見. Empty array → ignore.
+            - **`market_phase`** (JST trading-day position) frames what the numbers mean: `premarket` (lead on
+              `premarket`/event, the gap isn't in yet), `morning_session` / `afternoon_session` / `lunch_break`
+              (場中 — `sectors` is live, read breadth directly), `closed` (引け後 — react to today's close plus
+              tonight's NY setup).
+
+            ## Forming the call
+
+            These are the forces; weigh them into one read, don't match them to a label.
+
+            **`premarket` sets the tilt; `sectors` confirms or contradicts it.** SOX, NASDAQ, and 日経先物 all
+            leaning down together is a clean リスクオフ. SOX weak while Dow / NASDAQ hold is sector-specific
+            逆風, not broad — リスクオフ寄りの中立, semis に限った守り. When `sectors` already shows the watchlist
+            heavy (`avg_ret_5d_pct` deep negative, vol swelling) the move is underway, which deepens リスクオフ
+            even on a flat premarket.
+
+            **Breadth matters more than any single index.** One index down is noise; SOX, NASDAQ, 日経先物, and
+            セクター平均 all leaning the same way is signal. A split tape is 中立 — the most honest call on most
+            days; don't manufacture a regime that isn't there.
+
+            **Events cap the aggressiveness, not the direction.** A near FOMC / 日銀 or SQ週 doesn't make the day
+            risk-off by itself — it argues for 様子見 / 持ち越しを軽く regardless of which way the tilt points. A
+            strong リスクオン tape into a binary event is still 拾うなら軽く, not 全力.
+
+            - **独り負け銘柄** (deeply negative `rel_strength_pct`) is a per-name flag worth surfacing even when
+              the overall 地合い is benign — the one place a market read touches a specific name. Don't turn it
+              into a buy/sell call; name it as a thing to watch. Weight it by the tilt: under a SOX-led リスクオフ
+              it marks the弱い手 where the next 投げ comes first; on a risk-on / split tape the same value is an
+              idiosyncratic laggard, not a fault line.
+
+            ## Output — one 地合いスコア
+
+            Commit to one **regime** — `リスクオン` / `中立` / `リスクオフ` — and let it plus the events decide
+            the **売買可否の含意** (`拾い場` / `様子見` / `守り`). Return it as structured output and stop; the
+            schema fixes the shape.
+
+            ## 数値コンテキスト
+
+            @${{ runner.temp }}/marketctx.json
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず Read のみ許可。
+          # --json-schema で出力の形を縛る (= market-check の構造化スキーマの唯一の定義場所)。
+          # headline = 地合いゲート行 (🌐 地合い: <regime>・<含意>)、body = Slack 本文 2〜4 行。
+          claude_args: >-
+            --model opus --effort high --allowedTools Read --max-turns 30
+            --json-schema '{
+              "type":"object","additionalProperties":false,
+              "required":["headline","body"],
+              "properties":{
+                "headline":{"type":"string","description":"地合いゲート行。exact format で verbatim: 🌐 地合い: <リスクオン|中立|リスクオフ>・<拾い場|様子見|守り> (signal-judge/crash-scenario が地合いゲートとしてパースする)"},
+                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4,"description":"Slack 本文 2〜4 行 (日本語): premarket tilt (SOX/NASDAQ/日経先物 と breadth が揃うか)、近接イベントの caveat、売買可否の理由 1 行、あれば 独り負け銘柄"}
+              }
+            }'
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
 
-      # skill が書いた地合いファイルを読んで Slack に投稿する (curl/jq/フォールバックは script が持つ)。
+      # skill の構造化出力 (structured_output) を Slack に投稿する (curl/jq/フォールバックは script が持つ)。
       - name: Post market-check to Slack
-        run: bash scripts/post-market.sh "$RUNNER_TEMP/market.out"
+        run: |
+          printf '%s' "$MARKET_JSON" > "$RUNNER_TEMP/market.json"
+          bash scripts/post-market.sh "$RUNNER_TEMP/market.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          MARKET_JSON: ${{ steps.check.outputs.structured_output }}

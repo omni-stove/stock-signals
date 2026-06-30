@@ -7,10 +7,12 @@
 #   - reply: thread-json のパスと返信本文ファイル (channel/thread_ts は script が抜く)。
 #
 # 使い方:
-#   post-reply.sh crash <ticker> <name> <blocks-json-file>
-#     $4 = scenario ブロック + 総括ブロックの JSON 配列を書いたファイルのパス。N = 配列長 - 1。
-#   post-reply.sh reply <thread-json> <text-file>
-#     $2 = {channel, thread_ts, ...} を持つ JSON ファイルのパス。$3 = 返信本文ファイルのパス。
+#   post-reply.sh crash <ticker> <name> <signal-file>
+#     $4 = crash-scenario の structured_output JSON ({blocks:[...]}) のパス。blocks = scenario +
+#          総括の section 配列。N = 配列長 - 1。
+#   post-reply.sh reply <thread-json> <signal-file>
+#     $2 = {channel, thread_ts, ...} を持つ JSON ファイルのパス。$3 = slack-reply の
+#          structured_output JSON ({reply:"…"}) のパス。
 #
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意)。
 # 出力 (stdout): "slack ok"。投稿が失敗 (Bot 未設定の 503 含む) したら本文を stdout に出して
@@ -24,25 +26,29 @@ MODE="${1:?usage: post-reply.sh <crash|reply> ...}"
 
 case "$MODE" in
   crash)
-    TICKER="${2:?usage: post-reply.sh crash <ticker> <name> <blocks-json-file>}"
+    TICKER="${2:?usage: post-reply.sh crash <ticker> <name> <signal-file>}"
     NAME="${3:?name required}"
-    BLOCKS_FILE="${4:?blocks-json-file required}"
-    [[ -f "$BLOCKS_FILE" ]] || { echo "post-reply.sh: blocks-json-file not found: $BLOCKS_FILE" >&2; exit 1; }
-    # skill が書いた blocks 配列 JSON ファイルを読む。不正 JSON なら即 fail (黙って投稿しない)。
-    PAYLOAD="$(jq -n \
-      --arg ticker "$TICKER" --arg name "$NAME" --slurpfile b "$BLOCKS_FILE" \
-      '($b[0]) as $blocks
+    SIGNAL_FILE="${4:?signal-file required}"
+    [[ -f "$SIGNAL_FILE" ]] || { echo "post-reply.sh: signal-file not found: $SIGNAL_FILE" >&2; exit 1; }
+    # skill の structured_output ({blocks:[...]}) を読む。不正 JSON / blocks 不在なら即 fail。
+    jq -e '.blocks | type == "array"' "$SIGNAL_FILE" >/dev/null 2>&1 || {
+      echo "post-reply.sh: signal-file lacks blocks array: $SIGNAL_FILE" >&2; exit 1; }
+    PAYLOAD="$(jq \
+      --arg ticker "$TICKER" --arg name "$NAME" \
+      '.blocks as $blocks
        | def hdr: "⚠️ \($ticker) \($name) 暴落プリモーテム (\(($blocks|length)-1) scenarios)";
          {ticker:$ticker, kind:"crash-scenario", text:hdr,
-          blocks:([{type:"section",text:{type:"mrkdwn",text:hdr}}] + $blocks)}')"
+          blocks:([{type:"section",text:{type:"mrkdwn",text:hdr}}] + $blocks)}' "$SIGNAL_FILE")"
     ;;
   reply)
-    THREAD_JSON="${2:?usage: post-reply.sh reply <thread-json> <text-file>}"
-    TEXT_FILE="${3:?text-file required}"
+    THREAD_JSON="${2:?usage: post-reply.sh reply <thread-json> <signal-file>}"
+    SIGNAL_FILE="${3:?signal-file required}"
     [[ -f "$THREAD_JSON" ]] || { echo "post-reply.sh: thread-json not found: $THREAD_JSON" >&2; exit 1; }
-    [[ -f "$TEXT_FILE" ]] || { echo "post-reply.sh: text-file not found: $TEXT_FILE" >&2; exit 1; }
-    # skill が書いた返信本文ファイルを rawfile で読み込み、thread-json の channel/thread_ts に貼る。
-    PAYLOAD="$(jq --rawfile text "$TEXT_FILE" \
+    [[ -f "$SIGNAL_FILE" ]] || { echo "post-reply.sh: signal-file not found: $SIGNAL_FILE" >&2; exit 1; }
+    # skill の structured_output ({reply:"…"}) を読む。空 reply は投稿しない。
+    REPLY_TEXT="$(jq -r '.reply // ""' "$SIGNAL_FILE")"
+    [[ -n "$REPLY_TEXT" ]] || { echo "post-reply.sh: empty reply in $SIGNAL_FILE" >&2; exit 1; }
+    PAYLOAD="$(jq --arg text "$REPLY_TEXT" \
       '{channel, thread_ts, text:$text}' "$THREAD_JSON")"
     ;;
   *)

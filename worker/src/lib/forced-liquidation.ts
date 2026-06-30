@@ -2,9 +2,10 @@
 // を決定論的に検知して D1 forced_liquidation に保存する。LLM を介さない (収集に LLM を置かない方針)。
 //
 // 設計 (docs/forced-flow-strategy.md と同一思想):
-//   - 判定は決定論なので judge は不要。eod cron で daily(指標) + margin から算出し D1 に保存。
-//     judge (signal-judge=LLM) には渡さない (daily 指標から自前で読めるので判断材料として冗長)。
-//     post-signal.sh が投稿時に D1 から最新行を引き、stance!=none のとき観測行を本文末尾に貼るだけ。
+//   - スコアは決定論で eod cron が daily(指標) + margin から算出し D1 に保存する。
+//     judge-context が最新行を forced ブロックとして judge (signal-judge=LLM) に渡し、judge は
+//     stance/fuel/fire/exhaust から「投げ/踏みが今日いつ出るか」を時間帯推論する材料にする。
+//     post-signal.sh も投稿時に D1 から最新行を引き、stance!=none のとき観測行を本文末尾に貼る。
 //   - 着火 (急落/急騰) は固定 N% でなく ATR 比 (|change| / atr_pct ≧ 2.0) で判定する。
 //     半導体のような高ボラ銘柄でも誤検知しにくく、銘柄ごとの平時ボラを自動で吸収する。
 //   - ロング (買い方の追証=投げ) と ショート (売り方の追証=踏み上げ) は同一フレームの符号違い。

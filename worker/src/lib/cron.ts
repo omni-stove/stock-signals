@@ -13,6 +13,7 @@ import { collectMargin } from "./margin";
 import { collectMarketNews } from "./market-news";
 import { collectNews } from "./news";
 import { collectPeerEarnings } from "./peer-earnings";
+import { reviewPositions } from "./position-review";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
 import { notifyNewsSlack } from "./slack";
@@ -284,6 +285,14 @@ export async function runScheduled(
 			console.error("forced-liquidation failed:", err);
 			return null;
 		});
+		// 全ユーザーのポジション評価を当夜にまとめて各ユーザーへ DM する。signal-judge が当日出した
+		// 最新判定 (signals) を建玉 (positions) に当てて利確/損切り/継続を読み替える。判定は intake/場中
+		// で signals に溜まっており、引け後に出揃った最新足 close を参照現値にする。SLACK_BOT_TOKEN
+		// 未設定なら no-op。失敗しても eod の主収集は壊さない (catch でログのみ)。
+		const pr = await reviewPositions(env).catch((err) => {
+			console.error("position-review failed:", err);
+			return null;
+		});
 		console.log(
 			"scheduled eod done:",
 			JSON.stringify({
@@ -293,6 +302,7 @@ export async function runScheduled(
 				...(pe ? { peerEarnings: pe } : {}),
 				...(macro ? { macroEvents: macro } : {}),
 				...(fl ? { forcedLiquidation: fl.results } : {}),
+				...(pr ? { positionReview: pr } : {}),
 			}),
 		);
 		return;

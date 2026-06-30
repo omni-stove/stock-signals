@@ -14,9 +14,11 @@
 #
 # 入力:
 #   $1 = ticker          (必須)
-#   $2 = body-file       (必須。skill が書いた出力ファイルのパス。1 行目 = headline、
-#                         2 行目以降 = Slack 本文。skill は curl を一切叩かず、判定結果を
-#                         このファイルに書くだけ。投稿はこのスクリプト = workflow の後続ステップが行う)
+#   $2 = signal-file     (必須。signal-judge スキルの構造化出力 (structured_output) を書いた JSON の
+#                         パス。{side, line, stop, rr, headline, body[]} を持つ。skill は curl を一切
+#                         叩かず判定するだけ。投稿/保存はこのスクリプト = workflow の後続ステップが行う。
+#                         headline+body を Slack blocks に組み、判定 (side/line/stop/rr) は /slack/post に
+#                         signal フィールドとして渡して signals テーブルに保存させる)
 #   $3 = rebalance-file  (任意。前段ステップが /index-rebalance を並行取得して書いた JSON のパス。
 #                         judge には渡さない観測事実なので numctx とは別ファイルで運ぶ。
 #                         未指定/不在/空/窓外 (note 空) なら何も貼らない)
@@ -30,17 +32,24 @@
 
 set -euo pipefail
 
-TICKER="${1:?usage: post-signal.sh <ticker> <body-file> [rebalance-file]}"
-BODY_FILE="${2:?body-file required}"
+TICKER="${1:?usage: post-signal.sh <ticker> <signal-file> [rebalance-file]}"
+SIGNAL_FILE="${2:?signal-file required}"
 REBAL_FILE="${3:-}"
 
 : "${WORKER_URL:?WORKER_URL is required}"
-[[ -f "$BODY_FILE" ]] || { echo "post-signal.sh: body-file not found: $BODY_FILE" >&2; exit 1; }
+[[ -f "$SIGNAL_FILE" ]] || { echo "post-signal.sh: signal-file not found: $SIGNAL_FILE" >&2; exit 1; }
 
-# 1 行目 = headline、2 行目以降 = 本文。skill が curl を叩かず書いたファイルをここで読む。
-HEADLINE="$(head -n1 "$BODY_FILE")"
-BODY="$(tail -n +2 "$BODY_FILE")"
-[[ -n "$HEADLINE" ]] || { echo "post-signal.sh: empty headline (line 1) in $BODY_FILE" >&2; exit 1; }
+# structured_output JSON を読む。空/不正 JSON は判定不成立として落とす (投稿も保存もしない)。
+SIGNAL_JSON="$(cat "$SIGNAL_FILE")"
+printf '%s' "$SIGNAL_JSON" | jq -e . >/dev/null 2>&1 || {
+  echo "post-signal.sh: signal-file is not valid JSON: $SIGNAL_FILE" >&2; exit 1; }
+SIGNAL_JSON="$(printf '%s' "$SIGNAL_JSON" | jq -c .)"
+
+# headline = Slack 1 行目、body[] = 本文行。headline は必須。
+HEADLINE="$(printf '%s' "$SIGNAL_JSON" | jq -r '.headline // ""')"
+[[ -n "$HEADLINE" ]] || { echo "post-signal.sh: empty headline in $SIGNAL_FILE" >&2; exit 1; }
+# body 配列を改行区切りの 1 文字列にする (後段で観測行を末尾に足し、split で blocks に戻す)。
+BODY="$(printf '%s' "$SIGNAL_JSON" | jq -r '(.body // []) | join("\n")')"
 
 # --- 強制決済スコアの観測行を D1 から引く (judge には渡さない。投稿末尾に貼るだけ) -----
 # stance!=none の最新行があれば summary を取り出す。fetch 失敗・行なし・stance==none は空文字。
@@ -90,16 +99,20 @@ if [[ -n "$REBAL_LINE" ]]; then
 fi
 
 # headline + 本文行を section blocks に組み立てる。本文は改行区切りで 1 行 1 section。
-# skill がリテラル "\n" (バックスラッシュ+n) を渡してくることがあるので、split の前に
-# gsub で本物の改行へ正規化する。実改行・リテラル \n のどちらで渡されても同じ結果になる。
+# body は配列を改行で繋いだ後に観測行 (forced/rebalance) を足したものなので、split の前に
+# gsub でリテラル "\n" を本物の改行へ正規化する (どちらで来ても同じ結果になる)。
+# signal は skill の構造化判定 (side/line/stop/rr 同梱) をそのまま渡す。Worker /slack/post が
+# signals テーブルに upsert する。
 PAYLOAD="$(jq -n \
   --arg ticker "$TICKER" \
   --arg headline "$HEADLINE" \
   --arg body "$BODY" \
+  --argjson signal "$SIGNAL_JSON" \
   '{
     ticker: $ticker,
     kind: "signal-judge",
     text: $headline,
+    signal: $signal,
     blocks: ([{type:"section", text:{type:"mrkdwn", text:$headline}}]
       + ([$body | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0)
           | {type:"section", text:{type:"mrkdwn", text:.}}]))

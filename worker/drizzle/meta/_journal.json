@@ -36,6 +36,27 @@
       "when": 1782443495421,
       "tag": "0004_cloudy_true_believers",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1782799148196,
+      "tag": "0005_flowery_senator_kelly",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1782818568219,
+      "tag": "0006_neat_sinister_six",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1782819179921,
+      "tag": "0007_marvelous_sentinels",
+      "breakpoints": true
     }
   ]
 }

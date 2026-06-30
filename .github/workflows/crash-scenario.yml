@@ -3,7 +3,8 @@
 # signal-judge とは独立した補助ワークフロー。Slack の /crash スラッシュコマンドを受けた Worker が
 # repository_dispatch (event_type=crash-scenario、client_payload.ticker に単一銘柄) で起動する。
 # buy/sell 判定ではなく「その銘柄が崩れる道筋」を銘柄固有/マクロの両面で列挙して Slack に流す
-# (.claude/skills/crash-scenario)。**Issue は一切書き換えない**(出力は Slack のみ)。
+# (プリモーテムのルールは prompt にベタ書き、数値コンテキストは @ で取り込み、scenario blocks を
+# structured_output で返す)。投稿は後続ステップ (post-reply.sh)。**Issue は一切書き換えない**(出力は Slack のみ)。
 #
 # 起動は Slack 専用。GitHub 画面からの手動実行 (workflow_dispatch) は持たない
 # (= config/watchlist.ts の写経先を増やさない。Slack の銘柄ピッカーは Worker が WATCHLIST から
@@ -72,35 +73,111 @@ jobs:
           # payload 由来の ticker は run へ生展開せず env 経由で渡す。
           TICKER: ${{ github.event.client_payload.ticker }}
 
-      - name: Run crash-scenario skill
+      # プリモーテムのルールは prompt にベタ書きする (skill ファイルは持たない)。実行時に変わる数値
+      # コンテキストだけを @ でファイルから取り込む (外部由来 JSON を ${{ }} で prompt に生展開せず
+      # YAML 破壊・prompt インジェクションを防ぐ)。ticker は Validate 済みなので prose に展開してよい。
+      # skill は @ で読み込んで scenario blocks を structured_output で返すだけ (curl も file write もしない)。
+      - name: Run crash-scenario
+        id: crash
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Worker (GitHub App "omnistove-internal-auth") 発の repository_dispatch の actor は
           # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
-          # @ で始まる引数に数値コンテキスト JSON (event_context / context_body 同梱) のパスを渡す。
-          # skill は JSON を Read するだけ。out= は scenario blocks 配列 JSON の出力先。
-          # skill はここに Write するだけで投稿しない。
-          prompt: "/crash-scenario ${{ github.event.client_payload.ticker }} @${{ runner.temp }}/numctx.json out=${{ runner.temp }}/crash.out"
-          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash は渡さず Read,Write のみ許可。
-          claude_args: "--model opus --effort high --allowedTools Read,Write --max-turns 40"
+          prompt: |
+            # crash-scenario — 対象銘柄 ${{ github.event.client_payload.ticker }}
+
+            A **pre-mortem** on this ticker: the position is dead six months out — what killed it? Not a buy/sell
+            call; map the downside.
+
+            ## Inputs
+
+            The numeric context JSON is embedded inline below. Do not post to Slack; do not run any script; do not write any file —
+            return the scenario blocks as structured output and stop. Judge only on what these inputs show now;
+            never on hindsight or a later result.
+
+            **Primary — where the fault lines come from:**
+
+            - **Living context (`context_body`), read it in full.** Mine it for the *fault lines*, not the bull
+              case. The **直近の重大トピック** list is what the market is currently pricing — the most likely thing
+              to disappoint. Null → say `context: unavailable` and build from price + sector backdrop + the
+              generic fault lines for this 業種.
+
+            **Secondary — what raises 確度 or sets the channel, never invents 銘柄固有 risk:**
+
+            - **`market_regime`** (`{ regime, stance, headline }`): a リスクオフ regime raises the 確度 of the
+              macro / リスクオフ scenarios and shortens their trigger horizon.
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>` (SQ + 指数リバランス +
+              nearby macro/peer); a `特になし` tail means no event fired — ignore it.
+            - **`ticker_note`**: qualifies the other inputs, not a scenario of its own.
+            - **Metadata** (this ticker in `worker/src/lib/watchlist.ts`: `name`/`sector`/`sector_role`/
+              `fair_per`): treat `fair_per` only as a rough directional hint of richness; never anchor a 想定下落
+              magnitude to a PER-vs-`fair_per` gap. `sector`/`sector_role` set the systematic exposure and
+              which part of the cycle hits first.
+            - **Numeric context** — skip any block whose `status` is `insufficient`/`stale`/`unavailable`;
+              ignore `pts_price`. Read the run-up for fragility: `daily.range_pct` (0 = bottom, 100 = top),
+              `ma25_dev_pct`/`ma5_dev_pct`, `vol_x_20d`, `margin.ratio` + WoW `long_chg`/`short_chg`;
+              `earnings.days_to_earnings` and `premarket.sox_change_pct` each flag a scheduled catalyst.
+              `market_phase=premarket` makes a tonight→open gap-down its own scenario; in-session, `daily` is
+              the prior bar, so read `daily.vol_x_20d_intraday` for today's 出来高.
+
+            ## Building the scenarios
+
+            Produce **3–5 scenarios**, ordered most → least pressing (likelihood × severity), covering both
+            **銘柄固有** (what breaks *this* business or stock) and **マクロ** (what drags it down regardless of
+            fundamentals). Read the inputs for fragility, not direction, and tie every scenario to a concrete
+            input or the living context. Each carries きっかけ (a concrete trigger, not a conditional), 先行サイン
+            (what shows *before/as* it breaks, in inputs you can watch), 想定下落 (a rough band), and 防御 (one
+            line). Close with a 総括: which 1–2 scenarios dominate now, and the single indicator to watch.
+
+            Calibration:
+
+            - Reserve `確度:高` for a risk with a fresh trigger or near-term catalyst; mark tail risks `低`.
+            - Scale 想定下落 by how far it's run (`range_pct`, multiple vs `fair_per`, a structural break), not
+              by how alarming the headline reads.
+            - For semiconductor names, name which channel the `sector_role` makes break first.
+            - A メジャーSQ unwind, a near macro print, or a near 海外SOX系ピア決算 each stands up as its own macro
+              scenario, with `premarket.sox_change_pct` as a leading sign.
+
+            ## Output
+
+            Return the scenarios as structured output and stop; the schema fixes the shape.
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず Read のみ許可。
+          # --json-schema で出力の形を縛る。blocks = scenario + 総括 の Slack section 配列
+          # (ヘッダブロックは post-reply.sh が前置する)。
+          claude_args: >-
+            --model opus --effort high --allowedTools Read --max-turns 40
+            --json-schema '{
+              "type":"object","additionalProperties":false,
+              "required":["blocks"],
+              "properties":{
+                "blocks":{"type":"array","minItems":2,"description":"scenario + 総括 の Slack section 配列。1 ブロック=1 scenario、総括ブロックを最後に。ヘッダブロックは含めない。各 scenario ブロックは次の行で始める (verbatim、[固有/マクロ] と 確度:<高/中/低> は exact token): <順位>. <名前> [固有/マクロ] 確度:<高/中/低> — 続けて きっかけ / 先行サイン / 想定下落 / 防御 の行",
+                  "items":{"type":"object","additionalProperties":false,"required":["type","text"],
+                    "properties":{
+                      "type":{"const":"section"},
+                      "text":{"type":"object","additionalProperties":false,"required":["type","text"],
+                        "properties":{"type":{"const":"mrkdwn"},"text":{"type":"string"}}}}}}
+              }
+            }'
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           GH_TOKEN: ${{ github.token }}
 
-      # skill が書いた blocks ファイルを読んで Slack に投稿する (ヘッダ生成/curl は script が持つ)。
+      # skill の構造化出力 (structured_output {blocks}) を Slack に投稿する (ヘッダ生成/curl は script が持つ)。
       # name は watchlist.ts から引く (該当 code の直後の name: 行。TS は `name: "...",` 書式)。
       - name: Post crash-scenario to Slack
         run: |
+          printf '%s' "$CRASH_JSON" > "$RUNNER_TEMP/crash.json"
           NAME="$(awk -v c="$TICKER" '
             $0 ~ "code:[[:space:]]*\""c"\"," {f=1; next}
             f && $1=="name:" { sub(/^[[:space:]]*name:[[:space:]]*"/,""); sub(/",[[:space:]]*$/,""); print; exit }
           ' worker/src/lib/watchlist.ts)"
-          bash scripts/post-reply.sh crash "$TICKER" "$NAME" "$RUNNER_TEMP/crash.out"
+          bash scripts/post-reply.sh crash "$TICKER" "$NAME" "$RUNNER_TEMP/crash.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           TICKER: ${{ github.event.client_payload.ticker }}
+          CRASH_JSON: ${{ steps.crash.outputs.structured_output }}

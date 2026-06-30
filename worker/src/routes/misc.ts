@@ -3,13 +3,14 @@
 
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { type ContextSection, sectionsToBlocks } from "../lib/context-format";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { checkIndexRebalance } from "../lib/event-context";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
 import { resolveMarketPhase } from "../lib/market-phase";
 import { parseMarketRegime } from "../lib/market-regime";
-import { marketRegime, slackThreads } from "../lib/schema";
+import { marketRegime, signals, slackThreads } from "../lib/schema";
 import { notifySlack, postMessage } from "../lib/slack";
 
 export const misc = new Hono<{ Bindings: Env }>();
@@ -72,9 +73,11 @@ misc.get("/test-slack", async (c) => {
 // POST /slack/post : Bot トークンで Slack に投稿する (要 SYNC_TOKEN 認証)。
 // webhook と違い ts が取れるので、解析結果の投稿 (thread_ts 無し) は slack_threads に控え、
 // その ts へのスレッド返信から銘柄を復元できるようにする (返信対話の起点)。
-//   body(JSON): { channel, ticker, kind, text, blocks?, thread_ts? }
+//   body(JSON): { channel, ticker, kind, text, blocks?, context_sections?, thread_ts? }
 //     - thread_ts 無し = 新規スレッドの親 (解析結果)。投稿後 ts を slack_threads に INSERT。
 //     - thread_ts 有り = 返答 (slack-reply)。同スレッドにぶら下げるだけ (記録しない)。
+//     - context_sections (={title, sections}) があると Worker 側で header/divider/section の blocks に
+//       組んで投稿する (銘柄コンテキストの見やすい区切り投稿。text は組まれた fallback を使う)。
 //   channel 省略時は SLACK_REPLY_CHANNEL を使う。SLACK_BOT_TOKEN 未設定なら 503。
 misc.post("/slack/post", async (c) => {
 	const env = c.env;
@@ -92,15 +95,32 @@ misc.post("/slack/post", async (c) => {
 		kind?: string;
 		text?: string;
 		blocks?: unknown[];
+		context_sections?: { title: string; sections: ContextSection[] };
 		thread_ts?: string;
+		// signal-judge の構造化判定 (post-signal.sh が structured_output を載せる)。
+		// signals テーブルに最新コールとして upsert する。他 kind / 未設定なら保存しない。
+		signal?: {
+			side?: string;
+			exec?: string;
+			line?: number | null;
+			stop?: string | null;
+			rr?: string | null;
+		} | null;
 	};
 	const channel = b.channel || env.SLACK_REPLY_CHANNEL;
-	if (!channel || !b.text) {
+	// context_sections を渡されたら blocks/text を Worker で組む (整形ロジックを 1 か所に集約)。
+	const rendered = b.context_sections
+		? sectionsToBlocks(b.context_sections.title, b.context_sections.sections)
+		: null;
+	const text = rendered?.text ?? b.text;
+	const blocks = rendered?.blocks ?? b.blocks;
+	if (!channel || !text) {
 		throw new HTTPException(400, {
 			res: Response.json(
 				{
 					ok: false,
-					error: "channel (or SLACK_REPLY_CHANNEL) and text required",
+					error:
+						"channel (or SLACK_REPLY_CHANNEL) and text (or context_sections) required",
 				},
 				{ status: 400 },
 			),
@@ -109,8 +129,8 @@ misc.post("/slack/post", async (c) => {
 
 	const posted = await postMessage(env, {
 		channel,
-		text: b.text,
-		blocks: b.blocks,
+		text,
+		blocks,
 		thread_ts: b.thread_ts,
 	});
 	if (!posted) {
@@ -149,6 +169,40 @@ misc.post("/slack/post", async (c) => {
 				})
 				.run();
 		}
+	}
+
+	// signal-judge の最新判定を signals に upsert する (1 銘柄 1 行で上書き)。eod cron の
+	// ポジション評価がこの行を引き、ユーザーの建値と突き合わせて利確/損切り/継続を DM する。
+	// side が読めた時だけ保存する (判定不成立や他 kind は触らない)。
+	if (b.kind === "signal-judge" && b.ticker && b.signal?.side && b.text) {
+		const judgedAt = new Date().toISOString();
+		const { side } = b.signal;
+		// exec が読めなければ now (現値約定) を既定にする。
+		const exec = b.signal.exec === "wait" ? "wait" : "now";
+		// 指値 (wait) のときだけ価格を控える。now は現値約定なので line は null。
+		const line =
+			exec === "wait" && b.signal.line != null && Number.isFinite(b.signal.line)
+				? String(b.signal.line)
+				: null;
+		const stop = b.signal.stop ?? null;
+		const rr = b.signal.rr ?? null;
+		await db(env.DB)
+			.insert(signals)
+			.values({
+				ticker: b.ticker,
+				side,
+				exec,
+				line,
+				stop,
+				rr,
+				headline: b.text,
+				judgedAt,
+			})
+			.onConflictDoUpdate({
+				target: signals.ticker,
+				set: { side, exec, line, stop, rr, headline: b.text, judgedAt },
+			})
+			.run();
 	}
 
 	// 解析結果 (親投稿) のみ slack_threads に控える。返答 (thread_ts 有り) は記録しない。

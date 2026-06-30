@@ -121,7 +121,7 @@ jobs:
           prompt: |
             # signal-judge — 対象銘柄 ${{ github.event.client_payload.ticker || inputs.ticker }}
 
-            Judge the market side only — buy-場 or sell-場 at this level — and output a **direction** plus a
+            Judge the market side only — a buy or a sell at this level — and output a **direction** plus a
             **price line**, never a 動詞. The reader maps `sell`→利確/損切り, `buy`→新規/増し玉 against their own
             position; do not choose that verb for them.
 
@@ -133,34 +133,32 @@ jobs:
 
             ## Inputs
 
-            The numeric context JSON is embedded inline below. Do not post to Slack; do not run any script; do
-            not write any file — return your call as structured output and stop.
-
             How to read the fields (what to lead on, what to ignore):
 
             - **`context_body`** carries three layers: 直近の重大トピック (freshest), older structural context,
               証券会社レーティング (6–12mo, weight by 発行日 / アップサイド% / 信頼度). Null → emit
               `context: unavailable` and call on price alone.
-            - **`market_regime`** (`{ regime, stance, headline }`): apply it, don't merely weigh it.
-            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`; a `特になし` tail
-              means no event fired — ignore it.
-            - **`ticker_note`**: qualifies the other inputs, never sets direction.
+            - **`market_regime`** (`{ regime, stance, headline }`): the day's 地合い call (リスクオフ/中立/リスクオン).
             - **`prices`**: ignore `pts_price`; use `change_pct`/`volume`/`quote_time`/`slot` (`slot` =
               `premarket`/`regular`/`closing`). `quote_status: closed` → stale tape, demoted to backdrop.
             - **`market_phase`** (JST trading-day position) says what to lead on: `premarket` → lead on
               `premarket`/context (digesting overnight NY); `afternoon_session` with a live tape → lead on the
-              live tape, a pre-close call on carrying overnight into tomorrow; `closed` → react to the close +
-              tonight's NY setup.
+              live tape, a pre-close call on carrying overnight into tomorrow; `closed` → react to the close.
               - **During the session** (`morning_session`/`lunch_break`/`afternoon_session`) `daily` has no
                 confirmed bar for today yet, so `daily.latest_date` is the **prior** trading day and `vol_x_20d` /
                 `range_pct` / MA乖離 are all on that prior bar — do not read them as today's. For 出来高 use
                 `daily.vol_x_20d_intraday` (today's cumulative volume pace-projected to a full day ÷ 20日平均);
                 null near the open means too little has traded to project. After `closed`, `vol_x_20d` is the
                 confirmed value again and `vol_x_20d_intraday` is null.
-            - **`premarket`**: lead on `sox_change_pct` (this sector tracks SOX); `nasdaq_change_pct` /
+            - **`premarket`** (prior NY session): lead on `sox_change_pct` (this sector tracks SOX); `nasdaq_change_pct` /
               `dow_change_pct` / `nikkei_futures_price` are backdrop confirming the SOX read, never the driver.
+            - **`valuation`** (`{ per_now, fair_per, vs_fair }`): `vs_fair` is the 実績PER vs 妥当PER read —
+              `above`/`inline`/`below`.
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`; a `特になし` tail
+              means no event fired — ignore it.
+            - **`ticker_note`**: qualifies the other inputs, never sets direction.
+            - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
             - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.
-            - the ticker's `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist.ts`.
 
             ## Forming the call
 
@@ -181,8 +179,8 @@ jobs:
 
             **過熱 (how stretched the move is):**
 
-            - **How far the move has run** → tighter (higher buy line, shallower add). `fair_per`: above it
-              tightens, below it supports a deeper dip-buy.
+            - **How far the move has run** → tighter (higher buy line, shallower add). `valuation.vs_fair`:
+              `above` tightens, `below` supports a deeper dip-buy.
             - **Overbought** argues against adding, not holding.
               `daily.momentum_state`: `extended` = trend still working, `cracking` = turn toward exiting (so is
               the driving topic dropping out of 直近の重大トピック). The gate sets how hard it bites — リスクオン
@@ -210,16 +208,6 @@ jobs:
               nothing. Near or just-out, read the price reaction through **## 決算の特色・クセ** (the name may
               move on a metric other than EPS).
 
-            ## Output
-
-            One direction (`buy`/`sell`) with `exec` and, when `exec: wait`, the `line`. Add the risk frame: a
-            損切り level (price or MA/range line) and a one-word リスクリワード (良/可/薄) from upside-to-損切り.
-
-            Return it as structured output and stop; the schema fixes the shape. Carry the same call in both the
-            structured fields and the Japanese Slack prose — drive on the driving topics, the
-            price/backdrop/earnings tilt, why this line (a 需給 line if 信用残 mattered, how the gate moved the
-            水準), and the 損切り/RR read. The prose and the fields are the one call; keep them consistent.
-
             ## 数値コンテキスト
 
             @${{ runner.temp }}/numctx.json
@@ -233,13 +221,13 @@ jobs:
               "type":"object","additionalProperties":false,
               "required":["side","exec","line","stop","rr","headline","body"],
               "properties":{
-                "side":{"enum":["buy","sell"],"description":"買い場 buy / 売り場 sell の方向 1 本"},
+                "side":{"enum":["buy","sell"],"description":"market side: buy=買い場 / sell=売り場, one direction"},
                 "exec":{"enum":["now","wait"],"description":"now=現値約定 / wait=line で指値待ち"},
-                "line":{"type":["number","null"],"description":"wait の指値価格。now なら null"},
-                "stop":{"type":["string","null"],"description":"損切りライン (価格 or MA/range 表現)。無ければ null"},
-                "rr":{"enum":["良","可","薄"],"description":"リスクリワード"},
-                "headline":{"type":"string","description":"Slack 1 行目。exact format で verbatim: 🧭 <ticker> <name> signal: <buy|sell> (now|wait@<line>; 損切り=<line> / RR<良|可|薄>)"},
-                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3,"description":"Slack 本文。1〜3 行の判断根拠 (日本語)"}
+                "line":{"type":["number","null"],"description":"limit price for wait; null when now"},
+                "stop":{"type":["string","null"],"description":"損切りライン (price or MA/range expression); null if none"},
+                "rr":{"enum":["良","可","薄"],"description":"リスクリワード read from upside-to-損切り"},
+                "headline":{"type":"string","description":"Slack first line, exact format verbatim: 🧭 <ticker> <name> signal: <buy|sell> (now|wait@<line>; 損切り=<line> / RR<良|可|薄>)"},
+                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3,"description":"Slack body, 1-3 lines in Japanese: driving topics, price/backdrop/earnings tilt, why this line (a 需給 line if 信用残 mattered, how the gate moved the 水準), the 損切り/RR read; never contradict the structured fields"}
               }
             }'
         env:

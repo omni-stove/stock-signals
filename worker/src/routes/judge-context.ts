@@ -8,7 +8,7 @@
 // 出力 (event_context は需給イベント1行、market_regime は当日の market-check 地合いコール / 無ければ null、
 // forced は強制決済フローのスコア / stance==none なら {status:"none"}):
 //   { ticker, today, market_phase, market_regime, event_context, ticker_note,
-//     context_body, earnings, earnings_result, premarket, daily, prices, margin, forced }
+//     context_body, earnings, earnings_result, valuation, premarket, daily, prices, margin, forced }
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
 import { desc, eq } from "drizzle-orm";
@@ -26,6 +26,7 @@ import {
 	buildMargin,
 	buildPremarket,
 	buildPrices,
+	buildValuation,
 	type ForcedRow,
 	type FundamentalsSnapshot,
 	type MarginRow,
@@ -224,6 +225,12 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		context_body: contextRow?.body ?? null,
 		earnings: buildEarnings(earningsRow?.next_date ?? null, today),
 		earnings_result: buildEarningsResult(fundamentalsRows, today),
+		// 現値 × 予想EPS の実績PER を watchlist の fair_per と突き合わせる (above/inline/below)。
+		valuation: buildValuation(
+			(priceRows[0]?.price as number | null) ?? null,
+			fundamentalsRows[0]?.forecast_eps ?? null,
+			TICKERS.find((t) => t.code === code)?.fair_per ?? null,
+		),
 		premarket: buildPremarket(premarketRow ?? null, epochNow),
 		daily: buildDaily(dailyRows, intradayVol),
 		prices: buildPrices(priceRows, epochNow),

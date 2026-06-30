@@ -9,9 +9,6 @@ Add one entry to `TICKERS` in `worker/src/lib/watchlist.ts` — the single sourc
 `npm run gen:watchlist` to regenerate the GitHub Actions choice options. Edit only this file; never
 hand-edit the generated workflow options.
 
-This skill edits source only. It does not fetch prices, build context, or post to Slack — the normal
-cron / workflows pick the name up after it is added.
-
 When a value is missing, do not stop to ask the user: research it via web / IR and fill it. Where a
 value can't be confirmed, enter an estimate and mark it in a line comment, matching the existing
 entries' comment style.
@@ -50,7 +47,7 @@ Fill these to the same granularity as the existing entries:
 ### 3. Insert into TICKERS
 
 Insert into `TICKERS[]` in its natural sort order, matching the surrounding indentation and comment
-style. Edit only `watchlist.ts` — never hand-edit the generated workflow options.
+style.
 
 ### 4. Regenerate workflow options
 

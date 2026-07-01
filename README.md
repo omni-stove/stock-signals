@@ -48,8 +48,9 @@ buy/sell 判定、コンテキスト更新、新規IR通知。これらは Worke
   根拠には判定の核になった「直近の重大トピック」が引用される。該当があれば末尾に強制フロー観測
   (追証売り/踏み上げ) と指数リバランス窓が観測事実として相乗りする (判定とは独立)。
 - **地合い**: 寄り前に `リスクオン / 中立 / リスクオフ` + 当日の売買可否 (`拾い場 / 様子見 / 守り`) を
-  1本出す。個別 buy/sell の前に「今日エントリーしてよい地合いか」を見るゲート。前夜の米指数・日経先物・
-  セクター動向に加え、保有銘柄ページに載らない市場テーマ見出し (半導体/AI/金利/米国市場/市況) を材料に読む。
+  1本出す。個別 buy/sell の前に「今日エントリーしてよい地合いか」を見るゲート。前夜の米指数・日経先物 (寄り前)
+  と場中に同時進行で動くアジア指数 (日経225・KOSPI の現値)・セクター動向に加え、保有銘柄ページに載らない
+  市場テーマ見出し (半導体/AI/金利/米国市場/市況) を材料に読む。
 - **コンテキスト更新**: context-builder が銘柄コンテキストを育てるたび、更新後の全文をセクション
   ごとに区切ってコンテキスト更新チャンネルに投稿する (判定チャンネルとは分離)。コンテキストの育ちを覗く窓。
 - **新規IR**: 新着IRを通知する。判定とは別チャンネルに分けることもできる。
@@ -71,9 +72,10 @@ buy/sell 判定、コンテキスト更新、新規IR通知。これらは Worke
 | `/mystatus`          | 登録済みのプロフィールと全保有建玉(建玉金額・含み損益(円/%)付き)を本人にだけ表示する。`/position` `/profile` の確認用で、登録は変えない |
 | 解析投稿にスレッド返信 | 同じスレッドで Claude と対話する。コンテキスト+数値+本人の建玉と好みを読んで答える |
 
-### 監視銘柄の追加
+### 監視銘柄の追加・削除
 
-`add-ticker` skill を手で叩く。追加後は通常の cron / workflow がその銘柄のデータを拾い始める。
+`update-tickers` skill を手で叩く(`add <code>` / `remove <code>`)。追加後は通常の cron / workflow が
+その銘柄のデータを拾い始める。削除は watchlist から外すだけ(収集済みの D1 データはそのまま残す)。
 
 ### LLM連鎖 (新規データ検知 → Slack)
 
@@ -109,7 +111,7 @@ LLM が行う (GitHub Actions の position-review、ユーザーは直列)。
 | ---- | ---- |
 | `worker/`            | Cloudflare Worker (収集) |
 | `.github/workflows/` | LLM判定の Actions(market-check / context-builder / signal-judge / crash-scenario / slack-reply / position-review)・CI・デプロイ。判定ルールは各ワークフローの prompt にベタ書きし、数値コンテキストは `@` でファイルから取り込む |
-| `agents/skills/`     | 手動運用の Claude Code skill(`add-ticker` ほか。`.claude/skills/` は symlink) |
+| `agents/skills/`     | 手動運用の Claude Code skill(`update-tickers` ほか。`.claude/skills/` は symlink) |
 | `scripts/`           | Slack 投稿整形・判定 dispatch・手動ツール・品質ゲート(`verify.sh` 等) |
 | `config/`            | sources / events / peers の人間向け設定。銘柄一覧の真ソースは `worker/src/lib/watchlist.ts` の `TICKERS` |
 

@@ -3,19 +3,22 @@
 //   GET /market-context?now=<ISO8601 任意>
 //
 // 取得は D1 直読み。出力構造:
-//   { asof, market_phase, event_context, premarket, sectors }
+//   { asof, market_phase, event_context, premarket, live_indexes, sectors, market_news }
 //
 // premarket は judge-context と違い us_indexes / date も載せる (市場全体の地合い判定に使うため)。
+// live_indexes は場中に同時進行で動く指数 (日経225/KOSPI) の最新現値 (premarket=前夜確定 と対)。
 
 import { desc, eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
+import { buildLiveIndexesBlock, type LiveIndexRow } from "../lib/live-indexes";
 import { resolveMarketPhase } from "../lib/market-phase";
 import { buildPremarketBlock, parseUsIndexes } from "../lib/premarket";
 import {
 	daily,
+	liveIndexes,
 	macroEvents,
 	marketNews,
 	premarketBackdrop,
@@ -54,6 +57,26 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 	const usIndexes = parseUsIndexes(
 		pmRow?.us_indexes_json,
 	) as PremarketLine["us_indexes"];
+
+	// live_indexes: key ごとに最新 1 行 (fetched_at DESC)。key 数は少ないので key 別に引く。
+	const liveIndexRows: LiveIndexRow[] = [];
+	for (const key of ["nikkei225", "kospi"]) {
+		const row = await db(env.DB)
+			.select({
+				key: liveIndexes.key,
+				price: liveIndexes.price,
+				change: liveIndexes.change,
+				change_pct: liveIndexes.changePct,
+				quote_time: liveIndexes.quoteTime,
+				fetched_at: liveIndexes.fetchedAt,
+			})
+			.from(liveIndexes)
+			.where(eq(liveIndexes.key, key))
+			.orderBy(desc(liveIndexes.fetchedAt))
+			.limit(1)
+			.get();
+		if (row) liveIndexRows.push(row);
+	}
 
 	// premarket ブロック (鮮度判定 age>20h で stale)。整形は lib/premarket に集約。
 	// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は常に null。
@@ -118,6 +141,7 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 		market_phase: marketPhase,
 		event_context: buildEventContext(today, macroRows, marketPhase),
 		premarket: premarketBlock,
+		live_indexes: buildLiveIndexesBlock(liveIndexRows, epochNow),
 		sectors:
 			sectorReports.length > 0
 				? { status: "ok", sectors: sectorReports }

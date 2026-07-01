@@ -64,6 +64,13 @@
       "when": 1782829121535,
       "tag": "0008_melted_joshua_kane",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1782946908848,
+      "tag": "0009_giant_silk_fever",
+      "breakpoints": true
     }
   ]
 }

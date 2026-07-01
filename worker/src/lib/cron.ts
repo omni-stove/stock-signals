@@ -8,6 +8,7 @@ import { collectForcedLiquidation } from "./forced-liquidation";
 import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
+import { collectLiveIndexes } from "./live-indexes";
 import { collectMacroEvents } from "./macro-events";
 import { collectMargin } from "./margin";
 import { collectMarketNews } from "./market-news";
@@ -216,6 +217,12 @@ export async function runScheduled(
 	if (kind === "prices") {
 		// 場中 5分毎。価格スナップショットに加え、銘柄ニュース速報も拾う (新着で即判定するため)。
 		const p = await collectTimeseries(env, "prices", null);
+		// 場中リアルタイム指数 (日経225/KOSPI) も相乗り収集する。地合いの「アジア同時進行」の材料。
+		// 失敗しても prices の主収集は壊さない (best-effort)。
+		const idx = await collectLiveIndexes(env).catch((e) => {
+			console.error("live-indexes failed:", e);
+			return null;
+		});
 		const news = await collectNews(env, null);
 		// 市場テーマニュースも場中速報として収集する (オープンAI上場延期のような材料は場中に出る)。
 		// 銘柄非依存で dispatch には効かず、失敗しても prices の主収集は壊さない。
@@ -242,6 +249,7 @@ export async function runScheduled(
 			"scheduled prices+news done:",
 			JSON.stringify({
 				prices: p,
+				...(idx ? { liveIndexes: idx } : {}),
 				news: news.results,
 				...(mnews ? { marketNews: mnews } : {}),
 				...(ir ? { irNoonIntake: ir } : {}),

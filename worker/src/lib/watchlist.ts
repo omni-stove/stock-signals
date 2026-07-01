@@ -3,7 +3,7 @@
 //
 // このファイルから派生する写経先は GitHub Actions の workflow_dispatch choice options だけで、
 // それは `npm run gen:watchlist` (scripts/gen-watchlist.ts) が WATCHLIST から生成する
-// (workflow_dispatch.inputs は動的生成できず yml に列挙するしかないため)。銘柄追加は add-ticker skill。
+// (workflow_dispatch.inputs は動的生成できず yml に列挙するしかないため)。銘柄の追加・削除は update-tickers skill。
 //
 // 各フィールド:
 //  - code        : 証券コード。

@@ -126,6 +126,27 @@ export const fundamentals = sqliteTable(
 	],
 );
 
+// ── live_indexes (場中リアルタイム指数。冪等キー = (key, slot)) ──────────────
+// prices と同じ「5分枠で1行」モデル (slot5min)。前夜確定の premarket_backdrop と違い、
+// 場中に同時進行で動く指数 (日経225 / KOSPI 等) の最新現値を貯める。key は指数の識別子。
+export const liveIndexes = sqliteTable(
+	"live_indexes",
+	{
+		key: text("key").notNull(),
+		slot: text("slot").notNull(),
+		source: text("source").notNull(),
+		price: real("price"),
+		change: real("change"),
+		changePct: real("change_pct"),
+		quoteTime: text("quote_time"),
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.key, t.slot] }),
+		index("idx_live_indexes_key_time").on(t.key, sql`${t.fetchedAt} DESC`),
+	],
+);
+
 // ── premarket_backdrop (寄り前の地合い。PK = fetched_at) ─────────────────────
 export const premarketBackdrop = sqliteTable("premarket_backdrop", {
 	fetchedAt: text("fetched_at").primaryKey(),

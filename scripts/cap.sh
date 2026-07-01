@@ -15,6 +15,12 @@ set -euo pipefail
 
 MSG="${1:?usage: cap.sh <commit-message>}"
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# .claude/skills/ の symlink ミラーをソース (agents/skills/) に合わせて貼り直してから commit する。
+# スキルを増減しても手元の symlink 貼り忘れ/残骸をそのまま push しない。差分が出れば git add -A が拾う。
+"$ROOT/scripts/sync-skill-links.sh"
+
 # 変更が無ければ何もしない。
 if git diff --quiet && git diff --cached --quiet && [[ -z "$(git status --porcelain)" ]]; then
   echo "cap: no changes to commit"

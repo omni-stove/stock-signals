@@ -92,6 +92,11 @@ jobs:
               `sox_change_pct` leads this semis-heavy watchlist; `nasdaq_change_pct` / `dow_change_pct` give
               breadth, `nikkei_futures_price` the home tape's own gap. `status: stale` → demote it; `unavailable`
               → call on `sectors` + event alone.
+            - **`live_indexes`** is Asia trading live in the same session — the場中 counterpart to `premarket`'s
+              overnight tell. Each entry: `key` (`nikkei225` = Tokyo's own live tape / `kospi` = semis-heavy Korea,
+              Samsung / SK hynix), `price`, `change_pct`, `status` (`ok` / `stale` = older than 1h → demote).
+              `unavailable` or all stale → lean on `premarket` + `sectors`. Pre-open (`market_phase: premarket`)
+              they haven't opened → expect stale.
             - **`sectors`** is how the watchlist itself moved; confirms or contradicts the premarket tilt. Per
               sector: `tone` (SOX-derived backdrop), `avg_change_pct` (直近営業日のセクター平均前日比),
               `avg_ret_5d_pct` (5日のトレンド); per-name `rel_strength_pct` (relative strength vs sector avg)
@@ -117,25 +122,15 @@ jobs:
             heavy (`avg_ret_5d_pct` deep negative, vol swelling) the move is underway, which deepens リスクオフ
             even on a flat premarket.
 
-            **Breadth matters more than any single index.** One index down is noise; SOX, NASDAQ, 日経先物, and
-            セクター平均 all leaning the same way is signal. A split tape is 中立 — the most honest call on most
-            days; don't manufacture a regime that isn't there.
+            **Breadth matters more than any single index.** One index down is noise; SOX, NASDAQ, 日経先物,
+            live KOSPI / 日経225, and セクター平均 all leaning the same way is signal. Overnight (premarket) and
+            live Asia (live_indexes) agreeing is the strongest confirmation; live Asia cutting against a flat
+            premarket is the session repricing — trust the live read. A split tape is 中立 — the most honest call
+            on most days; don't manufacture a regime that isn't there.
 
             **Events cap the aggressiveness, not the direction.** A near FOMC / 日銀 or SQ週 doesn't make the day
             risk-off by itself — it argues for 様子見 / 持ち越しを軽く regardless of which way the tilt points. A
             strong リスクオン tape into a binary event is still 拾うなら軽く, not 全力.
-
-            - **独り負け銘柄** (deeply negative `rel_strength_pct`) is a per-name flag worth surfacing even when
-              the overall 地合い is benign — the one place a market read touches a specific name. Don't turn it
-              into a buy/sell call; name it as a thing to watch. Weight it by the tilt: under a SOX-led リスクオフ
-              it marks the弱い手 where the next 投げ comes first; on a risk-on / split tape the same value is an
-              idiosyncratic laggard, not a fault line.
-
-            ## Output — one 地合いスコア
-
-            Commit to one **regime** — `リスクオン` / `中立` / `リスクオフ` — and let it plus the events decide
-            the **売買可否の含意** (`拾い場` / `様子見` / `守り`). Return it as structured output and stop; the
-            schema fixes the shape.
 
             ## 数値コンテキスト
 
@@ -149,8 +144,8 @@ jobs:
               "type":"object","additionalProperties":false,
               "required":["headline","body"],
               "properties":{
-                "headline":{"type":"string","description":"地合いゲート行。exact format で verbatim: 🌐 地合い: <リスクオン|中立|リスクオフ>・<拾い場|様子見|守り> (signal-judge/crash-scenario が地合いゲートとしてパースする)"},
-                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4,"description":"Slack 本文 2〜4 行 (日本語): premarket tilt (SOX/NASDAQ/日経先物 と breadth が揃うか)、近接イベントの caveat、売買可否の理由 1 行、あれば 独り負け銘柄"}
+                "headline":{"type":"string","description":"地合いゲート行。exact format で verbatim: 🌐 地合い: <リスクオン|中立|リスクオフ>・<拾い場|様子見|守り> — regime (リスクオン|中立|リスクオフ) を1つ選び、それ+events が 売買可否の含意 (拾い場|様子見|守り) を決める。signal-judge/crash-scenario が地合いゲートとしてパースする"},
+                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4,"description":"Slack 本文 2〜4 行 (日本語): premarket tilt (SOX/NASDAQ/日経先物) と場中の live 日経225/KOSPI・breadth が揃うか、近接イベントの caveat、売買可否の理由 1 行"}
               }
             }'
         env:

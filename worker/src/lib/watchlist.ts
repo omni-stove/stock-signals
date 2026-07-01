@@ -98,6 +98,28 @@ export const TICKERS: Ticker[] = [
 		fair_per: 35,
 	},
 	{
+		code: "6976",
+		name: "太陽誘電",
+		// 電子部品(MLCC)メーカー。村田同様スマホ/AI需要で半導体地合い(SOX)と連動しやすく semiconductor に含める。
+		sector: "semiconductor",
+		sector_role: "components",
+		aliases: ["太陽誘電", "TAIYO YUDEN", "Taiyo Yuden"],
+		keywords: [
+			"MLCC",
+			"積層セラミックコンデンサ",
+			"電子部品",
+			"インダクタ",
+			"通信デバイス",
+		],
+		ir_url: "https://www.yuden.co.jp/ir/",
+		// IR一覧パーサ (ir-sources.ts) に太陽誘電用がないため ir 省略 = IR スクレイプ対象外。
+		news_url: "https://kabutan.jp/stock/news?code=6976",
+		// 1Q (2027/3期): 公式未公表、過去数年Q1=8月上旬 (前年Q1=2025-08-05) ベースの推定。公式日程が出たら上書き。
+		next_earnings_date: "2026-08-05",
+		// 電子部品(MLCC)大手。利益回復途上で現在予想PER ~130倍と高いが、ピア村田と揃え仮に30倍。
+		fair_per: 30,
+	},
+	{
 		code: "6981",
 		name: "村田製作所",
 		// 厳密には電子部品だが、スマホ/AI需要で半導体地合い(SOX)と連動しやすいため semiconductor に含める。

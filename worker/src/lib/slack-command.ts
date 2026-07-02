@@ -416,6 +416,236 @@ export function profileFormView() {
 	};
 }
 
+// ── /portfolio : 全建玉 + 現金を 1 つのテキストエリアで一括編集する modal ─────────────
+// /position /trade は「1 銘柄 1 約定ずつ modal を開き直す」が、/portfolio は現在の全建玉を
+// 1 行 1 建玉のテキストに prefill し、その本文を丸ごと書き換えて Submit 一発で置き換える
+// (行を消す=手仕舞い / 値を書き換える=更新 / 行を足す=新規)。保存は「本人の positions を
+// 全削除 → パースした行を一括 insert」+ 現金を user_profiles.cash_balance に反映 (routes 側)。
+// テキスト 1 本にしたのは、Slack modal が可変長フォーム (行の動的追加) を扱いにくく、既存の
+// 「Submit 一発・純粋関数で検証」という流儀に一番素直に乗るため。
+export const PORTFOLIO_CALLBACK_ID = "portfolio_form";
+const PORT_CASH_BLOCK = "port_cash_block";
+const PORT_CASH_ACTION = "port_cash";
+// userId 欠落エラーを出す先として routes に公開する (rows ブロックにまとめて出す)。
+export const PORT_ROWS_BLOCK = "port_rows_block";
+const PORT_ROWS_ACTION = "port_rows";
+
+// 1 行の書式: "<コード> <現物|信用> <買|売> <建値> <株数>"。区切りは空白 1 個以上。
+// 例: "285A 現物 買 1000 100"。prefill もこの書式で出すので、往復でぶれない。
+const PORT_ACCOUNT_LABEL: Record<string, string> = {
+	cash: "現物",
+	margin: "信用",
+};
+const PORT_SIDE_LABEL: Record<string, string> = { long: "買", short: "売" };
+// パース時のラベル逆引き。表示語 (現物/信用/買/売) の揺れも軽く吸収する。
+const PORT_ACCOUNT_PARSE: Record<string, "cash" | "margin"> = {
+	現物: "cash",
+	信用: "margin",
+	cash: "cash",
+	margin: "margin",
+};
+const PORT_SIDE_PARSE: Record<string, "long" | "short"> = {
+	買: "long",
+	売: "short",
+	買い: "long",
+	売り: "short",
+	long: "long",
+	short: "short",
+};
+
+// /portfolio に prefill する本文を組む純粋関数。現在の全建玉を 1 行 1 建玉のテキストにする。
+// 行順は表示の安定のため銘柄コード→口座でソート。建玉が無ければ空文字 (空欄からの新規入力)。
+function buildPortfolioText(positions: MePosition[]): string {
+	const sorted = [...positions].sort(
+		(a, b) =>
+			a.ticker.localeCompare(b.ticker) || a.account.localeCompare(b.account),
+	);
+	return sorted
+		.map((p) => {
+			const account = PORT_ACCOUNT_LABEL[p.account] ?? p.account;
+			const side = PORT_SIDE_LABEL[p.side] ?? p.side;
+			return `${p.ticker} ${account} ${side} ${p.avgPrice} ${p.qty}`;
+		})
+		.join("\n");
+}
+
+// /portfolio の入力 modal。現金 (任意) と全建玉テキスト (prefill) を持つ。Submit で
+// view_submission が /slack/interact に飛び、PORTFOLIO_CALLBACK_ID で判別して一括保存する。
+export function portfolioFormView(
+	positions: MePosition[],
+	cashBalance: number | null,
+) {
+	const help = WATCHLIST.map((code) => {
+		const name = WATCHLIST_NAMES[code];
+		return name ? `${code} (${name})` : code;
+	}).join(" / ");
+	return {
+		type: "modal",
+		callback_id: PORTFOLIO_CALLBACK_ID,
+		title: { type: "plain_text", text: "ポートフォリオ一括編集" },
+		submit: { type: "plain_text", text: "一括保存" },
+		close: { type: "plain_text", text: "閉じる" },
+		blocks: [
+			{
+				type: "section",
+				text: {
+					type: "mrkdwn",
+					text: "現在の全建玉を 1 行 1 建玉で編集します。行を消すと手仕舞い、値を書き換えると更新、行を足すと新規。書式は `コード 現物|信用 買|売 建値 株数` (例 `285A 現物 買 1000 100`)。",
+				},
+			},
+			{
+				type: "input",
+				optional: true,
+				block_id: PORT_CASH_BLOCK,
+				label: { type: "plain_text", text: "投資余力 (現金残高、円)" },
+				element: {
+					type: "plain_text_input",
+					action_id: PORT_CASH_ACTION,
+					...(cashBalance != null
+						? { initial_value: String(cashBalance) }
+						: {}),
+					placeholder: {
+						type: "plain_text",
+						text: "例 400000 (空欄で据え置き)",
+					},
+				},
+			},
+			{
+				type: "input",
+				optional: true,
+				block_id: PORT_ROWS_BLOCK,
+				label: { type: "plain_text", text: "建玉 (1 行 1 建玉)" },
+				element: {
+					type: "plain_text_input",
+					action_id: PORT_ROWS_ACTION,
+					multiline: true,
+					initial_value: buildPortfolioText(positions),
+					placeholder: {
+						type: "plain_text",
+						text: "285A 現物 買 1000 100\n6976 信用 売 1200 50",
+					},
+				},
+			},
+			{
+				type: "context",
+				elements: [{ type: "mrkdwn", text: `対応銘柄: ${help}` }],
+			},
+		],
+	};
+}
+
+// /portfolio の submission を検証する純粋関数。現金 (任意) と建玉行を取り出し、
+// 全行を検証して正規化した建玉配列を返す。1 行でも不正なら、その行番号つきでエラー。
+// 同一 (銘柄, 口座) が複数行あるのは重複としてエラー (positions の PK と衝突するため)。
+// 建玉テキストが空なら positions を全削除する意図とみなす (rows: [])。
+type PortfolioRow = {
+	ticker: string;
+	account: "cash" | "margin";
+	side: "long" | "short";
+	avgPrice: number;
+	qty: number;
+};
+export type PortfolioParse =
+	| {
+			ok: true;
+			value: { cashBalance: number | null; rows: PortfolioRow[] };
+	  }
+	| { ok: false; errors: Record<string, string> };
+
+export function parsePortfolioSubmission(
+	state:
+		| Record<
+				string,
+				Record<string, { value?: string; selected_option?: { value?: string } }>
+		  >
+		| undefined,
+	knownTickers: readonly string[],
+): PortfolioParse {
+	const errors: Record<string, string> = {};
+	const v = state ?? {};
+
+	// 現金: 空なら null (据え置き)。入力があれば 0 以上の数値。
+	const cashRaw = (v[PORT_CASH_BLOCK]?.[PORT_CASH_ACTION]?.value ?? "").replace(
+		/[,\s円]/g,
+		"",
+	);
+	let cashBalance: number | null = null;
+	if (cashRaw !== "") {
+		const n = Number(cashRaw);
+		if (!Number.isFinite(n) || n < 0)
+			errors[PORT_CASH_BLOCK] =
+				"投資余力は 0 以上の数値で入力してください (空欄で据え置き)。";
+		else cashBalance = n;
+	}
+
+	// 建玉行: 空行は無視。1 行ずつ 5 トークンにパースして検証する。
+	const raw = v[PORT_ROWS_BLOCK]?.[PORT_ROWS_ACTION]?.value ?? "";
+	const rows: PortfolioRow[] = [];
+	const rowErrors: string[] = [];
+	const seen = new Set<string>(); // "<ticker>:<account>" の重複検出
+	const lines = raw.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i].trim();
+		if (line === "") continue;
+		const n = i + 1;
+		// 全角スペースも区切りとして受ける。
+		const parts = line.split(/[\s　]+/);
+		if (parts.length !== 5) {
+			rowErrors.push(
+				`${n}行目: 「コード 口座 方向 建値 株数」の5項目で入力してください。`,
+			);
+			continue;
+		}
+		const [tickerRaw, accRaw, sideRaw, priceRaw, qtyRaw] = parts;
+		const ticker = tickerRaw.toUpperCase();
+		if (!knownTickers.includes(ticker)) {
+			rowErrors.push(`${n}行目: 未対応の銘柄コード「${tickerRaw}」。`);
+			continue;
+		}
+		const account = PORT_ACCOUNT_PARSE[accRaw];
+		if (!account) {
+			rowErrors.push(
+				`${n}行目: 口座は「現物」か「信用」で入力してください (「${accRaw}」)。`,
+			);
+			continue;
+		}
+		const side = PORT_SIDE_PARSE[sideRaw];
+		if (!side) {
+			rowErrors.push(
+				`${n}行目: 方向は「買」か「売」で入力してください (「${sideRaw}」)。`,
+			);
+			continue;
+		}
+		const avgPrice = Number(priceRaw.replace(/,/g, ""));
+		if (!Number.isFinite(avgPrice) || avgPrice <= 0) {
+			rowErrors.push(
+				`${n}行目: 建値は正の数で入力してください (「${priceRaw}」)。`,
+			);
+			continue;
+		}
+		const qty = Number(qtyRaw.replace(/,/g, ""));
+		if (!Number.isInteger(qty) || qty <= 0) {
+			rowErrors.push(
+				`${n}行目: 株数は 1 以上の整数で入力してください (0 は行を消して手仕舞い) (「${qtyRaw}」)。`,
+			);
+			continue;
+		}
+		const key = `${ticker}:${account}`;
+		if (seen.has(key)) {
+			rowErrors.push(
+				`${n}行目: ${ticker} の${PORT_ACCOUNT_LABEL[account]}が重複しています (1口座1行にまとめてください)。`,
+			);
+			continue;
+		}
+		seen.add(key);
+		rows.push({ ticker, account, side, avgPrice, qty });
+	}
+	if (rowErrors.length > 0) errors[PORT_ROWS_BLOCK] = rowErrors.join("\n");
+
+	if (Object.keys(errors).length > 0) return { ok: false, errors };
+	return { ok: true, value: { cashBalance, rows } };
+}
+
 // ── /mystatus : 本人の好み・特記事項 + 全保有建玉を ephemeral でまとめて返す ──────────
 // /position /profile は「登録」、/mystatus は登録済みの内容を本人だけに「確認表示」する読み取り専用。
 // dispatch も modal も挟まず、routes が D1 から本人行を引いて buildMeText に渡し ephemeral で返す。
@@ -1127,6 +1357,142 @@ if (import.meta.vitest) {
 				expect(r.errors.trade_price_block).toBeDefined();
 				expect(r.errors.trade_qty_block).toBeDefined();
 			}
+		});
+	});
+
+	describe("buildPortfolioText", () => {
+		const [a, b] = WATCHLIST;
+		it("全建玉を 1 行 1 建玉のテキストにする (コード→口座でソート)", () => {
+			const text = buildPortfolioText([
+				{
+					ticker: b,
+					account: "margin",
+					side: "short",
+					avgPrice: 1200,
+					qty: 50,
+					price: null,
+				},
+				{
+					ticker: a,
+					account: "cash",
+					side: "long",
+					avgPrice: 1000,
+					qty: 100,
+					price: null,
+				},
+			]);
+			// b > a なら a が先。cash が margin より前 (localeCompare)。
+			const first = a.localeCompare(b) <= 0 ? a : b;
+			expect(text.split("\n")[0].startsWith(first)).toBe(true);
+			expect(text).toContain(`${a} 現物 買 1000 100`);
+			expect(text).toContain(`${b} 信用 売 1200 50`);
+		});
+		it("建玉なしは空文字", () => {
+			expect(buildPortfolioText([])).toBe("");
+		});
+	});
+
+	describe("parsePortfolioSubmission", () => {
+		const txt = (value: string) => ({ value });
+		const [code, code2] = WATCHLIST;
+		const call = (cash: string, rows: string) =>
+			parsePortfolioSubmission(
+				{
+					port_cash_block: { port_cash: txt(cash) },
+					port_rows_block: { port_rows: txt(rows) },
+				},
+				WATCHLIST,
+			);
+
+		it("現金と複数行を正規値で取り出す", () => {
+			const r = call(
+				"400,000円",
+				`${code} 現物 買 1000 100\n${code2} 信用 売 1200 50`,
+			);
+			expect(r).toEqual({
+				ok: true,
+				value: {
+					cashBalance: 400000,
+					rows: [
+						{
+							ticker: code,
+							account: "cash",
+							side: "long",
+							avgPrice: 1000,
+							qty: 100,
+						},
+						{
+							ticker: code2,
+							account: "margin",
+							side: "short",
+							avgPrice: 1200,
+							qty: 50,
+						},
+					],
+				},
+			});
+		});
+
+		it("空行・全角スペースを許容する", () => {
+			const r = call("", `\n${code}　現物　買　1000　100\n\n`);
+			expect(r.ok).toBe(true);
+			if (r.ok) {
+				expect(r.value.cashBalance).toBeNull();
+				expect(r.value.rows).toHaveLength(1);
+			}
+		});
+
+		it("建玉テキスト空は rows:[] (全削除の意図)", () => {
+			const r = call("", "   \n  ");
+			expect(r).toEqual({ ok: true, value: { cashBalance: null, rows: [] } });
+		});
+
+		it("現金空は据え置き (null)", () => {
+			const r = call("", `${code} 現物 買 1000 100`);
+			expect(r.ok).toBe(true);
+			if (r.ok) expect(r.value.cashBalance).toBeNull();
+		});
+
+		it("項目数不足・未知銘柄・不正な口座/方向/建値/株数を行番号つきで弾く", () => {
+			const r = call(
+				"",
+				[
+					`${code} 現物 買 1000`, // 4項目
+					"XXXX 現物 買 1000 100", // 未知銘柄
+					`${code} げん 買 1000 100`, // 口座
+					`${code} 現物 かい 1000 100`, // 方向
+					`${code} 現物 買 0 100`, // 建値
+					`${code} 現物 買 1000 0`, // 株数
+				].join("\n"),
+			);
+			expect(r.ok).toBe(false);
+			if (!r.ok) {
+				const e = r.errors.port_rows_block;
+				expect(e).toContain("1行目");
+				expect(e).toContain("2行目");
+				expect(e).toContain("3行目");
+				expect(e).toContain("4行目");
+				expect(e).toContain("5行目");
+				expect(e).toContain("6行目");
+			}
+		});
+
+		it("同一 (銘柄, 口座) の重複行はエラー", () => {
+			const r = call("", `${code} 現物 買 1000 100\n${code} 現物 買 1100 50`);
+			expect(r.ok).toBe(false);
+			if (!r.ok) expect(r.errors.port_rows_block).toContain("重複");
+		});
+
+		it("同一銘柄でも現物と信用は別行で共存できる", () => {
+			const r = call("", `${code} 現物 買 1000 100\n${code} 信用 買 1050 100`);
+			expect(r.ok).toBe(true);
+			if (r.ok) expect(r.value.rows).toHaveLength(2);
+		});
+
+		it("負の現金はエラー", () => {
+			const r = call("-100", "");
+			expect(r.ok).toBe(false);
+			if (!r.ok) expect(r.errors.port_cash_block).toBeDefined();
 		});
 	});
 

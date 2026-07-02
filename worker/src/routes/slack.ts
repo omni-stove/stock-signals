@@ -44,13 +44,17 @@ import {
 	type Command,
 	ephemeral,
 	type MePosition,
+	PORT_ROWS_BLOCK,
+	PORTFOLIO_CALLBACK_ID,
 	POSITION_CALLBACK_ID,
 	PROF_RISK_BLOCK,
 	PROFILE_CALLBACK_ID,
+	parsePortfolioSubmission,
 	parsePositionSubmission,
 	parseProfileSubmission,
 	parseTradeSubmission,
 	pickerView,
+	portfolioFormView,
 	positionFormView,
 	profileFormView,
 	type SlackEventEnvelope,
@@ -221,6 +225,46 @@ slack.post("/slack/command", async (c) => {
 		if (!opened)
 			return ephemeral(
 				"ポジション登録フォームを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
+			);
+		return c.body(null, 200);
+	}
+
+	// /portfolio は全建玉 + 現金を 1 つのテキストエリアに prefill した一括編集 modal を開く。
+	// 現在の建玉・現金を D1 から引いて initial_value に載せ、view_submission は /slack/interact が
+	// PORTFOLIO_CALLBACK_ID で判別し、本人の positions を全置換 + 現金を反映する。
+	if (cmdKey === "portfolio") {
+		const userId = form.get("user_id") ?? "";
+		if (!userId) return ephemeral("ユーザー情報を取得できませんでした。");
+		const drizzle = db(c.env.DB);
+		const posRows = await drizzle
+			.select({
+				ticker: positions.ticker,
+				account: positions.account,
+				side: positions.side,
+				avgPrice: positions.avgPrice,
+				qty: positions.qty,
+			})
+			.from(positions)
+			.where(eq(positions.userId, userId))
+			.all();
+		const prof = await drizzle
+			.select({ cashBalance: userProfiles.cashBalance })
+			.from(userProfiles)
+			.where(eq(userProfiles.userId, userId))
+			.get();
+		// prefill は現値を使わないので price: null で MePosition 化する。
+		const mePositions: MePosition[] = posRows.map((r) => ({
+			...r,
+			price: null,
+		}));
+		const triggerId = form.get("trigger_id") ?? "";
+		const opened = await openView(c.env, {
+			trigger_id: triggerId,
+			view: portfolioFormView(mePositions, prof?.cashBalance ?? null),
+		});
+		if (!opened)
+			return ephemeral(
+				"ポートフォリオ編集フォームを開けませんでした (SLACK_BOT_TOKEN / commands スコープを確認してください)。",
 			);
 		return c.body(null, 200);
 	}
@@ -421,6 +465,81 @@ slack.post("/slack/interact", async (c) => {
 	};
 
 	if (payload.type !== "view_submission") return c.body(null, 200);
+
+	// /portfolio の一括編集 submission。本人の positions を全削除してからパース行を一括 insert し、
+	// 現金 (入力があれば) を user_profiles.cash_balance に反映する (他プロフィール項目は保持)。
+	// テキストが空 → rows:[] なら全削除のみ (全建玉手仕舞い)。DM で置換後の建玉数を本人に通知する。
+	if (payload.view?.callback_id === PORTFOLIO_CALLBACK_ID) {
+		const userId = payload.user?.id ?? "";
+		const parsed = parsePortfolioSubmission(
+			payload.view?.state?.values,
+			WATCHLIST,
+		);
+		if (!parsed.ok)
+			return c.json({ response_action: "errors", errors: parsed.errors });
+		if (!userId)
+			return c.json({
+				response_action: "errors",
+				errors: { [PORT_ROWS_BLOCK]: "ユーザー情報を取得できませんでした。" },
+			});
+		const { cashBalance, rows } = parsed.value;
+		const drizzle = db(c.env.DB);
+		const now = new Date().toISOString();
+
+		// 本人の全建玉を置換: 削除 → 1 行 1 insert (D1 のバインド変数上限を避け timeseries と同流儀)
+		// → 現金反映。D1 の batch で 1 往復・原子的にまとめ、途中失敗で建玉が消えたまま残らないようにする。
+		const ops = [
+			drizzle.delete(positions).where(eq(positions.userId, userId)),
+			...rows.map((r) =>
+				drizzle.insert(positions).values({
+					userId,
+					ticker: r.ticker,
+					account: r.account,
+					side: r.side,
+					avgPrice: r.avgPrice,
+					qty: r.qty,
+					updatedAt: now,
+				}),
+			),
+			// 現金は入力があるときだけ反映 (空欄は据え置き)。他プロフィール項目は set しない。
+			...(cashBalance != null
+				? [
+						drizzle
+							.insert(userProfiles)
+							.values({ userId, cashBalance, updatedAt: now })
+							.onConflictDoUpdate({
+								target: [userProfiles.userId],
+								set: { cashBalance, updatedAt: now },
+							}),
+					]
+				: []),
+		];
+		// ops は先頭に delete が必ず入るので非空 (batch は [first, ...rest] を要求する)。
+		await drizzle.batch(
+			ops as [(typeof ops)[number], ...(typeof ops)[number][]],
+		);
+
+		// 置換結果を本人に DM 通知 (view_submission の応答に本文は載せられないため)。
+		const summary =
+			rows.length === 0
+				? "全建玉を手仕舞いしました (登録 0 件)"
+				: rows
+						.map((r) => {
+							const acc = r.account === "cash" ? "現物" : "信用";
+							const side = r.side === "long" ? "買" : "売";
+							return `• ${r.ticker} / ${acc} / ${side} — ${r.avgPrice} 円 × ${r.qty} 株`;
+						})
+						.join("\n");
+		const cashLine =
+			cashBalance != null
+				? `\n投資余力: ${cashBalance.toLocaleString("en-US")} 円`
+				: "";
+		await postMessage(c.env, {
+			channel: userId,
+			text: `:white_check_mark: ポートフォリオを更新しました (${rows.length} 件)${cashLine}\n${summary}`,
+		});
+		return c.json({ response_action: "clear" });
+	}
 
 	// /position の登録フォーム submission。input を検証して positions に upsert する。
 	// qty=0 は手仕舞いとして行を削除する。clear で modal を閉じ、結果は ephemeral で本人に返せない

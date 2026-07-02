@@ -118,16 +118,28 @@ export function applyTrade(
 const SUBSTITUTE_HAIRCUT = 0.8; // 代用有価証券の掛目 (現物評価額の 80% を保証金に算入)
 export const MAINTENANCE_MIN = 0.2; // これを割ると追証 (委託保証金維持率 20%)
 
+// 銘柄ごとの「あと株価がいくら動くと追証か」。委託保証金は現値に線形連動するので、
+// その銘柄の全建玉 (現物代用 + 信用評価損益) の株価 1 円あたりの保証金感応度から逆算する。
+interface MarginTrigger {
+	ticker: string;
+	price: number; // 現値
+	drop: number; // 追証到達までの株価変化幅 (現値 - 追証株価。正なら「あとこれだけ下がると」)
+	triggerPrice: number; // 追証に到達する株価
+	dropPct: number; // drop / price × 100 (下落率%、四捨五入小数第1位)
+}
+
 export interface MarginCallView {
 	maintenanceRate: number | null; // 現在の委託保証金維持率 (建代金 0 は null)
 	deposit: number; // 委託保証金 (現金 + 代用評価 + 信用評価損益)
 	marginNotional: number; // 信用建玉の建代金合計
 	room: number; // あと耐えられる評価損 (deposit - 建代金×MAINTENANCE_MIN)。負なら既に追証
 	inCall: boolean; // 現時点で追証発生中か (維持率 < MAINTENANCE_MIN)
+	triggers: MarginTrigger[]; // 銘柄ごとの追証到達株価 (感応度が出せる銘柄のみ、drop 小さい順=近い順)
 }
 
 // 追証判定に使う 1 建玉 (現値つき)。account: cash|margin, side: long|short。
 interface MarginCallInput {
+	ticker: string;
 	account: string;
 	side: string;
 	avgPrice: number;
@@ -167,12 +179,54 @@ export function computeMarginCall(
 	const deposit = (cashBalance ?? 0) + substitute + marginPnl;
 	const maintenanceRate = deposit / marginNotional;
 	const room = deposit - marginNotional * MAINTENANCE_MIN;
+
+	// 銘柄ごとの「株価 1 円下落あたりの委託保証金の減少額」(感応度 slope) を集計する。
+	//   現物 long : 現値が 1 円下がると代用評価が qty×掛目 だけ減る → slope += qty×掛目
+	//   信用 long : 現値が 1 円下がると評価損が qty だけ増える     → slope += qty
+	//   short     : 下落で益 (保証金が増える) なので slope は負。追証は「株価上昇で」到達する。
+	// slope が正なら下落方向、負なら上昇方向に room 分動くと追証。drop = room / slope。
+	const slopeByTicker = new Map<string, { price: number; slope: number }>();
+	for (const p of positions) {
+		if (p.price == null || !Number.isFinite(p.price) || p.price <= 0) continue;
+		if (!Number.isFinite(p.qty) || p.qty <= 0) continue;
+		let s = 0;
+		if (p.account === "cash") {
+			// 現物は代用差入れ (long のみ保証金に効く。現物 short は想定外なので無視)。
+			if (p.side !== "short") s = p.qty * SUBSTITUTE_HAIRCUT;
+		} else if (p.account === "margin") {
+			s = p.side === "short" ? -p.qty : p.qty;
+		}
+		if (s === 0) continue;
+		const cur = slopeByTicker.get(p.ticker) ?? { price: p.price, slope: 0 };
+		cur.slope += s;
+		slopeByTicker.set(p.ticker, cur);
+	}
+
+	const triggers: MarginTrigger[] = [];
+	for (const [ticker, { price, slope }] of slopeByTicker) {
+		if (slope === 0) continue; // 現物 short 等で相殺 (株価が動いても保証金不変)
+		// 現時点で既に追証 (room<0) なら drop は負 (株価が戻る方向)。表示側でハンドリング。
+		const drop = room / slope; // 追証株価までの株価変化幅 (slope>0 なら正=下落)
+		const triggerPrice = price - drop;
+		if (triggerPrice < 0) continue; // 株価 0 まで下げても追証に届かない (現金厚い) → 出さない
+		triggers.push({
+			ticker,
+			price,
+			drop: Math.round(drop),
+			triggerPrice: Math.round(triggerPrice),
+			dropPct: round1((drop / price) * 100),
+		});
+	}
+	// 追証に近い順 (drop が小さい=わずかな変動で到達する銘柄を上に)。
+	triggers.sort((a, b) => Math.abs(a.drop) - Math.abs(b.drop));
+
 	return {
 		maintenanceRate, // 比率のまま (表示側で %・丸め)
 		deposit: Math.round(deposit),
 		marginNotional: Math.round(marginNotional),
 		room: Math.round(room),
 		inCall: maintenanceRate < MAINTENANCE_MIN,
+		triggers,
 	};
 }
 
@@ -338,7 +392,8 @@ if (import.meta.vitest) {
 			avgPrice: number,
 			qty: number,
 			price: number | null,
-		): MarginCallInput => ({ account, side, avgPrice, qty, price });
+			ticker = "T",
+		): MarginCallInput => ({ ticker, account, side, avgPrice, qty, price });
 
 		it("信用建玉が無ければ null", () => {
 			expect(
@@ -425,6 +480,94 @@ if (import.meta.vitest) {
 			expect(out?.deposit).toBe(0);
 			expect(out?.maintenanceRate).toBe(0);
 			expect(out?.inCall).toBe(true);
+		});
+
+		describe("triggers (銘柄ごとの追証到達株価)", () => {
+			it("信用 long 単独: room / qty だけ下がると追証", () => {
+				// 建代金 100万 (建値1000×1000株)、現金 40万、現値 1000 → room 20万
+				// slope = 1000 (信用 long qty)。drop = 20万/1000 = 200 → 追証株価 800
+				const out = computeMarginCall(
+					[P("margin", "long", 1000, 1000, 1000, "AAA")],
+					400000,
+				);
+				expect(out?.triggers).toHaveLength(1);
+				const t = out?.triggers[0];
+				expect(t?.ticker).toBe("AAA");
+				expect(t?.drop).toBe(200);
+				expect(t?.triggerPrice).toBe(800);
+				expect(t?.dropPct).toBe(20);
+			});
+
+			it("現物 + 信用が同一銘柄: 両建玉の感応度を合算 (掛目 0.8 含む)", () => {
+				// キオクシア相当。現金 0。
+				//   信用 long 91,910×400、現物 long 65,410×400、現値 77,010
+				//   slope = 400 (信用) + 400×0.8 (現物代用) = 720
+				//   建代金 = 91,910×400 = 36,764,000
+				//   代用 = 77,010×400×0.8 = 24,643,200、信用評価損 = (77,010-91,910)×400 = -5,960,000
+				//   deposit = 18,683,200、room = 18,683,200 - 36,764,000×0.2 = 11,330,400
+				//   drop = 11,330,400 / 720 = 15,736.67 → 追証株価 77,010 - 15,736.67 = 61,273.33
+				const out = computeMarginCall(
+					[
+						P("margin", "long", 91910, 400, 77010, "285A"),
+						P("cash", "long", 65410, 400, 77010, "285A"),
+					],
+					0,
+				);
+				expect(out?.room).toBe(11_330_400);
+				expect(out?.triggers).toHaveLength(1);
+				const t = out?.triggers[0];
+				expect(t?.ticker).toBe("285A");
+				expect(t?.drop).toBe(15737);
+				expect(t?.triggerPrice).toBe(61273);
+				expect(t?.dropPct).toBe(round1((11_330_400 / 720 / 77010) * 100));
+			});
+
+			it("複数銘柄: 追証に近い順 (drop 小さい順) にソート", () => {
+				// A: 信用 long 1000株、B: 信用 long 800株。現値=建値で評価損益0 → deposit=現金。
+				// 建代金 = (1000+800)×1000 = 180万。現金40万 → room = 40万 - 180万×0.2 = 4万。
+				// A drop = 4万/1000 = 40 (追証株価960)、B drop = 4万/800 = 50 (追証株価950)。
+				// slope が大きい A の方が drop 小さい → A が先。両方 triggerPrice>0 で出る。
+				const out = computeMarginCall(
+					[
+						P("margin", "long", 1000, 1000, 1000, "A"),
+						P("margin", "long", 1000, 800, 1000, "B"),
+					],
+					400000,
+				);
+				const ts = out?.triggers ?? [];
+				expect(ts.map((t) => t.ticker)).toEqual(["A", "B"]);
+				expect(ts[0].drop).toBe(40);
+				expect(ts[1].drop).toBe(50);
+			});
+
+			it("short 建玉は上昇で追証 (drop は負)", () => {
+				// 売り建 建値1000×1000株、現値1000、現金40万 → deposit40万、room20万
+				// slope = -1000 (short)。drop = 20万 / -1000 = -200 → 上昇で追証、追証株価1200
+				const out = computeMarginCall(
+					[P("margin", "short", 1000, 1000, 1000, "S")],
+					400000,
+				);
+				const t = out?.triggers[0];
+				expect(t?.drop).toBe(-200);
+				expect(t?.triggerPrice).toBe(1200);
+			});
+
+			it("現金が厚く株価 0 でも追証に届かない銘柄は出さない", () => {
+				// 信用 long 100株、現金 1000万 → room が建玉評価損の最大 (株価0で -10万) を超える
+				const out = computeMarginCall(
+					[P("margin", "long", 1000, 100, 1000, "R")],
+					10_000_000,
+				);
+				expect(out?.triggers).toHaveLength(0);
+			});
+
+			it("現値が引けない銘柄は感応度を出せないので trigger なし", () => {
+				const out = computeMarginCall(
+					[P("margin", "long", 1000, 1000, null, "N")],
+					400000,
+				);
+				expect(out?.triggers).toHaveLength(0);
+			});
 		});
 	});
 

@@ -513,6 +513,7 @@ export function buildMeText(
 	// 追証ライン: 信用建玉があるときだけ、現物代用 + 現金 + 評価損益から委託保証金維持率を出す。
 	const mc = computeMarginCall(
 		positions.map((p) => ({
+			ticker: p.ticker,
 			account: p.account,
 			side: p.side,
 			avgPrice: p.avgPrice,
@@ -540,9 +541,19 @@ export function buildMeText(
 				lines.push(
 					`• あと ${yen(mc.room)} 円の評価損で追証 (維持率 ${minPct}% 到達)`,
 				);
+				// 銘柄ごとに、その銘柄だけが動いたら追証に届く株価を出す (drop 小さい=近い順)。
+				for (const t of mc.triggers) {
+					const name = WATCHLIST_NAMES[t.ticker];
+					const head = name ? `${t.ticker} ${name}` : t.ticker;
+					// drop>0: 下落で追証 / drop<0: 上昇で追証 (short)。dropPct も同符号。
+					const dir = t.drop >= 0 ? "下落" : "上昇";
+					lines.push(
+						`• ${head}: 単独なら ${yen(Math.abs(t.drop))} 円${dir} (${t.dropPct >= 0 ? "-" : "+"}${Math.abs(t.dropPct)}%) → ${yen(t.triggerPrice)} 円で追証 (現値 ${yen(t.price)} 円)`,
+					);
+				}
 			}
 			lines.push(
-				`※ 現物は代用有価証券として現値×80%で算入した概算。証券会社の実残高とは異なります。`,
+				`※ 現物は代用有価証券として現値×80%で算入した概算。各銘柄行は「その銘柄だけが動いた場合」で、実残高とは異なります。`,
 			);
 		}
 	}
@@ -1256,6 +1267,8 @@ if (import.meta.vitest) {
 			expect(out).toContain("追証ライン (信用)");
 			expect(out).toContain("委託保証金維持率: 40% (追証ライン 20%)");
 			expect(out).toContain("あと 200,000 円の評価損で追証");
+			// 銘柄行: room 20万 / slope 1000 = 200 円下落で追証株価 800。
+			expect(out).toContain("単独なら 200 円下落 (-20%) → 800 円で追証");
 		});
 
 		it("維持率が 20% を割ると追証発生中を出す", () => {

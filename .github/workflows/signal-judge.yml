@@ -151,19 +151,14 @@ jobs:
                 `daily.vol_x_20d_intraday` (today's cumulative volume pace-projected to a full day ÷ 20日平均);
                 null near the open means too little has traded to project. After `closed`, `vol_x_20d` is the
                 confirmed value again and `vol_x_20d_intraday` is null.
-            - **`premarket`** (prior NY session): `sox_change_pct` is the sector's overnight external backdrop —
-              it moves the 水準, and `sector` (actual peer tape) is the read to lead on over it; `nasdaq_change_pct` /
-              `dow_change_pct` / `nikkei_futures_price` only confirm the SOX read, never drive.
+            - **`premarket`** (prior NY session): `sox_change_pct` is the overnight external backdrop moving the 水準
+              — `sector` leads over it; `nasdaq_change_pct` / `dow_change_pct` / `nikkei_futures_price` only confirm.
             - **`valuation`** (`{ per_now, fair_per, vs_fair }`): `vs_fair` is the 実績PER vs 妥当PER read —
               `above`/`inline`/`below`.
             - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`; a `特になし` tail
               means no event fired — ignore it.
-            - **`sector`** (`{ sector, backdrop, avg_ret_5d_pct, rows }`, null → skip): the ticker's own sector,
-              `rows` sorted 相対強弱の強い順. Each row's `rel_strength_pct` = its 5日リターン − セクタ平均, `ret_5d_pct` /
-              `change_pct` / `vol_ratio` are its own tape. Find this ticker's row: leading its peers (positive
-              `rel_strength_pct`) says the name is carrying the sector on its own merits — a fresh corroborating
-              topic there is real, not just SOX beta; lagging says the move is sector-wide drift and demands the
-              context_body do the work. This is the sector read to lead on — actual peer prices, not the SOX proxy.
+            - **`sector`** (`{ backdrop, avg_ret_5d_pct, rows }`, null → skip): peer tape, `rows` sorted 相対強弱の強い順.
+              This ticker's `rel_strength_pct` (its 5日リターン − セクタ平均) is the sector read — lead on it over SOX.
             - **`ticker_note`**: qualifies the other inputs, never sets direction.
             - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
             - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.
@@ -175,6 +170,7 @@ jobs:
             - **`context_body`** is the heart of the call. Fresh corroborating topics in 直近の重大トピック (or a
               just-released earnings/guidance) set the strongest direction; a thin single line still picks a side,
               noted as thin; nothing materially new weakens the case. 証券会社レーティング only corroborates.
+              `sector` corroborates too: a name leading its peers backs a topic-driven buy, lagging discounts it.
 
             ### Secondary — moves the 水準 only
 
@@ -203,12 +199,10 @@ jobs:
             - **`forced`** (status `none` → skip): `summary` already states the forced-flow timing
               (投げ/踏み, ~何営業日後のどのセッション, building=これから / exhausted=出尽くし); take it as given and
               lead the 水準 to that dip rather than chasing into it. Never sets direction.
-            - **Event context** — SQ週/メジャーSQ unwind distorts the tape (treat the move as noise, fall back to
-              fundamentals); SQ明け is clean; 米メジャーSQ reaches JP only via SOX. A 海外SOX系ピア決算 line reads by
-              tense: `通過済み` = the result is already in `premarket.sox_change_pct` and `sector` — read those, do
-              not re-weight the note; `あとX日で` = pending, soften one step only while it is genuinely near. A
-              passed peer print is spent once the sector has traded through it — do not carry a settled or a
-              still-distant peer print as the reason to override this name's own context_body and sector read.
+            - **Event context** — SQ週/メジャーSQ unwind distorts the tape (noise, fall back to fundamentals);
+              SQ明け is clean; 米メジャーSQ reaches JP only via SOX. 海外ピア決算: `あとX日で` = pending, soften one
+              step; `通過済み` = already in `premarket`/`sector`, do not re-weight. Never override context_body on a
+              settled peer print.
 
             **イベントリスク (binary events):**
 

@@ -103,6 +103,79 @@ export function applyTrade(
 	return { ok: true, avgPrice: curAvg, qty: curQty - execQty };
 }
 
+// 追証 (追加保証金) 判定。信用建玉が現値まで下落したときの委託保証金維持率を出す純粋関数。
+//
+// モデル (本人が保有する建玉だけで完結。証券会社の実残高は参照しない近似):
+//   委託保証金 = 現金 (cashBalance)
+//              + 現物建玉の代用評価額 (現値 × 掛目 SUBSTITUTE_HAIRCUT)   ← 現物も代用差入れとみなす
+//              + 信用建玉の評価損益合計 (long は price-avg、short は avg-price、× 株数)
+//   建代金     = 信用建玉の建代金 (avgPrice × qty) 合計
+//   維持率     = 委託保証金 / 建代金
+//   追証ライン = 維持率が MAINTENANCE_MIN を割る水準。委託保証金 - 建代金×MAINTENANCE_MIN が
+//                「あと耐えられる評価損」。これが 0 以下なら既に追証。
+// 信用建玉が無ければ判定対象なし (null)。現値が引けない建玉は評価損益・代用評価に算入しない。
+
+const SUBSTITUTE_HAIRCUT = 0.8; // 代用有価証券の掛目 (現物評価額の 80% を保証金に算入)
+export const MAINTENANCE_MIN = 0.2; // これを割ると追証 (委託保証金維持率 20%)
+
+export interface MarginCallView {
+	maintenanceRate: number | null; // 現在の委託保証金維持率 (建代金 0 は null)
+	deposit: number; // 委託保証金 (現金 + 代用評価 + 信用評価損益)
+	marginNotional: number; // 信用建玉の建代金合計
+	room: number; // あと耐えられる評価損 (deposit - 建代金×MAINTENANCE_MIN)。負なら既に追証
+	inCall: boolean; // 現時点で追証発生中か (維持率 < MAINTENANCE_MIN)
+}
+
+// 追証判定に使う 1 建玉 (現値つき)。account: cash|margin, side: long|short。
+interface MarginCallInput {
+	account: string;
+	side: string;
+	avgPrice: number;
+	qty: number;
+	price: number | null;
+}
+
+// 本人の全建玉 + 現金残高から委託保証金維持率と追証余力を算出する。
+// 信用建玉が 1 つも無ければ null (追証の概念がない)。
+export function computeMarginCall(
+	positions: MarginCallInput[],
+	cashBalance: number | null,
+): MarginCallView | null {
+	const margins = positions.filter((p) => p.account === "margin");
+	if (margins.length === 0) return null;
+
+	let marginNotional = 0; // 信用建代金 (avg×qty)
+	let marginPnl = 0; // 信用評価損益 (現値がある建玉のみ)
+	for (const p of margins) {
+		if (!Number.isFinite(p.avgPrice) || p.avgPrice <= 0) continue;
+		if (!Number.isFinite(p.qty) || p.qty <= 0) continue;
+		marginNotional += p.avgPrice * p.qty;
+		const amt = pnlAmount(p.side, p.avgPrice, p.qty, p.price);
+		if (amt != null) marginPnl += amt;
+	}
+	if (marginNotional <= 0) return null;
+
+	// 現物建玉の代用評価額 (現値 × 株数 × 掛目)。現値が引けない行は算入しない。
+	let substitute = 0;
+	for (const p of positions) {
+		if (p.account !== "cash") continue;
+		if (p.price == null || !Number.isFinite(p.price) || p.price <= 0) continue;
+		if (!Number.isFinite(p.qty) || p.qty <= 0) continue;
+		substitute += p.price * p.qty * SUBSTITUTE_HAIRCUT;
+	}
+
+	const deposit = (cashBalance ?? 0) + substitute + marginPnl;
+	const maintenanceRate = deposit / marginNotional;
+	const room = deposit - marginNotional * MAINTENANCE_MIN;
+	return {
+		maintenanceRate, // 比率のまま (表示側で %・丸め)
+		deposit: Math.round(deposit),
+		marginNotional: Math.round(marginNotional),
+		room: Math.round(room),
+		inCall: maintenanceRate < MAINTENANCE_MIN,
+	};
+}
+
 // positions ブロックを組む。行が無ければ status: "none" (= ユーザー未登録)。
 // price は判定対象の参照現値 (直近 close か live 現値)。各行に含み損益%を載せる。
 export function buildPositions(
@@ -255,6 +328,103 @@ if (import.meta.vitest) {
 		it("0 と整数はそのまま", () => {
 			expect(round1(0)).toBe(0);
 			expect(round1(42)).toBe(42);
+		});
+	});
+
+	describe("computeMarginCall", () => {
+		const P = (
+			account: string,
+			side: string,
+			avgPrice: number,
+			qty: number,
+			price: number | null,
+		): MarginCallInput => ({ account, side, avgPrice, qty, price });
+
+		it("信用建玉が無ければ null", () => {
+			expect(
+				computeMarginCall([P("cash", "long", 1000, 100, 1100)], 500000),
+			).toBeNull();
+			expect(computeMarginCall([], 500000)).toBeNull();
+		});
+
+		it("現金のみ: 維持率 = (現金 + 評価損益) / 建代金", () => {
+			// 建代金 100万、現金 40万、評価損益 0 → deposit 40万、維持率 0.4
+			const out = computeMarginCall(
+				[P("margin", "long", 1000, 1000, 1000)],
+				400000,
+			);
+			expect(out?.marginNotional).toBe(1_000_000);
+			expect(out?.deposit).toBe(400_000);
+			expect(out?.maintenanceRate).toBeCloseTo(0.4, 5);
+			expect(out?.inCall).toBe(false);
+			// room = 40万 - 100万×0.2 = 20万
+			expect(out?.room).toBe(200_000);
+		});
+
+		it("評価損で維持率が下がり 20% 割れで追証", () => {
+			// 建代金 100万 (建値1000×1000株)、現値 700 → 評価損 -30万、現金 40万 → deposit 10万
+			// 維持率 0.1 (<0.2) → 追証。room = 10万 - 20万 = -10万
+			const out = computeMarginCall(
+				[P("margin", "long", 1000, 1000, 700)],
+				400000,
+			);
+			expect(out?.maintenanceRate).toBeCloseTo(0.1, 5);
+			expect(out?.inCall).toBe(true);
+			expect(out?.room).toBe(-100_000);
+		});
+
+		it("現物を代用有価証券として掛目 80% で保証金に算入", () => {
+			// 信用建代金 100万、現金 0、現物 現値1000×500株 → 代用 50万×0.8 = 40万 → deposit 40万
+			const out = computeMarginCall(
+				[
+					P("margin", "long", 1000, 1000, 1000),
+					P("cash", "long", 900, 500, 1000),
+				],
+				0,
+			);
+			expect(out?.deposit).toBe(400_000);
+			expect(out?.maintenanceRate).toBeCloseTo(0.4, 5);
+		});
+
+		it("short 建玉は上昇で評価損 (deposit を削る)", () => {
+			// 売り建 建値1000×1000株、現値1200 → 評価損 -20万、現金 40万 → deposit 20万、維持率 0.2
+			const out = computeMarginCall(
+				[P("margin", "short", 1000, 1000, 1200)],
+				400000,
+			);
+			expect(out?.maintenanceRate).toBeCloseTo(0.2, 5);
+			// ちょうど 0.2 は割っていない (< 判定なので false)
+			expect(out?.inCall).toBe(false);
+		});
+
+		it("現値が引けない信用建玉は評価損益 0 (建代金には算入)", () => {
+			const out = computeMarginCall(
+				[P("margin", "long", 1000, 1000, null)],
+				400000,
+			);
+			expect(out?.marginNotional).toBe(1_000_000);
+			expect(out?.deposit).toBe(400_000); // 評価損益 0
+		});
+
+		it("現値が引けない現物は代用評価に算入しない", () => {
+			const out = computeMarginCall(
+				[
+					P("margin", "long", 1000, 1000, 1000),
+					P("cash", "long", 900, 500, null),
+				],
+				400000,
+			);
+			expect(out?.deposit).toBe(400_000); // 代用 0
+		});
+
+		it("cashBalance 未登録 (null) は現金 0 とみなす", () => {
+			const out = computeMarginCall(
+				[P("margin", "long", 1000, 1000, 1000)],
+				null,
+			);
+			expect(out?.deposit).toBe(0);
+			expect(out?.maintenanceRate).toBe(0);
+			expect(out?.inCall).toBe(true);
 		});
 	});
 

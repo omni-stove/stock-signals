@@ -8,7 +8,8 @@
 // 出力 (event_context は需給イベント1行、market_regime は当日の market-check 地合いコール / 無ければ null、
 // forced は強制決済フローのスコア / stance==none なら {status:"none"}):
 //   { ticker, today, market_phase, market_regime, event_context, ticker_note,
-//     context_body, earnings, earnings_result, valuation, premarket, daily, prices, margin, forced }
+//     context_body, earnings, earnings_result, valuation, premarket, sector, daily, prices, margin, forced }
+// sector は対象銘柄が属する同一セクタのピアの相対強弱 (無ければ null)。
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
 import { desc, eq } from "drizzle-orm";
@@ -46,7 +47,12 @@ import {
 	premarketBackdrop,
 	prices,
 } from "../lib/schema";
-import { TICKERS } from "../lib/watchlist";
+import {
+	buildSectors,
+	type DailyBar,
+	type PremarketLine,
+} from "../lib/sectors";
+import { TICKERS, WATCHLIST_META } from "../lib/watchlist";
 
 export const judgeContext = new Hono<{ Bindings: Env }>();
 
@@ -191,6 +197,50 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.from(macroEvents)
 		.all()) as MacroEventRow[];
 
+	// sectors: 対象銘柄と同一 sector のピアの相対強弱 (5日リターン差) を渡し、judge が
+	// SOX/海外ピア決算という間接材料でなくセクタ内の実データで足場を持てるようにする。
+	// 対象に sector が無ければ null。同一 sector メンバーの daily を 20 本ずつ引く (対象銘柄分は
+	// 上の dailyRows を流用)。
+	const selfSector =
+		WATCHLIST_META.find((t) => t.code === code)?.sector ?? null;
+	const sectorMeta = selfSector
+		? WATCHLIST_META.filter((t) => t.sector === selfSector)
+		: [];
+	const sectorBarsByCode: Record<string, DailyBar[]> = {};
+	for (const t of sectorMeta) {
+		if (t.code === code) {
+			sectorBarsByCode[t.code] = dailyRows as unknown as DailyBar[];
+			continue;
+		}
+		const bars = (await db(env.DB)
+			.select({
+				date: daily.date,
+				close: daily.close,
+				change_pct: daily.changePct,
+				volume: daily.volume,
+			})
+			.from(daily)
+			.where(eq(daily.ticker, t.code))
+			.orderBy(desc(daily.date))
+			.limit(20)
+			.all()) as DailyBar[];
+		sectorBarsByCode[t.code] = bars;
+	}
+	const premarketLine: PremarketLine | null = premarketRow
+		? {
+				date: null,
+				sox_change_pct: premarketRow.sox_change_pct,
+				nasdaq_change_pct: premarketRow.nasdaq_change_pct,
+				dow_change_pct: premarketRow.dow_change_pct,
+				nikkei_futures_price: premarketRow.nikkei_futures_price,
+			}
+		: null;
+	const sectorReports = buildSectors(
+		sectorMeta,
+		premarketLine,
+		sectorBarsByCode,
+	);
+
 	// ザラ場中 (前場/昼休み/後場) で daily にまだ当日行が無いとき、当日の vol_x を
 	// prices の当日累積出来高からペース換算で組み立てて buildDaily に渡す。引け後や
 	// 当日 daily が既にあるときは null (= vol_x_20d 本体が当日確定値なので intraday 不要)。
@@ -232,6 +282,8 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 			TICKERS.find((t) => t.code === code)?.fair_per ?? null,
 		),
 		premarket: buildPremarket(premarketRow ?? null, epochNow),
+		// 対象銘柄が属する sector の1件だけ (rows は相対強弱の強い順)。sector 未設定なら null。
+		sector: sectorReports[0] ?? null,
 		daily: buildDaily(dailyRows, intradayVol),
 		prices: buildPrices(priceRows, epochNow),
 		margin: buildMargin(marginRows),

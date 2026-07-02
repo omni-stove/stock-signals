@@ -16,10 +16,15 @@ export interface MacroEventRow {
 	jst_effect_date?: string | null;
 }
 
-const DAYS = 5; // マクロ/ピアの近接窓 (today〜today+DAYS)
+const DAYS = 5; // マクロ (FOMC/日銀) の近接窓 (today〜today+DAYS)
 const IDX_LEAD = 5; // 指数リバランス: 実施前の窓 (これから歪む側。N 日前まで)
 const IDX_AFTER = 2; // 指数リバランス: 実施後の窓 (反動取りの側のみ。歪み剥落後の「実勢に戻る」だけの日は出さない)
-const PEER_AFTER = 2; // ピア決算: SOX 波及後の窓 (直近に出た決算が当日の地合いの正体である可能性を出す。未来扱いの誤読を防ぐ)
+// ピア決算は「済んだ結果 (前夜 NY の実際の反応) が当日の地合いの正体」の側を厚く出す。
+// 先読み (PEER_LEAD) は短く: まだ遠い次回決算に何日も前から身構えると、直近に出た決算の
+// 消化より未来の予定が居座り judge が時系列を取り違えるため。余韻 (PEER_AFTER) は長め:
+// 週明けや連休を跨いでも直近決算の反応を地合いの材料として残す。
+const PEER_LEAD = 2; // ピア決算: SOX 波及前の窓 (これから織り込む側。当日〜N 日後まで)
+const PEER_AFTER = 5; // ピア決算: SOX 波及後の窓 (直近に出た決算が当日の地合いの正体である可能性を出す)
 
 // --- 日付ヘルパー (全て UTC 正午アンカーで計算。DST/端数の影響を受けない) ---
 
@@ -222,11 +227,12 @@ function collectMacro(
 			continue;
 		const daysUntil = daysDiff(today, eff);
 		const kind = r.kind || "";
-		// ピア決算は波及後 PEER_AFTER 日まで「通過済み」を出す (当日の地合いの正体になり得るため)。
+		// ピア決算は [today-PEER_AFTER, today+PEER_LEAD]: 済んだ決算の余韻を厚く、先読みは短く。
 		// それ以外 (FOMC/日銀) は近接窓 today〜horizon のみ。
 		const isPeer = kind.startsWith("peer_earnings:");
 		const lowerBound = isPeer ? addDays(today, -PEER_AFTER) : today;
-		if (eff < lowerBound || eff > horizon) continue;
+		const upperBound = isPeer ? addDays(today, PEER_LEAD) : horizon;
+		if (eff < lowerBound || eff > upperBound) continue;
 		const when = daysUntil === 0 ? "本日" : `${daysUntil}日後`;
 		if (isPeer) {
 			// 波及日当日: 寄り前 (premarket) は「これから織り込む」、寄り後は前夜 NY で結果が
@@ -413,11 +419,17 @@ if (import.meta.vitest) {
 				jst_effect_date: "2026-06-25",
 			},
 		];
-		it("近接 (3日後) は あとX日で<社名>→SOX変動リスク", () => {
-			const out = buildEventContext("2026-06-22", mu);
-			expect(out).toContain("あと3日でマイクロン(MU) 決算");
+		it("先読み窓内 (2日後=PEER_LEAD) は あとX日で<社名>→SOX変動リスク", () => {
+			const out = buildEventContext("2026-06-23", mu);
+			expect(out).toContain("あと2日でマイクロン(MU) 決算");
 			expect(out).toContain("SOX変動リスク");
 			expect(out).not.toContain("マイクロン(MU) 決算(2026");
+		});
+		it("先読み窓の外 (3日前=PEER_LEAD超) はまだ身構えない (出さない)", () => {
+			// 波及=06-25 の 3日前。まだ遠い次回決算に前もって身構えると直近決算の消化が劣後するため出さない。
+			expect(buildEventContext("2026-06-22", mu)).not.toContain(
+				"マイクロン(MU) 決算",
+			);
 		});
 		it("波及日当日・phase省略 (寄り前扱い) は 本日<社名>→SOX変動リスク", () => {
 			expect(buildEventContext("2026-06-25", mu)).toContain(
@@ -444,9 +456,18 @@ if (import.meta.vitest) {
 			expect(out).toContain("当日の地合いの正体の可能性");
 			expect(out).not.toContain("あと");
 		});
-		it("波及から PEER_AFTER (2日) を超えたら出さない", () => {
-			// 波及=06-25 の 3日後。剥落して当日の地合いの説明にならないので出さない。
-			expect(buildEventContext("2026-06-28", mu)).not.toContain(
+		it("波及4日後もまだ通過済みで出る (余韻を厚く残す)", () => {
+			// 波及=06-25 の 4日後。旧 PEER_AFTER=2 では消えていたが、直近決算の反応を
+			// 地合いの正体として残すため出す。
+			const out = buildEventContext("2026-06-29", mu);
+			expect(out).toContain(
+				"マイクロン(MU) 決算は通過済み(波及=2026-06-25/4日前)",
+			);
+			expect(out).toContain("当日の地合いの正体の可能性");
+		});
+		it("波及から PEER_AFTER (5日) を超えたら出さない", () => {
+			// 波及=06-25 の 6日後。剥落して当日の地合いの説明にならないので出さない。
+			expect(buildEventContext("2026-07-01", mu)).not.toContain(
 				"マイクロン(MU) 決算",
 			);
 		});

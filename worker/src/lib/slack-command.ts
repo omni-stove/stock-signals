@@ -2,7 +2,12 @@
 // ルート (routes/slack.ts) は署名検証・D1・dispatch を担い、view 組み立て・コマンド定義・
 // イベント判定といった副作用のない部分はここに集約してテストを同伴させる。
 
-import { pnlAmount, pnlPct } from "./positions";
+import {
+	computeMarginCall,
+	MAINTENANCE_MIN,
+	pnlAmount,
+	pnlPct,
+} from "./positions";
 import type { ProfileRow } from "./profile";
 import { WATCHLIST, WATCHLIST_NAMES } from "./timeseries";
 
@@ -501,6 +506,43 @@ export function buildMeText(
 					: `${amt >= 0 ? "+" : ""}${yen(amt)} 円 (${pnl >= 0 ? "+" : ""}${pnl}% / 現値 ${yen(p.price ?? 0)} 円)`;
 			lines.push(
 				`• *${head}* / ${account} / ${side} — 建値 ${yen(p.avgPrice)} 円 × ${p.qty} 株 = ${yen(cost)} 円 / 含み損益 ${pnlText}`,
+			);
+		}
+	}
+
+	// 追証ライン: 信用建玉があるときだけ、現物代用 + 現金 + 評価損益から委託保証金維持率を出す。
+	const mc = computeMarginCall(
+		positions.map((p) => ({
+			account: p.account,
+			side: p.side,
+			avgPrice: p.avgPrice,
+			qty: p.qty,
+			price: p.price,
+		})),
+		profile?.cashBalance ?? null,
+	);
+	if (mc) {
+		const minPct = MAINTENANCE_MIN * 100;
+		lines.push("");
+		lines.push("*追証ライン (信用)*");
+		if (mc.maintenanceRate == null) {
+			lines.push("• 建代金なし");
+		} else {
+			const ratePct = Math.round(mc.maintenanceRate * 1000) / 10; // 小数第1位%
+			lines.push(
+				`• 委託保証金維持率: ${ratePct}% (追証ライン ${minPct}%) — 委託保証金 ${yen(mc.deposit)} 円 / 建代金 ${yen(mc.marginNotional)} 円`,
+			);
+			if (mc.inCall) {
+				lines.push(
+					`• :rotating_light: 追証発生中 — 維持率が ${minPct}% を下回っています (不足 ${yen(-mc.room)} 円)`,
+				);
+			} else {
+				lines.push(
+					`• あと ${yen(mc.room)} 円の評価損で追証 (維持率 ${minPct}% 到達)`,
+				);
+			}
+			lines.push(
+				`※ 現物は代用有価証券として現値×80%で算入した概算。証券会社の実残高とは異なります。`,
 			);
 		}
 	}
@@ -1174,6 +1216,71 @@ if (import.meta.vitest) {
 				},
 			]);
 			expect(out).toContain("含み損益 -10,000 円 (-10% / 現値 900 円)");
+		});
+
+		it("現物だけなら追証ブロックは出ない", () => {
+			const out = buildMeText(null, [
+				{
+					ticker: code,
+					account: "cash",
+					side: "long",
+					avgPrice: 1000,
+					qty: 100,
+					price: 1100,
+				},
+			]);
+			expect(out).not.toContain("追証ライン");
+		});
+
+		it("信用建玉があると維持率・追証余力を出す", () => {
+			// 建代金 100万 (建値1000×1000株)、現金 40万、現値 1000 → 維持率 40%、余力 20万
+			const out = buildMeText(
+				{
+					riskTolerance: null,
+					holdStyle: null,
+					maxPositionPct: null,
+					cashBalance: 400000,
+					note: null,
+				},
+				[
+					{
+						ticker: code,
+						account: "margin",
+						side: "long",
+						avgPrice: 1000,
+						qty: 1000,
+						price: 1000,
+					},
+				],
+			);
+			expect(out).toContain("追証ライン (信用)");
+			expect(out).toContain("委託保証金維持率: 40% (追証ライン 20%)");
+			expect(out).toContain("あと 200,000 円の評価損で追証");
+		});
+
+		it("維持率が 20% を割ると追証発生中を出す", () => {
+			// 建代金 100万、現値 700 → 評価損 -30万、現金 40万 → deposit 10万、維持率 10%、不足 10万
+			const out = buildMeText(
+				{
+					riskTolerance: null,
+					holdStyle: null,
+					maxPositionPct: null,
+					cashBalance: 400000,
+					note: null,
+				},
+				[
+					{
+						ticker: code,
+						account: "margin",
+						side: "long",
+						avgPrice: 1000,
+						qty: 1000,
+						price: 700,
+					},
+				],
+			);
+			expect(out).toContain("追証発生中");
+			expect(out).toContain("不足 100,000 円");
 		});
 	});
 }

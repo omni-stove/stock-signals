@@ -13,6 +13,7 @@
 //   advantest/lasertec/murata は記事リンクが PDF/カレンダーで本文HTMLが取れないため、
 //   一覧の見出しを本文として保存する (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。
 
+import { seenArticleUrls } from "./articles";
 import { db } from "./db";
 import type { Env } from "./env";
 import {
@@ -27,16 +28,6 @@ import { type NotifyItem, notifySlack } from "./slack";
 import { fetchHtml, hash, sleep } from "./utils";
 
 // 全ソース UTF-8 (調査済) なので TextDecoder で十分。iconv 不要。
-// 既に D1 に存在する URL か (重複排除)。
-async function isSeen(env: Env, url: string): Promise<boolean> {
-	const row = await env.DB.prepare(
-		"SELECT 1 FROM articles WHERE url = ? LIMIT 1",
-	)
-		.bind(url)
-		.first();
-	return row !== null;
-}
-
 async function saveArticle(
 	env: Env,
 	meta: {
@@ -89,11 +80,15 @@ async function collectOne(
 	// (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。
 	const fetchBody = src.site === "kioxia";
 
+	const seen = await seenArticleUrls(
+		env.DB,
+		items.map((it) => it.url),
+	);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	let skipped = 0;
 	const fresh: NotifyItem[] = []; // 今回新規に保存した記事 (Slack通知対象)
 	for (const it of items) {
-		if (await isSeen(env, it.url)) {
+		if (seen.has(it.url)) {
 			skipped++;
 			continue;
 		}
@@ -132,24 +127,31 @@ async function collectOne(
 	return { found: total, written: fresh.length, skipped };
 }
 
+// emptyParses は「一覧が HTTP 200 なのにパース0件」だった銘柄 (= 一覧 DOM 変更の疑い)。
 export async function collectAll(
 	env: Env,
 	codeFilter: string | null,
 	limit: number = DEFAULT_LIMIT,
-): Promise<{ results: Record<string, unknown>; freshTickers: string[] }> {
+): Promise<{
+	results: Record<string, unknown>;
+	freshTickers: string[];
+	emptyParses: string[];
+}> {
 	const sources = IR_SOURCES.filter(
 		(s) => !codeFilter || s.code === codeFilter,
 	);
 	const results: Record<string, unknown> = {};
 	const freshTickers: string[] = []; // 今回 written > 0 だった銘柄 (= signal-report を起動すべき対象)
+	const emptyParses: string[] = [];
 	for (const src of sources) {
 		try {
 			const r = await collectOne(env, src, limit);
 			results[src.code] = r;
 			if (r.written > 0) freshTickers.push(src.code);
+			if (r.found === 0) emptyParses.push(src.code);
 		} catch (e) {
 			results[src.code] = { error: (e as Error).message };
 		}
 	}
-	return { results, freshTickers };
+	return { results, freshTickers, emptyParses };
 }

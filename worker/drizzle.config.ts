@@ -2,8 +2,7 @@
 //
 // 運用:
 //   pnpm db:generate            … schema.ts を編集したら差分 SQL を drizzle/ に生成
-//   pnpm db:migrate:local       … 生成済み migration をローカル D1 (wrangler) に適用
-//   pnpm db:migrate:remote      … 同上をリモート D1 に適用
+//   pnpm db:migrate:remote      … 生成済み migration をリモート D1 に適用 (push 時は CI が自動適用)
 // これにより従来の手書き schema.sql 二重管理を廃し、PK 変更等も drizzle-kit が
 // 差分 migration として生成する (全 DROP を伴う初期化スクリプトを流す事故を防ぐ)。
 //

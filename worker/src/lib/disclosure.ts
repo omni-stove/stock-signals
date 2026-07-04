@@ -7,7 +7,7 @@
 // 全銘柄が worker/src/index.ts の IR_SOURCES でも公式サイトIRを取っているが、こちらの TDnet は
 // 適時開示を別ソースとして二重に押さえる保険 (同一URLは articles.url PK + INSERT OR IGNORE で冪等)。
 //
-// 一覧の各行は table.s_news_list で news.ts の parseKabutanList と同一構造。
+// 一覧の各行は table.s_news_list (kabutan.ts の parseKabutanNewsList で抽出)。
 // ただしリンク先は実PDFのラッパーページ (本文テキストは取れない) なので、
 // 本文は取りに行かず「一覧のタイトル」を body として保存する (適時開示はタイトルだけで
 // 判定材料 = 何が起きたか が分かる)。PDF原本のURLは url 列に残るので必要なら人が辿れる。
@@ -17,11 +17,12 @@
 //   ir_category= "disclosure"
 // 重複排除は articles.url の PRIMARY KEY + INSERT OR IGNORE (news.ts と同じ)。
 
-import * as cheerio from "cheerio";
+import { seenArticleUrls } from "./articles";
 import { db } from "./db";
+import { parseKabutanNewsList } from "./kabutan";
 import { articles } from "./schema";
 import { WATCHLIST } from "./timeseries";
-import { fetchHtml, hash } from "./utils";
+import { fetchHtml, hash, normArticleDate } from "./utils";
 
 export interface DisclosureEnv {
 	DB: D1Database;
@@ -37,51 +38,6 @@ const SITE = "tdnet";
 
 // 1銘柄あたり記録する最大件数 (新しい順)。本文取得はしないので件数は多めでも軽い。
 const DISCLOSURE_LIMIT = 20;
-
-// 開示一覧 (table.s_news_list の各 tr) を抽出。news.ts の parseKabutanList と同構造だが
-// time が "26/05/29 17:00" 形式 (年2桁・&nbsp;区切り) なので date はそのまま渡し normDate で正規化する。
-function parseDisclosureList(
-	html: string,
-	baseUrl: string,
-): { url: string; title: string; date: string }[] {
-	const $ = cheerio.load(html);
-	const out: { url: string; title: string; date: string }[] = [];
-	$("table.s_news_list tr").each((_, tr) => {
-		const $tr = $(tr);
-		const a = $tr.find("a").first();
-		const href = a.attr("href");
-		if (!href) return;
-		const url = new URL(href, baseUrl).toString();
-		const title = a.text().trim();
-		const date =
-			$tr.find("time").first().text().trim() ||
-			$tr.find("td").first().text().trim();
-		if (title) out.push({ url, title, date });
-	});
-	return out;
-}
-
-// 日付文字列を YYYY-MM-DD に正規化。kabutan 開示は "26/05/29 17:00" のように年2桁。
-// 4桁年があればそれを使い、2桁年 (YY/MM/DD) は 2000+YY で補完する。取れなければ "unknown"。
-function normDate(raw: string): string {
-	const cleaned = raw.replace(/&nbsp;/g, " ");
-	const full = cleaned.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-	if (full)
-		return `${full[1]}-${full[2].padStart(2, "0")}-${full[3].padStart(2, "0")}`;
-	const yy = cleaned.match(/(\d{2})[-/](\d{1,2})[-/](\d{1,2})/);
-	if (yy)
-		return `20${yy[1]}-${yy[2].padStart(2, "0")}-${yy[3].padStart(2, "0")}`;
-	return "unknown";
-}
-
-async function isSeen(env: DisclosureEnv, url: string): Promise<boolean> {
-	const row = await env.DB.prepare(
-		"SELECT 1 FROM articles WHERE url = ? LIMIT 1",
-	)
-		.bind(url)
-		.first();
-	return row !== null;
-}
 
 // 適時開示1件を保存。本文は取得しないので body = title (適時開示は見出しが判定材料)。
 async function saveDisclosure(
@@ -127,14 +83,18 @@ async function collectDisclosureOne(
 	code: string,
 ): Promise<{ found: number; written: number; skipped: number }> {
 	const listHtml = await fetchHtml(URL_DISCLOSURE(code), env);
-	const items = parseDisclosureList(listHtml, URL_DISCLOSURE(code)).slice(
+	const items = parseKabutanNewsList(listHtml, URL_DISCLOSURE(code)).slice(
 		0,
 		DISCLOSURE_LIMIT,
+	);
+	const seen = await seenArticleUrls(
+		env.DB,
+		items.map((it) => it.url),
 	);
 	let written = 0;
 	let skipped = 0;
 	for (const it of items) {
-		if (await isSeen(env, it.url)) {
+		if (seen.has(it.url)) {
 			skipped++;
 			continue;
 		}
@@ -143,7 +103,7 @@ async function collectDisclosureOne(
 				url: it.url,
 				ticker: code,
 				title: it.title,
-				published_at: normDate(it.date),
+				published_at: normArticleDate(it.date, Date.now()),
 			});
 			written++;
 		} catch (e) {
@@ -155,15 +115,21 @@ async function collectDisclosureOne(
 
 // watchlist 全銘柄 (codeFilter 指定時はその1銘柄) の適時開示を収集。
 // 戻り値の freshTickers は今回新規があった銘柄 (= signal 判定を起動すべき対象)。
+// emptyParses は「一覧が HTTP 200 なのにパース0件」だった銘柄 (= DOM 変更の疑い)。
 // 銘柄間は本文取得が無いぶん軽いが、kabutan への負荷を揃えるため min_interval を空ける。
 export async function collectDisclosures(
 	env: DisclosureEnv,
 	codeFilter: string | null,
-): Promise<{ results: Record<string, unknown>; freshTickers: string[] }> {
+): Promise<{
+	results: Record<string, unknown>;
+	freshTickers: string[];
+	emptyParses: string[];
+}> {
 	const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	const results: Record<string, unknown> = {};
 	const freshTickers: string[] = [];
+	const emptyParses: string[] = [];
 	for (let i = 0; i < codes.length; i++) {
 		if (i > 0) await new Promise((r) => setTimeout(r, interval));
 		const code = codes[i];
@@ -171,56 +137,10 @@ export async function collectDisclosures(
 			const r = await collectDisclosureOne(env, code);
 			results[code] = r;
 			if (r.written > 0) freshTickers.push(code);
+			if (r.found === 0) emptyParses.push(code);
 		} catch (e) {
 			results[code] = { error: (e as Error).message };
 		}
 	}
-	return { results, freshTickers };
-}
-
-if (import.meta.vitest) {
-	const { describe, it, expect } = import.meta.vitest;
-	const BASE = "https://kabutan.jp/stock/news?code=285A&nmode=3";
-
-	describe("parseDisclosureList", () => {
-		const html = [
-			"<table class='s_news_list'>",
-			"<tr><td><time>26/05/29 17:00</time></td><td><a href='/disclosures/abc'>決算短信</a></td></tr>",
-			"<tr><td><time>26/05/15 15:00</time></td><td><a href='https://kabutan.jp/disclosures/def'>業績予想の修正</a></td></tr>",
-			"<tr><td>区切り (aなし)</td></tr>",
-			"</table>",
-		].join("");
-
-		it("開示一覧の行を絶対URL・タイトル・生日付で抽出する", () => {
-			const rows = parseDisclosureList(html, BASE);
-			expect(rows).toEqual([
-				{
-					url: "https://kabutan.jp/disclosures/abc",
-					title: "決算短信",
-					date: "26/05/29 17:00",
-				},
-				{
-					url: "https://kabutan.jp/disclosures/def",
-					title: "業績予想の修正",
-					date: "26/05/15 15:00",
-				},
-			]);
-		});
-		it("aリンクの無い行は除外する", () => {
-			expect(parseDisclosureList(html, BASE)).toHaveLength(2);
-		});
-	});
-
-	describe("normDate", () => {
-		it("年2桁 YY/MM/DD は 20YY-MM-DD に補完する", () => {
-			expect(normDate("26/05/29 17:00")).toBe("2026-05-29");
-			expect(normDate("26/5/9")).toBe("2026-05-09");
-		});
-		it("4桁年があればそれを使う", () => {
-			expect(normDate("2026/05/29")).toBe("2026-05-29");
-		});
-		it("取れなければ unknown", () => {
-			expect(normDate("日付なし")).toBe("unknown");
-		});
-	});
+	return { results, freshTickers, emptyParses };
 }

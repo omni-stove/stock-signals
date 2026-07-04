@@ -2,7 +2,8 @@
 //
 // 銘柄ページ (news.ts) に載らない市場全体・テーマニュースを拾う。半導体/AI/金利/米国市場の
 // テーマに当たった見出しだけを market_news テーブル + R2 に保存し、地合い判定 (market-check) が
-// /market-context 経由で最新数件を読む。
+// /market-context 経由で最新数件を読む。新規見出しに watchlist 銘柄の言及 (matchTickers) が
+// あれば freshTickers として返し、個別判定 (signal-report) の起動にも使う。
 //   source は持たない (銘柄非依存)。重複排除は market_news.url PK + INSERT OR IGNORE。
 //
 // 収集元は2系統:
@@ -17,10 +18,12 @@
 // 銘柄ニュース用 parseKabutanArticle は #shijyo_news_text / h1.pdbt0 を見るため流用できない。
 
 import * as cheerio from "cheerio";
-import { eq } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { db } from "./db";
+import { parseKabutanNewsList } from "./kabutan";
 import { marketNews } from "./schema";
-import { fetchHtml, hash, sleep } from "./utils";
+import { fetchHtml, hash, normArticleDate, sleep } from "./utils";
+import { matchTickers } from "./watchlist";
 
 export interface MarketNewsEnv {
 	DB: D1Database;
@@ -157,28 +160,6 @@ function matchTopics(title: string): string | null {
 	return hit.length > 0 ? hit.map((g) => g.key).join(",") : null;
 }
 
-// 市場ニュース一覧 (table.s_news_list の各 tr) を抽出。構造は銘柄ニュースと共通。
-function parseList(
-	html: string,
-	baseUrl: string,
-): { url: string; title: string; date: string }[] {
-	const $ = cheerio.load(html);
-	const out: { url: string; title: string; date: string }[] = [];
-	$("table.s_news_list tr").each((_, tr) => {
-		const $tr = $(tr);
-		const a = $tr.find("a").first();
-		const href = a.attr("href");
-		if (!href) return;
-		const url = new URL(href, baseUrl).toString();
-		const title = a.text().trim();
-		const date =
-			$tr.find("time").first().text().trim() ||
-			$tr.find("td").first().text().trim();
-		if (title) out.push({ url, title, date });
-	});
-	return out;
-}
-
 // RSS 2.0 の <item> を url/title/date/body に抽出 (cheerio の xmlMode)。ITmedia AI+ 用。
 // body は description をそのまま使う (記事ページ再取得は不要)。date は pubDate を YYYY-MM-DD に正規化。
 function parseRss(
@@ -232,22 +213,18 @@ function parseArticle(html: string): {
 	return { title, body: body.replace(/\s+\n/g, "\n").trim(), published_at };
 }
 
-// 日付文字列を YYYY-MM-DD に正規化 (R2キー用)。取れなければ "unknown"。
-function normDate(raw: string): string {
-	const m = raw.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-	if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
-	const md = raw.match(/(\d{1,2})[-/](\d{1,2})/);
-	if (md) return `${md[1].padStart(2, "0")}-${md[2].padStart(2, "0")}`;
-	return "unknown";
-}
-
-async function isSeen(env: MarketNewsEnv, url: string): Promise<boolean> {
+// urls のうち既に market_news に存在するものの集合 (重複排除用)。IN 句でまとめて引く。
+async function seenMarketUrls(
+	env: MarketNewsEnv,
+	urls: string[],
+): Promise<Set<string>> {
+	if (urls.length === 0) return new Set();
 	const rows = await db(env.DB)
 		.select({ url: marketNews.url })
 		.from(marketNews)
-		.where(eq(marketNews.url, url))
-		.limit(1);
-	return rows.length > 0;
+		.where(inArray(marketNews.url, urls))
+		.all();
+	return new Set(rows.map((r) => r.url));
 }
 
 async function saveArticle(
@@ -293,30 +270,40 @@ export type FreshMarketNews = {
 };
 
 // 市場ニュース一覧を取り、topic 一致かつ未取得の記事だけ本文取得→保存。新規件数等と新規記事メタを返す。
+// emptyParse は「kabutan 一覧が HTTP 200 なのにパース0件」(= DOM 変更で収集が静かに止まっている疑い)。
+// freshTickers は今回新規の見出しに watchlist 銘柄の言及 (matchTickers: 名前/別名/keywords) が
+// あった銘柄 (= テーマ級ヘッドラインでも個別 signal-report を起動する対象)。
 export async function collectMarketNews(env: MarketNewsEnv): Promise<{
 	found: number;
 	matched: number;
 	written: number;
 	freshNews: FreshMarketNews[];
+	freshTickers: string[];
+	emptyParse: boolean;
 }> {
 	const listHtml = await fetchHtml(URL_LIST, env);
-	const all = parseList(listHtml, URL_LIST);
+	const all = parseKabutanNewsList(listHtml, URL_LIST);
 	// topic に当たったものだけを上限まで (新しい順に並んでいる前提)。
 	const items = all
 		.map((it) => ({ ...it, topic: matchTopics(it.title) }))
 		.filter((it): it is typeof it & { topic: string } => it.topic !== null)
 		.slice(0, NEWS_LIMIT);
+	const seen = await seenMarketUrls(
+		env,
+		items.map((it) => it.url),
+	);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	let written = 0;
 	const freshNews: FreshMarketNews[] = [];
+	const freshTickers = new Set<string>();
 	for (const it of items) {
-		if (await isSeen(env, it.url)) continue;
+		if (seen.has(it.url)) continue;
 		await sleep(interval);
 		try {
 			const artHtml = await fetchHtml(it.url, env);
 			const parsed = parseArticle(artHtml);
 			const title = parsed.title || it.title;
-			const date = normDate(parsed.published_at || it.date);
+			const date = normArticleDate(parsed.published_at || it.date, Date.now());
 			await saveArticle(env, {
 				url: it.url,
 				title,
@@ -326,6 +313,7 @@ export async function collectMarketNews(env: MarketNewsEnv): Promise<{
 			});
 			written++;
 			freshNews.push({ topic: it.topic, title, url: it.url, date });
+			for (const code of matchTickers(title)) freshTickers.add(code);
 		} catch (e) {
 			console.error(
 				`market-news article error ${it.url}: ${(e as Error).message}`,
@@ -347,8 +335,12 @@ export async function collectMarketNews(env: MarketNewsEnv): Promise<{
 			.filter((it): it is typeof it & { topic: string } => it.topic !== null)
 			.slice(0, NEWS_LIMIT);
 		aiMatched = aiHits.length;
+		const seenAi = await seenMarketUrls(
+			env,
+			aiHits.map((it) => it.url),
+		);
 		for (const it of aiHits) {
-			if (await isSeen(env, it.url)) continue;
+			if (seenAi.has(it.url)) continue;
 			try {
 				await saveArticle(env, {
 					url: it.url,
@@ -364,6 +356,7 @@ export async function collectMarketNews(env: MarketNewsEnv): Promise<{
 					url: it.url,
 					date: it.date,
 				});
+				for (const code of matchTickers(it.title)) freshTickers.add(code);
 			} catch (e) {
 				console.error(
 					`market-news (aiplus) article error ${it.url}: ${(e as Error).message}`,
@@ -379,12 +372,13 @@ export async function collectMarketNews(env: MarketNewsEnv): Promise<{
 		matched: items.length + aiMatched,
 		written,
 		freshNews,
+		freshTickers: [...freshTickers],
+		emptyParse: all.length === 0,
 	};
 }
 
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
-	const BASE = "https://kabutan.jp/news/marketnews/";
 
 	describe("matchTopics", () => {
 		it("テーマ語に当たれば topic タグを返す", () => {
@@ -423,24 +417,6 @@ if (import.meta.vitest) {
 		it("英語 ai 単独は誤爆させない (固有名・複合語でのみ拾う)", () => {
 			// "ai" 単独キーワードを廃したので、AI と無関係な英単語混じり見出しは ai にしない。
 			expect(matchTopics("Maiko Industries、新工場を稼働")).toBeNull();
-		});
-	});
-
-	describe("parseList", () => {
-		const html = [
-			"<table class='s_news_list'>",
-			"<tr><td><time>06/26 11:47</time></td><td><a href='/news/marketnews/?&b=n1'>韓国株6%安</a></td></tr>",
-			"<tr><td>ヘッダ行 (aなし)</td></tr>",
-			"</table>",
-		].join("");
-		it("相対hrefを絶対URLに解決しタイトル・日付を拾う", () => {
-			expect(parseList(html, BASE)).toEqual([
-				{
-					url: "https://kabutan.jp/news/marketnews/?&b=n1",
-					title: "韓国株6%安",
-					date: "06/26 11:47",
-				},
-			]);
 		});
 	});
 
@@ -495,20 +471,16 @@ if (import.meta.vitest) {
 			expect(r.title).toBe("【市況】韓国株6%安、オープンAI上場延期も重石");
 			expect(r.body).toContain("韓国総合株価指数");
 			expect(r.published_at).toBe("2026-06-26T11:47:00+09:00");
-			expect(normDate(r.published_at)).toBe("2026-06-26");
+			expect(
+				normArticleDate(
+					r.published_at,
+					new Date("2026-06-26T12:00:00Z").getTime(),
+				),
+			).toBe("2026-06-26");
 		});
 		it("article 直下に .body が無ければ article 全文へフォールバック", () => {
 			const html = "<article><h1>T</h1>本文だけ</article>";
 			expect(parseArticle(html).body).toContain("本文だけ");
-		});
-	});
-
-	describe("normDate", () => {
-		it("4桁年は YYYY-MM-DD に正規化する", () => {
-			expect(normDate("2026-06-26T11:47:00+09:00")).toBe("2026-06-26");
-		});
-		it("日付が取れなければ unknown", () => {
-			expect(normDate("日付不明")).toBe("unknown");
 		});
 	});
 }

@@ -10,8 +10,8 @@
 //  - name        : 表示名。
 //  - sector      : セクター識別子 (sectors.ts が同一 sector 内で相対強弱を比較)。
 //  - sector_role : セクター内の位置づけメモ (memory/tester/inspection 等)。
-//  - aliases     : ニュース本文で銘柄判定に使う別名・略称。
-//  - keywords    : 銘柄関連と判断する文脈ワード (業界・製品など)。
+//  - aliases     : 銘柄名の別名・略称。matchTickers が見出しから銘柄を引き当てるのに使う。
+//  - keywords    : 銘柄関連と判断する文脈ワード (業界・製品など)。matchTickers が aliases と併用する。
 //  - ir_url      : IR/プレスリリース一覧ページ (人間向けの代表ページ。表示・参照用)。
 //  - ir          : 公式IRスクレイプ定義。未設定 (undefined) の銘柄は IR スクレイプ対象外。
 //      - site      : IR一覧パーサの振り分けキー (ir-sources.ts の parseList() が選ぶ)。
@@ -174,6 +174,19 @@ export const WATCHLIST_META: WatchlistMeta[] = TICKERS.map((t) => ({
 	sector_role: t.sector_role,
 }));
 
+// text (ニュース見出し等) に言及がある watchlist 銘柄の code を返す。
+// 名前・aliases (銘柄名の別名) と keywords (製品・業界ワード。例: HBM→テスター需要) を
+// 小文字化した部分一致で見る。市場テーマニュース (market-news.ts) が「この見出しはどの銘柄の
+// 材料か」を引き、当たった銘柄の個別判定を起動するのに使う。
+export function matchTickers(text: string): string[] {
+	const t = text.toLowerCase();
+	return TICKERS.filter((tk) =>
+		[tk.name, ...tk.aliases, ...tk.keywords].some((w) =>
+			t.includes(w.toLowerCase()),
+		),
+	).map((tk) => tk.code);
+}
+
 // 公式IRスクレイプ対象 (ir 定義を持つ銘柄のみ)。ir-collect.ts が code/site/list_url を使う。
 export interface IrSourceEntry {
 	code: string;
@@ -204,6 +217,22 @@ if (import.meta.vitest) {
 		});
 		it("code は重複しない", () => {
 			expect(new Set(WATCHLIST).size).toBe(WATCHLIST.length);
+		});
+	});
+
+	describe("matchTickers", () => {
+		it("銘柄名・別名の言及を code に引き当てる (大文字小文字をまたぐ)", () => {
+			expect(matchTickers("キオクシア、NANDを値上げへ")).toEqual(["285A"]);
+			expect(matchTickers("advantest が上方修正")).toEqual(["6857"]);
+		});
+		it("keywords (製品・業界ワード) でも引き当てる", () => {
+			expect(matchTickers("SKハイニックス、HBM増産へ")).toEqual(["6857"]);
+		});
+		it("共通ワード (MLCC) は該当する複数銘柄を返す", () => {
+			expect(matchTickers("MLCC市況が回復")).toEqual(["6976", "6981"]);
+		});
+		it("言及がなければ空配列", () => {
+			expect(matchTickers("東京株式（前引け）＝反発")).toEqual([]);
 		});
 	});
 }

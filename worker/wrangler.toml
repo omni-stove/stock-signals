@@ -9,10 +9,6 @@
 #   npx wrangler d1 create stock-signals  # → database_id を下の d1_databases に記入
 #   npx wrangler r2 bucket create stock-signals-articles
 #   pnpm db:migrate:remote                # drizzle migration をリモート D1 に適用 (スキーマは src/lib/schema.ts)
-#
-# ── ローカル検証 (ログイン/デプロイ不要、D1=ローカルSQLite/R2=ローカルFSをエミュレート) ──
-#   npx wrangler dev
-#   → 別ターミナルで: curl "http://localhost:8787/run?code=285A&limit=3"
 
 name = "stock-signals-collector"
 main = "src/index.ts"

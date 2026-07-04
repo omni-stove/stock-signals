@@ -5,10 +5,25 @@
 //   ニュースを別々に引いて統合判定する。IR とニュースは同じ articles テーブルに同居するので
 //   source プレフィクスで振り分ける。
 
-import { and, asc, eq, gt, gte, like, or } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, like, or } from "drizzle-orm";
 import { db } from "./db";
 import type { Env } from "./env";
 import { articles } from "./schema";
+
+// urls のうち既に articles に存在するものの集合を返す (収集側の重複排除用)。
+// 1 URL 1 クエリではなく IN 句でまとめて引く (収集は一覧単位で最大20件をまとめて確認する)。
+export async function seenArticleUrls(
+	d1: D1Database,
+	urls: string[],
+): Promise<Set<string>> {
+	if (urls.length === 0) return new Set();
+	const rows = await db(d1)
+		.select({ url: articles.url })
+		.from(articles)
+		.where(inArray(articles.url, urls))
+		.all();
+	return new Set(rows.map((r) => r.url));
+}
 
 // 1 記事行 (R2 本文同梱)。/pull /pull-news と context-input が共有する返却形。
 export interface PullRow {

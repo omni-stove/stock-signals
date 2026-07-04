@@ -322,6 +322,33 @@ export async function notifyNewsSlack(
 	}
 }
 
+// 収集ソースの「HTTP 200 なのに一覧パース0件」を運用者に警告する。ソースサイトの DOM 変更で
+// 収集がエラーも出さずに止まる事故の検知用。sources は "news:285A" / "market-news" 等のラベル。
+// 送り先は SLACK_WEBHOOK_URL (レポートと同じ運用チャンネル)。未設定/0件なら no-op。best-effort。
+export async function notifyParseFailure(
+	env: Env,
+	sources: string[],
+): Promise<void> {
+	const webhook = env.SLACK_WEBHOOK_URL;
+	if (!webhook || sources.length === 0) return;
+	const text = `⚠️ 収集一覧のパース0件 (DOM変更の可能性): ${sources.join(", ")}`;
+	try {
+		const res = await fetch(webhook, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text }),
+		});
+		if (!res.ok) {
+			console.error(
+				`slack parse-failure notify failed: HTTP ${res.status} ${await res.text()}`,
+			);
+		}
+	} catch (e) {
+		// 通知失敗は収集を止めない (best-effort)。
+		console.error(`slack parse-failure notify error: ${(e as Error).message}`);
+	}
+}
+
 if (import.meta.vitest) {
 	const { describe, it, expect, vi } = import.meta.vitest;
 
@@ -363,6 +390,41 @@ if (import.meta.vitest) {
 		it("未知カテゴリ・空文字は default の汎用見出し", () => {
 			expect(categoryHeading("unknown")).toBe("📄 IR");
 			expect(categoryHeading("")).toBe("📄 IR");
+		});
+	});
+
+	describe("notifyParseFailure", () => {
+		it("webhook 未設定なら fetch を呼ばない (no-op)", async () => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyParseFailure({} as Env, ["news:285A"]);
+			expect(fetchMock).not.toHaveBeenCalled();
+			vi.unstubAllGlobals();
+		});
+
+		it("対象 0 件なら fetch を呼ばない (no-op)", async () => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyParseFailure(
+				{ SLACK_WEBHOOK_URL: "https://hooks.slack.com/x" } as Env,
+				[],
+			);
+			expect(fetchMock).not.toHaveBeenCalled();
+			vi.unstubAllGlobals();
+		});
+
+		it("ソースラベルを連結した警告テキストを1リクエストで送る", async () => {
+			const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyParseFailure(
+				{ SLACK_WEBHOOK_URL: "https://hooks.slack.com/x" } as Env,
+				["news:285A", "market-news"],
+			);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+			expect(body.text).toContain("パース0件");
+			expect(body.text).toContain("news:285A, market-news");
+			vi.unstubAllGlobals();
 		});
 	});
 

@@ -5,7 +5,7 @@
 // スキーマ変更フロー (worker/README.md 参照):
 //   1. このファイルを編集
 //   2. pnpm db:generate            → drizzle/ に差分 migration SQL を生成
-//   3. pnpm db:migrate:local       → ローカル D1 に適用 (リモートは :remote)
+//   3. push で CI がリモート D1 に適用 (手動なら pnpm db:migrate:remote)
 // drizzle-kit が差分 (ADD COLUMN / CREATE TABLE / PK 変更時の table 再作成) を生成するため、
 // 全テーブルを DROP して作り直す初期化スクリプトを流す事故が起きない。
 

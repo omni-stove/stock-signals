@@ -12,11 +12,12 @@
 // 全ソース UTF-8 (調査済) なので TextDecoder で十分。iconv 不要。
 
 import * as cheerio from "cheerio";
-import { eq } from "drizzle-orm";
+import { seenArticleUrls } from "./articles";
 import { db } from "./db";
+import { parseKabutanNewsList } from "./kabutan";
 import { articles } from "./schema";
 import { WATCHLIST } from "./timeseries";
-import { fetchHtml, hash, sleep } from "./utils";
+import { fetchHtml, hash, normArticleDate, sleep } from "./utils";
 
 export interface NewsEnv {
 	DB: D1Database;
@@ -31,28 +32,6 @@ const SITE = "kabutan";
 
 // 1ソースあたり本文取得する最大件数 (新しい順)。場中の連投を避けるため控えめに。
 const NEWS_LIMIT = 20;
-
-// 株探の銘柄ニュース一覧 (table.s_news_list の各 tr) を抽出。
-function parseKabutanList(
-	html: string,
-	baseUrl: string,
-): { url: string; title: string; date: string }[] {
-	const $ = cheerio.load(html);
-	const out: { url: string; title: string; date: string }[] = [];
-	$("table.s_news_list tr").each((_, tr) => {
-		const $tr = $(tr);
-		const a = $tr.find("a").first();
-		const href = a.attr("href");
-		if (!href) return;
-		const url = new URL(href, baseUrl).toString();
-		const title = a.text().trim();
-		const date =
-			$tr.find("time").first().text().trim() ||
-			$tr.find("td").first().text().trim();
-		if (title) out.push({ url, title, date });
-	});
-	return out;
-}
 
 // 株探の記事本文ページから本文を抽出。
 function parseKabutanArticle(html: string): {
@@ -82,25 +61,6 @@ function parseKabutanArticle(html: string): {
 		$('time[itemprop="datePublished"]').first().attr("datetime") ||
 		$("time.s_news_date").first().text().trim();
 	return { title, body: body.replace(/\s+\n/g, "\n").trim(), published_at };
-}
-
-// 日付文字列を YYYY-MM-DD に正規化 (R2キー用)。取れなければ "unknown"。
-function normDate(raw: string): string {
-	const m = raw.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-	if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
-	// "06/18" 形式 (年なし) は当年補完しないでそのまま日付部分だけ拾う
-	const md = raw.match(/(\d{1,2})[-/](\d{1,2})/);
-	if (md) return `${md[1].padStart(2, "0")}-${md[2].padStart(2, "0")}`;
-	return "unknown";
-}
-
-async function isSeen(env: NewsEnv, url: string): Promise<boolean> {
-	const rows = await db(env.DB)
-		.select({ url: articles.url })
-		.from(articles)
-		.where(eq(articles.url, url))
-		.limit(1);
-	return rows.length > 0;
 }
 
 async function saveArticle(
@@ -163,13 +123,20 @@ async function collectNewsOne(
 	fresh: FreshNews[];
 }> {
 	const listHtml = await fetchHtml(URL_NEWS(code), env);
-	const items = parseKabutanList(listHtml, URL_NEWS(code)).slice(0, NEWS_LIMIT);
+	const items = parseKabutanNewsList(listHtml, URL_NEWS(code)).slice(
+		0,
+		NEWS_LIMIT,
+	);
+	const seen = await seenArticleUrls(
+		env.DB,
+		items.map((it) => it.url),
+	);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	let written = 0;
 	let skipped = 0;
 	const fresh: FreshNews[] = [];
 	for (const it of items) {
-		if (await isSeen(env, it.url)) {
+		if (seen.has(it.url)) {
 			skipped++;
 			continue;
 		}
@@ -178,7 +145,7 @@ async function collectNewsOne(
 			const artHtml = await fetchHtml(it.url, env);
 			const parsed = parseKabutanArticle(artHtml);
 			const title = parsed.title || it.title;
-			const date = normDate(parsed.published_at || it.date);
+			const date = normArticleDate(parsed.published_at || it.date, Date.now());
 			await saveArticle(env, {
 				url: it.url,
 				ticker: code,
@@ -198,6 +165,8 @@ async function collectNewsOne(
 // watchlist 全銘柄 (codeFilter 指定時はその1銘柄) のニュースを収集。
 // 戻り値の freshTickers は今回新規があった銘柄 (= signal-report を起動すべき対象)。
 // freshNews は今回新規保存した記事のメタ (= Slack 通知に流す対象)。
+// emptyParses は「一覧が HTTP 200 なのにパース0件」だった銘柄 (= DOM 変更で収集が
+// 静かに止まっている疑い。fetch 失敗は error として別に出る)。
 export async function collectNews(
 	env: NewsEnv,
 	codeFilter: string | null,
@@ -205,57 +174,30 @@ export async function collectNews(
 	results: Record<string, unknown>;
 	freshTickers: string[];
 	freshNews: FreshNews[];
+	emptyParses: string[];
 }> {
 	const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
 	const results: Record<string, unknown> = {};
 	const freshTickers: string[] = [];
 	const freshNews: FreshNews[] = [];
+	const emptyParses: string[] = [];
 	for (const code of codes) {
 		try {
 			const r = await collectNewsOne(env, code);
 			const { fresh, ...summary } = r;
 			results[code] = summary;
 			if (r.written > 0) freshTickers.push(code);
+			if (r.found === 0) emptyParses.push(code);
 			freshNews.push(...fresh);
 		} catch (e) {
 			results[code] = { error: (e as Error).message };
 		}
 	}
-	return { results, freshTickers, freshNews };
+	return { results, freshTickers, freshNews, emptyParses };
 }
 
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
-	const BASE = "https://kabutan.jp/stock/news?code=285A";
-
-	describe("parseKabutanList", () => {
-		const html = [
-			"<table class='s_news_list'>",
-			"<tr><td><time>06/18</time></td><td><a href='/news/marketnews/?b=n1'>業績上方修正</a></td></tr>",
-			"<tr><td><time>06/17</time></td><td><a href='https://kabutan.jp/news/?b=n2'>新製品発表</a></td></tr>",
-			"<tr><td>ヘッダ行 (aなし)</td></tr>",
-			"</table>",
-		].join("");
-
-		it("相対hrefを絶対URLに解決しタイトル・日付を拾う", () => {
-			const rows = parseKabutanList(html, BASE);
-			expect(rows).toEqual([
-				{
-					url: "https://kabutan.jp/news/marketnews/?b=n1",
-					title: "業績上方修正",
-					date: "06/18",
-				},
-				{
-					url: "https://kabutan.jp/news/?b=n2",
-					title: "新製品発表",
-					date: "06/17",
-				},
-			]);
-		});
-		it("aリンクの無い行 (ヘッダ等) は除外する", () => {
-			expect(parseKabutanList(html, BASE)).toHaveLength(2);
-		});
-	});
 
 	describe("parseKabutanArticle", () => {
 		it("見出し (h1.pdbt0) と本文を抽出する", () => {
@@ -286,21 +228,13 @@ if (import.meta.vitest) {
 			const r = parseKabutanArticle(html);
 			expect(r.title).toBe("アドバンテストが上値追い");
 			expect(r.published_at).toBe("2026-06-19T09:06:00+09:00");
-			expect(normDate(r.published_at)).toBe("2026-06-19");
+			expect(
+				normArticleDate(
+					r.published_at,
+					new Date("2026-06-23T00:00:00Z").getTime(),
+				),
+			).toBe("2026-06-19");
 			expect(r.body).toContain("記事本文ここ");
-		});
-	});
-
-	describe("normDate", () => {
-		it("4桁年は YYYY-MM-DD に正規化する", () => {
-			expect(normDate("2026/6/8")).toBe("2026-06-08");
-			expect(normDate("2026-06-08 17:00")).toBe("2026-06-08");
-		});
-		it("年なし MM/DD は当年補完せず MM-DD だけ拾う", () => {
-			expect(normDate("06/18")).toBe("06-18");
-		});
-		it("日付が取れなければ unknown", () => {
-			expect(normDate("日付不明")).toBe("unknown");
 		});
 	});
 }

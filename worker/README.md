@@ -17,7 +17,7 @@ HTTP 層は `src/routes/` に分かれる。各ルートと用途はファイル
 (`/judge-context` `/context-input` `/market-context`)・Slack 連携 (`/slack/*`) などがある。
 
 `/health` 以外は本番では `SYNC_TOKEN` を要求する (`Authorization: Bearer <token>` ヘッダ、
-dev/未設定なら認証なし)。
+未設定なら認証なし)。
 
 ## Cron 割り当て (wrangler.toml [triggers], UTC基準)
 
@@ -29,23 +29,6 @@ Cloudflare の cron trigger 上限は **5個**。新規 cron は足せないの�
 cron 式と JST の対応は `wrangler.toml [triggers]` のコメントに、種別ごとの収集内容は
 `cron.ts` (`CRON_KIND` の振り分け) に書く。intake (寄り前/引け後)・prices (場中5分毎)・
 eod (引け後) の3種で、寄り前は地合い、引け後は信用残や決算予定推定などを相乗りさせる。
-
-## ローカル検証 (ログイン・デプロイ不要、課金なし)
-
-D1=ローカルSQLite、R2=ローカルFS をエミュレートする。
-
-```sh
-cd worker
-pnpm install
-pnpm run db:migrate:local             # ローカルD1にmigration適用 (スキーマは src/lib/schema.ts)
-pnpm exec wrangler dev --port 8799
-# 別ターミナル:
-curl "http://localhost:8799/health"
-curl "http://localhost:8799/run?kind=ir&code=285A&limit=3"
-curl "http://localhost:8799/run?kind=news&code=285A"
-curl "http://localhost:8799/run?kind=earnings&code=285A"
-curl "http://localhost:8799/latest?kind=ir&code=285A&n=5"
-```
 
 ## 本番デプロイ
 
@@ -86,8 +69,7 @@ pnpm exec wrangler deploy                                 # ★初回のみ手�
 cd worker
 # 1. src/lib/schema.ts を編集
 pnpm db:generate                      # → drizzle/NNNN_<name>.sql に差分 SQL を生成 (内容を確認)
-pnpm db:migrate:local                 # ローカル D1 に適用
-pnpm db:migrate:remote                # リモート D1 に適用 (本番)
+pnpm db:migrate:remote                # リモート D1 に適用 (push 時は deploy-worker.yml が自動適用)
 ```
 
 差分 migration なので、テーブル追加は `CREATE TABLE`、列追加は `ALTER TABLE ADD COLUMN` だけが

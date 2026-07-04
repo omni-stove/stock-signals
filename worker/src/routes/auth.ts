@@ -1,5 +1,5 @@
 // Cloudflare Worker: 簡易認証ミドルウェア。index.ts の isAuthorized を Hono 化。
-// SYNC_TOKEN 未設定なら常に許可 (dev / wrangler dev)。設定済みなら
+// SYNC_TOKEN 未設定なら常に許可。設定済みなら
 // Authorization: Bearer <token> ヘッダ、または ?token=<token> クエリのどちらかが一致すれば許可。
 // 長さの異なる文字列は != で即 false になるが、トークンは固定長の Secret 前提なので
 // タイミング差は実害なし (簡易比較)。/health は app.use の適用前に分岐させて除外する。

@@ -17,7 +17,7 @@ import { collectPeerEarnings } from "./peer-earnings";
 import { listPositionUsers } from "./position-review";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
-import { notifyNewsSlack } from "./slack";
+import { notifyNewsSlack, notifyParseFailure } from "./slack";
 import { collectTimeseries, WATCHLIST } from "./timeseries";
 
 // 銘柄ニュース + 市場テーマニュースの新着を Slack (SLACK_NEWS_WEBHOOK_URL) に通知する。
@@ -154,11 +154,17 @@ export async function runScheduled(
 		// dispatch ステップ) ので、価格/地合いの変化だけは寄り前/引け後ごとに必ず拾える。場中
 		// (prices, 5分毎) は LLM コストを抑えるため新規ベース (下の分岐)。
 		//
-		// この dispatch は「収集より先」に撃つ。全銘柄無条件なので fresh 集計に依存しない。収集
-		// (IR/ニュース等の全銘柄フル取得) は重く、引け後 (20:00) は market_news まで相乗りして
-		// CPU 時間上限に達しうる。収集後に dispatch を置くと、収集が上限超過で打ち切られた回に
-		// dispatch ごと飛んで再発火が止まる。先に撃てば収集が途中で力尽きても判定だけは必ず発火
-		// する。寄り前 (8:30) の地合い dispatch (market-check) は上で既に撃ち終えており、順序
+		// dispatch は 2 段で撃つ:
+		//   1) ここ (収集より先): 全銘柄無条件の保険。収集 (IR/ニュース等の全銘柄フル取得) は重く、
+		//      引け後 (20:00) は market_news まで相乗りして CPU 時間上限に達しうる。収集後にだけ
+		//      dispatch を置くと、収集が上限超過で打ち切られた回に dispatch ごと飛んで再発火が
+		//      止まる。先に撃てば収集が途中で力尽きても判定だけは必ず発火する。
+		//   2) 収集後 (下の fresh 再dispatch): この回の収集で入った新規 IR/ニュースを「同じ回」の
+		//      context-builder に乗せる。1) だけだと context-builder が /context-input を引く時点で
+		//      新規がまだ articles に無く、反映が次の intake (半日後) にずれる (cron → 収集 →
+		//      context → judge の順序保証)。concurrency (cancel-in-progress) が銘柄単位なので、
+		//      1) の走行中ジョブは 2) が上書きし二重 LLM にはならない。
+		// 寄り前 (8:30) の地合い dispatch (market-check) は上で既に撃ち終えており、順序
 		// (地合い→個別) も保たれる。
 		await dispatchSignalUpdate(env, WATCHLIST);
 		// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) のいずれかに新規があった
@@ -166,8 +172,9 @@ export async function runScheduled(
 		const ir = await collectAll(env, null, DEFAULT_LIMIT);
 		const disc = await collectDisclosures(env, null);
 		const news = await collectNews(env, null);
-		// 市場テーマニュース (半導体/AI/金利/米国市場) も収集する。銘柄非依存なので freshTickers には
-		// 効かず (signal-report は起動しない)、market-check が /market-context 経由で読む。
+		// 市場テーマニュース (半導体/AI/金利/米国市場) も収集する。market-check が /market-context
+		// 経由で読むほか、新規見出しに watchlist 銘柄の言及 (matchTickers) があればその銘柄を
+		// freshTickers に合流させて個別判定も起動する (例: 「サムスン、HBM増産」→ 6857)。
 		// 失敗しても intake の主収集は壊さない (catch でログのみ)。
 		const mnews = await collectMarketNews(env).catch((e) => {
 			console.error("market-news failed:", e);
@@ -193,6 +200,7 @@ export async function runScheduled(
 				...ir.freshTickers,
 				...disc.freshTickers,
 				...news.freshTickers,
+				...(mnews?.freshTickers ?? []),
 				...rat.freshTickers,
 				...mgn.freshTickers,
 			]),
@@ -210,8 +218,19 @@ export async function runScheduled(
 			"fresh:",
 			fresh.join(","),
 		);
+		// 上記 2 段 dispatch の 2)。この回の収集で新規が出た銘柄だけ再dispatch し、入ったばかりの
+		// IR/ニュースを同じ回の context-builder に読ませる (新規なしなら no-op)。
+		await dispatchSignalUpdate(env, fresh);
 		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
 		await notifyFreshNews(env, news, mnews);
+		// 「HTTP 200 なのに一覧パース0件」= ソースサイトの DOM 変更で収集が静かに止まっている疑い。
+		// 場中 (prices, 5分毎) では鳴らさず intake (1日2回) でだけ警告し、連投を避ける。
+		await notifyParseFailure(env, [
+			...ir.emptyParses.map((c) => `ir:${c}`),
+			...disc.emptyParses.map((c) => `tdnet:${c}`),
+			...news.emptyParses.map((c) => `news:${c}`),
+			...(mnews?.emptyParse ? ["market-news"] : []),
+		]);
 		return;
 	}
 	if (kind === "prices") {
@@ -225,7 +244,8 @@ export async function runScheduled(
 		});
 		const news = await collectNews(env, null);
 		// 市場テーマニュースも場中速報として収集する (オープンAI上場延期のような材料は場中に出る)。
-		// 銘柄非依存で dispatch には効かず、失敗しても prices の主収集は壊さない。
+		// 新規見出しに watchlist 銘柄の言及 (matchTickers) があれば freshTickers に合流させて
+		// 個別判定も起動する。失敗しても prices の主収集は壊さない。
 		const mnews = await collectMarketNews(env).catch((e) => {
 			console.error("market-news failed:", e);
 			return null;
@@ -241,6 +261,7 @@ export async function runScheduled(
 		const fresh = [
 			...new Set([
 				...news.freshTickers,
+				...(mnews?.freshTickers ?? []),
 				...(ir?.freshTickers ?? []),
 				...(disc?.freshTickers ?? []),
 			]),

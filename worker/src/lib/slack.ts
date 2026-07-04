@@ -322,6 +322,49 @@ export async function notifyNewsSlack(
 	}
 }
 
+// 重要イベントリマインダーの1件 (event-reminder.ts の buildEventReminders が作る)。
+export type ReminderNotifyItem = {
+	daysUntil: number; // 0=本日, 1=明日, ...
+	date: string; // YYYY-MM-DD
+	label: string;
+};
+
+// daysUntil → 行頭の時期表現。
+function reminderWhen(it: ReminderNotifyItem): string {
+	if (it.daysUntil === 0) return "本日";
+	if (it.daysUntil === 1) return `明日 (${it.date})`;
+	return `${it.daysUntil}日後 (${it.date})`;
+}
+
+// 重要イベント (決算/FOMC/日銀/SQ/リバランス) の事前リマインダーを送る。
+// 送り先は専用の SLACK_REMINDER_WEBHOOK_URL を優先し、無ければ SLACK_WEBHOOK_URL。
+// webhook 未設定/0件なら no-op。1リクエストで全件まとめて送る。best-effort。
+export async function notifyEventReminder(
+	env: Env,
+	today: string,
+	items: ReminderNotifyItem[],
+): Promise<void> {
+	const webhook = env.SLACK_REMINDER_WEBHOOK_URL || env.SLACK_WEBHOOK_URL;
+	if (!webhook || items.length === 0) return;
+	const lines = items.map((it) => `• *${reminderWhen(it)}*: ${it.label}`);
+	const text = `⏰ イベントリマインダー (${today})\n${lines.join("\n")}`;
+	try {
+		const res = await fetch(webhook, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text }),
+		});
+		if (!res.ok) {
+			console.error(
+				`slack reminder notify failed: HTTP ${res.status} ${await res.text()}`,
+			);
+		}
+	} catch (e) {
+		// 通知失敗は cron を止めない (best-effort)。
+		console.error(`slack reminder notify error: ${(e as Error).message}`);
+	}
+}
+
 // 収集ソースの「HTTP 200 なのに一覧パース0件」を運用者に警告する。ソースサイトの DOM 変更で
 // 収集がエラーも出さずに止まる事故の検知用。sources は "news:285A" / "market-news" 等のラベル。
 // 送り先は SLACK_WEBHOOK_URL (レポートと同じ運用チャンネル)。未設定/0件なら no-op。best-effort。
@@ -424,6 +467,76 @@ if (import.meta.vitest) {
 			const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
 			expect(body.text).toContain("パース0件");
 			expect(body.text).toContain("news:285A, market-news");
+			vi.unstubAllGlobals();
+		});
+	});
+
+	describe("notifyEventReminder", () => {
+		const items = [
+			{
+				daysUntil: 0,
+				date: "2026-07-06",
+				label: "日本SQ (7月限オプションのみ)",
+			},
+			{
+				daysUntil: 3,
+				date: "2026-07-09",
+				label: "決算発表: キオクシアホールディングス (285A)",
+			},
+		];
+
+		it("webhook 未設定なら fetch を呼ばない (no-op)", async () => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyEventReminder({} as Env, "2026-07-06", items);
+			expect(fetchMock).not.toHaveBeenCalled();
+			vi.unstubAllGlobals();
+		});
+
+		it("0件なら fetch を呼ばない (no-op)", async () => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyEventReminder(
+				{ SLACK_WEBHOOK_URL: "https://hooks.slack.com/x" } as Env,
+				"2026-07-06",
+				[],
+			);
+			expect(fetchMock).not.toHaveBeenCalled();
+			vi.unstubAllGlobals();
+		});
+
+		it("本日/N日後の時期表現つきで1リクエストにまとめて送る", async () => {
+			const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyEventReminder(
+				{ SLACK_WEBHOOK_URL: "https://hooks.slack.com/x" } as Env,
+				"2026-07-06",
+				items,
+			);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+			expect(body.text).toContain("⏰ イベントリマインダー (2026-07-06)");
+			expect(body.text).toContain("*本日*: 日本SQ (7月限オプションのみ)");
+			expect(body.text).toContain(
+				"*3日後 (2026-07-09)*: 決算発表: キオクシアホールディングス (285A)",
+			);
+			vi.unstubAllGlobals();
+		});
+
+		it("専用 webhook があればそちらを優先する", async () => {
+			const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyEventReminder(
+				{
+					SLACK_WEBHOOK_URL: "https://hooks.slack.com/report",
+					SLACK_REMINDER_WEBHOOK_URL: "https://hooks.slack.com/reminder",
+				} as Env,
+				"2026-07-06",
+				items,
+			);
+			expect(fetchMock.mock.calls[0][0]).toBe(
+				"https://hooks.slack.com/reminder",
+			);
 			vi.unstubAllGlobals();
 		});
 	});

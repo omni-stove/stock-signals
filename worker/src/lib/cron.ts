@@ -4,6 +4,7 @@
 import { collectDisclosures } from "./disclosure";
 import { collectEarnings } from "./earnings";
 import type { Env } from "./env";
+import { remindUpcomingEvents } from "./event-reminder";
 import { collectForcedLiquidation } from "./forced-liquidation";
 import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
 import { collectAll } from "./ir-collect";
@@ -147,6 +148,11 @@ export async function runScheduled(
 				{},
 				event.scheduledTime,
 			).catch((e) => console.error("market-check dispatch failed:", e));
+			// 重要イベント (watchlist 決算/FOMC/日銀/ピア決算/SQ/リバランス) の事前リマインダー。
+			// 3日前・前日・当日の朝にだけ Slack に1本流す (該当なしの朝は無音)。失敗しても収集は続行。
+			await remindUpcomingEvents(env, event.scheduledTime).catch((e) =>
+				console.error("event-reminder failed:", e),
+			);
 		}
 		// intake (寄り前 8:30 / 引け後 20:00) は新規の有無によらず全銘柄を signal-update する。
 		// fresh だけを撃つと、出来高/話題の薄い銘柄 (例: 6857 が数日ニュース 0) が一度も判定されず

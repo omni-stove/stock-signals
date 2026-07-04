@@ -45,8 +45,8 @@ function isoDow(date: Date): number {
 function addDays(ymdStr: string, n: number): string {
 	return ymd(new Date(d(ymdStr).getTime() + n * 86400_000));
 }
-// 2 つの YYYY-MM-DD の暦日差 (b - a)。
-function daysDiff(a: string, b: string): number {
+// 2 つの YYYY-MM-DD の暦日差 (b - a)。event-reminder も使う。
+export function daysDiff(a: string, b: string): number {
 	return Math.round((d(b).getTime() - d(a).getTime()) / 86400_000);
 }
 // "YYYY-MM" を返す (前月/翌月計算用)。
@@ -206,6 +206,43 @@ export function checkIndexRebalance(today: string): string[] {
 
 function push(arr: string[], v: string | null): void {
 	if (v) arr.push(v);
+}
+
+// --- カレンダーイベントの日付列挙 (event-reminder 用) -------------------------
+// buildEventContext が judge 向けに「窓」(SQ週/明け等) で語るのに対し、こちらは
+// today〜today+horizonDays に入る実施日そのものを {date, label} で返す。
+// 対象は日付計算で出せるもの (日本SQ/米メジャーSQ/指数リバランス) のみ。
+// FOMC/日銀/ピア決算は macro_events を持つ呼び出し側が合流させる。
+export function upcomingCalendarEvents(
+	today: string,
+	horizonDays: number,
+): { date: string; label: string }[] {
+	const out: { date: string; label: string }[] = [];
+	const horizon = addDays(today, horizonDays);
+	const add = (date: string, label: string) => {
+		if (date >= today && date <= horizon) out.push({ date, label });
+	};
+	const thisYm = ymOf(today);
+	for (const ym of [thisYm, nextYm(thisYm)]) {
+		const m = Number(ym.slice(5, 7));
+		const isMajor = [3, 6, 9, 12].includes(m);
+		add(
+			nthFriday(ym, 2),
+			isMajor ? `日本メジャーSQ (${m}月限)` : `日本SQ (${m}月限オプションのみ)`,
+		);
+		if (isMajor) {
+			add(nthFriday(ym, 3), `米メジャーSQ (${m}月)`);
+			add(nthFriday(ym, 3), "FTSE/Russellリバランス");
+		}
+		if (m === 2 || m === 8) add(lastBusinessDay(ym), "MSCI四半期リバランス");
+		if (m === 5 || m === 11) add(lastBusinessDay(ym), "MSCI半期リバランス");
+		if (m === 4) add(nthBusinessDay(ym, 1), "日経225定期入替");
+		if (m === 10) {
+			add(lastBusinessDay(ym), "TOPIX定期見直し");
+			add(nthBusinessDay(ym, 1), "日経225定期入替");
+		}
+	}
+	return out;
 }
 
 // --- マクロイベント (FOMC/日銀) + 海外ピア決算 を近接で拾う -------------------
@@ -406,6 +443,60 @@ if (import.meta.vitest) {
 				},
 			]);
 			expect(out).not.toContain("遠いイベント");
+		});
+	});
+
+	describe("upcomingCalendarEvents", () => {
+		it("日本メジャーSQ (2026-06-12) を3日前から拾う", () => {
+			const out = upcomingCalendarEvents("2026-06-09", 3);
+			expect(out).toContainEqual({
+				date: "2026-06-12",
+				label: "日本メジャーSQ (6月限)",
+			});
+		});
+		it("窓の外 (4日前) は拾わない", () => {
+			expect(upcomingCalendarEvents("2026-06-08", 3)).not.toContainEqual({
+				date: "2026-06-12",
+				label: "日本メジャーSQ (6月限)",
+			});
+		});
+		it("過去の日付 (当月の通過済みSQ) は拾わない", () => {
+			expect(
+				upcomingCalendarEvents("2026-06-15", 3).map((e) => e.date),
+			).not.toContain("2026-06-12");
+		});
+		it("メジャー月の第3金曜は米SQとFTSEの両方が出る", () => {
+			const out = upcomingCalendarEvents("2026-06-19", 0);
+			expect(out).toContainEqual({
+				date: "2026-06-19",
+				label: "米メジャーSQ (6月)",
+			});
+			expect(out).toContainEqual({
+				date: "2026-06-19",
+				label: "FTSE/Russellリバランス",
+			});
+		});
+		it("非メジャー月はオプションのみのラベルで米SQは出ない", () => {
+			const out = upcomingCalendarEvents("2026-07-07", 3);
+			expect(out).toContainEqual({
+				date: "2026-07-10",
+				label: "日本SQ (7月限オプションのみ)",
+			});
+			expect(out.map((e) => e.label).join()).not.toContain("米メジャーSQ");
+		});
+		it("月跨ぎ: 翌月頭のイベント (10月の日経225定期入替) も拾う", () => {
+			// 2026-10-01 は木曜 = 10月の第1営業日。
+			const out = upcomingCalendarEvents("2026-09-29", 3);
+			expect(out).toContainEqual({
+				date: "2026-10-01",
+				label: "日経225定期入替",
+			});
+		});
+		it("MSCI半期 (2026-05-29 = 5月最終営業日) を拾う", () => {
+			expect(upcomingCalendarEvents("2026-05-27", 3)).toContainEqual({
+				date: "2026-05-29",
+				label: "MSCI半期リバランス",
+			});
 		});
 	});
 

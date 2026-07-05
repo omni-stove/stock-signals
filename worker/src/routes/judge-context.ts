@@ -135,6 +135,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 			dow_change_pct: premarketBackdrop.dowChangePct,
 			nikkei_futures_price: premarketBackdrop.nikkeiFuturesPrice,
 			nikkei_contract: premarketBackdrop.nikkeiContract,
+			us_indexes_json: premarketBackdrop.usIndexesJson,
 		})
 		.from(premarketBackdrop)
 		.orderBy(desc(premarketBackdrop.fetchedAt))
@@ -226,9 +227,12 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 			.all()) as DailyBar[];
 		sectorBarsByCode[t.code] = bars;
 	}
+	// premarket ブロックを先に組み、休場またぎ判定 (us_session) を sectors の backdrop にも渡す。
+	const premarketBlock = buildPremarket(premarketRow ?? null, epochNow, today);
 	const premarketLine: PremarketLine | null = premarketRow
 		? {
-				date: null,
+				date: (premarketBlock.us_close_jst_date as string | null) ?? null,
+				us_session: (premarketBlock.us_session as string | null) ?? null,
 				sox_change_pct: premarketRow.sox_change_pct,
 				nasdaq_change_pct: premarketRow.nasdaq_change_pct,
 				dow_change_pct: premarketRow.dow_change_pct,
@@ -281,7 +285,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 			fundamentalsRows[0]?.forecast_eps ?? null,
 			TICKERS.find((t) => t.code === code)?.fair_per ?? null,
 		),
-		premarket: buildPremarket(premarketRow ?? null, epochNow),
+		premarket: premarketBlock,
 		// 対象銘柄が属する sector の1件だけ (rows は相対強弱の強い順)。sector 未設定なら null。
 		sector: sectorReports[0] ?? null,
 		daily: buildDaily(dailyRows, intradayVol),

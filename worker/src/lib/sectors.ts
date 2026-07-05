@@ -16,6 +16,9 @@ export interface DailyBar {
 
 export interface PremarketLine {
 	date?: string | null;
+	// premarket の休場またぎ判定 (premarket.ts の classifyUsSession)。carried_over =
+	// 米国休場などで前営業日の東京セッションが既に消化した数字の持ち越し。
+	us_session?: string | null;
 	sox_change_pct?: number | null;
 	nasdaq_change_pct?: number | null;
 	dow_change_pct?: number | null;
@@ -40,6 +43,7 @@ interface SectorBackdrop {
 	nasdaq_change_pct: number | null;
 	nikkei_futures: number | null;
 	premarket_date: string | null;
+	us_session: string | null;
 	tone: "risk-on" | "risk-off" | "neutral" | "unknown";
 }
 
@@ -64,12 +68,15 @@ function avg(ns: (number | null)[]): number | null {
 }
 
 // premarket 1 行から外部地合いを読む。sox >= 1.5 risk-on / <= -1.5 risk-off / else neutral。
+// us_session が carried_over (米国休場明けの持ち越し値) のときは、前営業日の東京セッションが
+// 既に消化した動きで tone を立てない (unknown に落とす)。
 function loadBackdrop(line: PremarketLine | null): SectorBackdrop {
 	const empty: SectorBackdrop = {
 		sox_change_pct: null,
 		nasdaq_change_pct: null,
 		nikkei_futures: null,
 		premarket_date: null,
+		us_session: null,
 		tone: "unknown",
 	};
 	if (!line) return empty;
@@ -82,8 +89,9 @@ function loadBackdrop(line: PremarketLine | null): SectorBackdrop {
 		line.us_indexes?.find((i) => i.key === "ndx")?.change_pct ??
 		null;
 	const fut = line.nikkei_futures_price ?? null;
+	const usSession = line.us_session ?? null;
 	let tone: SectorBackdrop["tone"] = "unknown";
-	if (sox !== null) {
+	if (sox !== null && usSession !== "carried_over") {
 		if (sox >= 1.5) tone = "risk-on";
 		else if (sox <= -1.5) tone = "risk-off";
 		else tone = "neutral";
@@ -93,6 +101,7 @@ function loadBackdrop(line: PremarketLine | null): SectorBackdrop {
 		nasdaq_change_pct: round(ndx),
 		nikkei_futures: fut,
 		premarket_date: line.date ?? null,
+		us_session: usSession,
 		tone,
 	};
 }
@@ -233,6 +242,15 @@ if (import.meta.vitest) {
 		it("sox 無し (premarket なし) は unknown", () => {
 			expect(loadBackdrop(null).tone).toBe("unknown");
 			expect(loadBackdrop({}).tone).toBe("unknown");
+		});
+		it("carried_over (米国休場明けの持ち越し値) は tone を立てない", () => {
+			const b = loadBackdrop({
+				sox_change_pct: -5.4,
+				us_session: "carried_over",
+			});
+			expect(b.tone).toBe("unknown");
+			expect(b.us_session).toBe("carried_over");
+			expect(b.sox_change_pct).toBe(-5.4); // 値自体は残す (読み手が日付つきで参照できる)
 		});
 		it("us_indexes から sox/ndx をフォールバックで拾う", () => {
 			const b = loadBackdrop({

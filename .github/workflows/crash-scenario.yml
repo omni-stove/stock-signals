@@ -118,7 +118,9 @@ jobs:
             - **Numeric context** — skip any block whose `status` is `insufficient`/`stale`/`unavailable`;
               ignore `pts_price`. Read the run-up for fragility: `daily.range_pct` (0 = bottom, 100 = top),
               `ma25_dev_pct`/`ma5_dev_pct`, `vol_x_20d`, `margin.ratio` + WoW `long_chg`/`short_chg`;
-              `earnings.days_to_earnings` and `premarket.sox_change_pct` each flag a scheduled catalyst.
+              `earnings.days_to_earnings` and `premarket.sox_change_pct` each flag a scheduled catalyst;
+              on `premarket.us_session: carried_over` the print is a prior close the last JP session already
+              traded on — not a fresh overnight sign.
               `market_phase=premarket` makes a tonight→open gap-down its own scenario; in-session, `daily` is
               the prior bar, so read `daily.vol_x_20d_intraday` for today's 出来高.
 

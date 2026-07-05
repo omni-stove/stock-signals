@@ -153,6 +153,9 @@ jobs:
                 confirmed value again and `vol_x_20d_intraday` is null.
             - **`premarket`** (prior NY session): `sox_change_pct` is the overnight external backdrop moving the 水準
               — `sector` leads over it; `nasdaq_change_pct` / `dow_change_pct` / `nikkei_futures_price` only confirm.
+              `us_session: carried_over` = the US was closed overnight (休場明け) and these numbers are the prior
+              close (printed `us_close_jst_date`) that the previous JP session already traded on — treat as no new
+              overnight information, don't re-weight it.
             - **`valuation`** (`{ per_now, fair_per, vs_fair }`): `vs_fair` is the 実績PER vs 妥当PER read —
               `above`/`inline`/`below`.
             - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`; a `特になし` tail

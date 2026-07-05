@@ -91,7 +91,9 @@ jobs:
             - **`premarket`** is last night's NY tell — the strongest single input pre-open, lead on it.
               `sox_change_pct` leads this semis-heavy watchlist; `nasdaq_change_pct` / `dow_change_pct` give
               breadth, `nikkei_futures_price` the home tape's own gap. `status: stale` → demote it; `unavailable`
-              → call on `sectors` + event alone.
+              → call on `sectors` + event alone. `us_session: carried_over` = 米国休場明け — the numbers are the
+              prior close (`date`) that the last JP session already traded on; treat premarket as no new tell and
+              lead on `nikkei_futures_price` / `live_indexes` / `sectors` instead.
             - **`live_indexes`** is Asia trading live in the same session — the場中 counterpart to `premarket`'s
               overnight tell. Each entry: `key` (`nikkei225` = Tokyo's own live tape / `kospi` = semis-heavy Korea,
               Samsung / SK hynix), `price`, `change_pct`, `status` (`ok` / `stale` = older than 1h → demote).

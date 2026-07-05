@@ -23,7 +23,8 @@
 #                         (見出し+行。Markdown 記号なし) を再生成コンテキスト、ir_cursor/news_cursor を
 #                         進めたカーソル (null 可) として使う。skill は curl を叩かず判定するだけで、
 #                         upsert と Slack 投稿はこのスクリプト = workflow の後続が行う)
-# 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意), SLACK_CONTEXT_CHANNEL (任意)。
+# 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意), SLACK_CONTEXT_CHANNEL (任意),
+#           POST_CONTEXT_MAX_LINES / POST_CONTEXT_MAX_CHARS (任意。本文総量の上限。既定 35 行 / 2600 字)。
 #
 # 出力 (stdout): 各ステップの状態を 1 行ずつ (context posted / slack ok|skipped)。
 #   status="no-update" のときは "no update — skip upsert/post" の 1 行だけ。
@@ -57,6 +58,18 @@ jq -e '(.sections | type) == "array" and (.sections | length) > 0' "$SIGNAL_FILE
 SECTIONS="$(jq -c '.sections' "$SIGNAL_FILE")"
 IR_CURSOR="$(jq -r '.ir_cursor // ""' "$SIGNAL_FILE")"
 NEWS_CURSOR="$(jq -r '.news_cursor // ""' "$SIGNAL_FILE")"
+
+# 本文の総量バックストップ。1 行 100 字・1 セクション 10 行は workflow の --json-schema が縛るが、
+# 合計は schema で縛れないのでここで検証する。超過は fail させて膨張した本文を D1 に入れない
+# (カーソルも進まないので次回 dispatch で同じ材料から再生成される)。上限は env で差し替え可 (テスト用)。
+TOTAL_LINES="$(jq '[.sections[].lines[]] | length' "$SIGNAL_FILE")"
+TOTAL_CHARS="$(jq '[.sections[].lines[]] | join("") | length' "$SIGNAL_FILE")"
+MAX_LINES="${POST_CONTEXT_MAX_LINES:-35}"
+MAX_CHARS="${POST_CONTEXT_MAX_CHARS:-2600}"
+if (( TOTAL_LINES > MAX_LINES || TOTAL_CHARS > MAX_CHARS )); then
+  echo "post-context.sh: context too large: ${TOTAL_LINES} lines / ${TOTAL_CHARS} chars (max ${MAX_LINES} lines / ${MAX_CHARS} chars)" >&2
+  exit 1
+fi
 
 # SYNC_TOKEN があれば Bearer ヘッダを足す。無ければ Content-Type だけ。
 # (空配列 "${AUTH[@]}" は bash 3.2 + set -u で unbound になるため、必ず 1 要素以上持たせる。)

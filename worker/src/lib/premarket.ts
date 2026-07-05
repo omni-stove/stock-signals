@@ -206,8 +206,70 @@ export function expandPremarketRows(
 	});
 }
 
+// ── 米国セッションの鮮度 (休場またぎ判定) ──────────────────────────────────
+// kabutan は米国休場の朝も直前クローズの数字をそのまま出すため、fetched_at の鮮度 (ok/stale)
+// だけでは「新しい NY か、前営業日に日本市場が既に消化した持ち越しか」を区別できない。
+// us_indexes の jst_time (例 "03日 06:16"、日番号のみ) を fetched_at から遡って完全な日付に
+// 解決し、直前の日本営業日と比べて fresh / carried_over を分類する。
+
+const DAY_MS = 86400_000;
+
+// us_indexes (パース済み配列) の jst_time 日番号を、fetched_at (JST 換算) から最大35日
+// 遡って YYYY-MM-DD に解決する。指数間で日がずれる場合は最も新しい日を採る。
+// jst_time が無い・fetched_at 不正なら null。
+export function resolveUsCloseJstDate(
+	usIndexes: unknown,
+	fetchedAt: string | null | undefined,
+): string | null {
+	if (!fetchedAt || !Array.isArray(usIndexes)) return null;
+	const t = Date.parse(fetchedAt);
+	if (!Number.isFinite(t)) return null;
+	const base = t + 9 * 3600_000; // JST に平行移動し getUTC* で JST フィールドを読む
+	let best: string | null = null;
+	for (const q of usIndexes) {
+		const jstTime = (q as { jst_time?: unknown })?.jst_time;
+		if (typeof jstTime !== "string") continue;
+		const m = jstTime.match(/^([0-9]{1,2})日/);
+		if (!m) continue;
+		const day = parseInt(m[1], 10);
+		for (let i = 0; i < 35; i++) {
+			const d = new Date(base - i * DAY_MS);
+			if (d.getUTCDate() === day) {
+				const ymd = d.toISOString().slice(0, 10);
+				if (best === null || ymd > best) best = ymd;
+				break;
+			}
+		}
+	}
+	return best;
+}
+
+// today (JST YYYY-MM-DD) の直前の日本営業日。土日のみ除外の近似 (祝日は非考慮 —
+// event-context の営業日計算と同じ方針)。
+function prevJpBusinessDay(today: string): string {
+	const d = new Date(`${today}T12:00:00Z`);
+	do {
+		d.setUTCDate(d.getUTCDate() - 1);
+	} while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+	return d.toISOString().slice(0, 10);
+}
+
+export type UsSession = "fresh" | "carried_over" | "unknown";
+
+// 米国クローズ (JST 暦日) が直前の日本営業日より後なら fresh (前夜の新しい NY)。
+// 同日以前なら carried_over (米国休場などで、前営業日の東京セッションが既に消化した数字の
+// 持ち越し)。日付を解決できなければ unknown。
+export function classifyUsSession(
+	usCloseJstDate: string | null,
+	today: string,
+): UsSession {
+	if (!usCloseJstDate) return "unknown";
+	return usCloseJstDate > prevJpBusinessDay(today) ? "fresh" : "carried_over";
+}
+
 // /market-context 用 premarket ブロック。age>20h で stale 判定。
-// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は常に null。
+// date は us_indexes の jst_time から解決した米国クローズの JST 暦日 (解決不能なら null)。
+// us_session は fresh / carried_over / unknown (休場またぎ判定)。
 //   行なし → { status: "unavailable" }
 //   行あり → status (ok/stale) + age_hours + 各指数 + us_indexes
 export function buildPremarketBlock(
@@ -221,21 +283,25 @@ export function buildPremarketBlock(
 		us_indexes_json?: string | null;
 	} | null,
 	epochNow: number,
+	today: string,
 ): Record<string, unknown> {
 	if (!row?.fetched_at) return { status: "unavailable" };
 	const ageH = Math.floor(
 		(epochNow - new Date(row.fetched_at).getTime()) / 3600_000,
 	);
+	const usIndexes = parseUsIndexes(row.us_indexes_json);
+	const usCloseJst = resolveUsCloseJstDate(usIndexes, row.fetched_at);
 	return {
 		status: ageH > 20 ? "stale" : "ok",
 		age_hours: ageH,
-		date: null,
+		date: usCloseJst,
+		us_session: classifyUsSession(usCloseJst, today),
 		sox_change_pct: row.sox_change_pct ?? null,
 		nasdaq_change_pct: row.nasdaq_change_pct ?? null,
 		dow_change_pct: row.dow_change_pct ?? null,
 		nikkei_futures_price: row.nikkei_futures_price ?? null,
 		nikkei_contract: row.nikkei_contract ?? null,
-		us_indexes: parseUsIndexes(row.us_indexes_json),
+		us_indexes: usIndexes,
 	};
 }
 
@@ -341,12 +407,74 @@ if (import.meta.vitest) {
 		});
 	});
 
+	describe("resolveUsCloseJstDate", () => {
+		// fetched_at 2026-07-05T23:30Z = JST 7/6 08:30。
+		const FETCHED = "2026-07-05T23:30:00Z";
+		it("jst_time の日番号を fetched_at から遡って解決する", () => {
+			expect(resolveUsCloseJstDate([{ jst_time: "03日 06:16" }], FETCHED)).toBe(
+				"2026-07-03",
+			);
+			// 当日朝の日番号 (通常営業日) は当日に解決。
+			expect(resolveUsCloseJstDate([{ jst_time: "06日 06:16" }], FETCHED)).toBe(
+				"2026-07-06",
+			);
+		});
+		it("月またぎの日番号も前月へ遡って解決する", () => {
+			expect(resolveUsCloseJstDate([{ jst_time: "30日 06:16" }], FETCHED)).toBe(
+				"2026-06-30",
+			);
+		});
+		it("指数間で日がずれたら最も新しい日を採る", () => {
+			expect(
+				resolveUsCloseJstDate(
+					[{ jst_time: "02日 06:16" }, { jst_time: "03日 05:42" }],
+					FETCHED,
+				),
+			).toBe("2026-07-03");
+		});
+		it("jst_time なし・配列以外・fetched_at 不正は null", () => {
+			expect(resolveUsCloseJstDate([{ jst_time: null }], FETCHED)).toBeNull();
+			expect(resolveUsCloseJstDate(null, FETCHED)).toBeNull();
+			expect(resolveUsCloseJstDate([{ jst_time: "03日" }], "junk")).toBeNull();
+		});
+	});
+
+	describe("prevJpBusinessDay", () => {
+		it("月曜は前週金曜、火曜は月曜", () => {
+			expect(prevJpBusinessDay("2026-07-06")).toBe("2026-07-03"); // 月→金
+			expect(prevJpBusinessDay("2026-07-07")).toBe("2026-07-06"); // 火→月
+		});
+	});
+
+	describe("classifyUsSession", () => {
+		it("通常営業日: 前夜クローズは fresh", () => {
+			// 火曜 7/7 の朝、クローズは 7/7 早朝 (前営業日 7/6 より後)。
+			expect(classifyUsSession("2026-07-07", "2026-07-07")).toBe("fresh");
+		});
+		it("通常の週末明け月曜: 金曜 NY クローズ (JST 土曜早朝) は fresh", () => {
+			// 月曜 6/29、クローズ JST 6/27(土) > 前営業日 6/26(金)。
+			expect(classifyUsSession("2026-06-27", "2026-06-29")).toBe("fresh");
+		});
+		it("米国休場明け: 前営業日以前のクローズ持ち越しは carried_over", () => {
+			// 月曜 7/6、クローズ JST 7/3(金) 早朝 = 金曜の東京セッションが消化済み。
+			expect(classifyUsSession("2026-07-03", "2026-07-06")).toBe(
+				"carried_over",
+			);
+		});
+		it("日付を解決できなければ unknown", () => {
+			expect(classifyUsSession(null, "2026-07-06")).toBe("unknown");
+		});
+	});
+
 	describe("buildPremarketBlock", () => {
 		const NOW = new Date("2026-06-24T00:00:00Z").getTime();
+		const TODAY = "2026-06-24";
 
 		it("行が無ければ unavailable", () => {
-			expect(buildPremarketBlock(null, NOW)).toEqual({ status: "unavailable" });
-			expect(buildPremarketBlock({ fetched_at: null }, NOW)).toEqual({
+			expect(buildPremarketBlock(null, NOW, TODAY)).toEqual({
+				status: "unavailable",
+			});
+			expect(buildPremarketBlock({ fetched_at: null }, NOW, TODAY)).toEqual({
 				status: "unavailable",
 			});
 		});
@@ -357,20 +485,45 @@ if (import.meta.vitest) {
 				nikkei_futures_price: 38000,
 				us_indexes_json: '[{"key":"sox"}]',
 			};
-			const b = buildPremarketBlock(row, NOW);
+			const b = buildPremarketBlock(row, NOW, TODAY);
 			expect(b.status).toBe("ok");
 			expect(b.age_hours).toBe(5);
-			expect(b.date).toBeNull();
+			expect(b.date).toBeNull(); // jst_time なし → 解決不能
+			expect(b.us_session).toBe("unknown");
 			expect(b.sox_change_pct).toBe(1.5);
 			expect(b.us_indexes).toEqual([{ key: "sox" }]);
 		});
+		it("jst_time があれば date を解決し fresh/carried_over を分類する", () => {
+			// NOW = 水曜 6/24 09:00 JST。前夜クローズ (JST 24日早朝) は fresh。
+			const fresh = buildPremarketBlock(
+				{
+					fetched_at: new Date(NOW).toISOString(),
+					us_indexes_json: '[{"key":"sox","jst_time":"24日 06:16"}]',
+				},
+				NOW,
+				TODAY,
+			);
+			expect(fresh.date).toBe("2026-06-24");
+			expect(fresh.us_session).toBe("fresh");
+			// 前営業日 (6/23) 早朝のクローズ持ち越しは carried_over。
+			const carried = buildPremarketBlock(
+				{
+					fetched_at: new Date(NOW).toISOString(),
+					us_indexes_json: '[{"key":"sox","jst_time":"23日 06:16"}]',
+				},
+				NOW,
+				TODAY,
+			);
+			expect(carried.date).toBe("2026-06-23");
+			expect(carried.us_session).toBe("carried_over");
+		});
 		it("age>20h は stale", () => {
 			const row = { fetched_at: new Date(NOW - 21 * 3600_000).toISOString() };
-			expect(buildPremarketBlock(row, NOW).status).toBe("stale");
+			expect(buildPremarketBlock(row, NOW, TODAY).status).toBe("stale");
 		});
 		it("欠損フィールドは null 埋め", () => {
 			const row = { fetched_at: new Date(NOW).toISOString() };
-			const b = buildPremarketBlock(row, NOW);
+			const b = buildPremarketBlock(row, NOW, TODAY);
 			expect(b.sox_change_pct).toBeNull();
 			expect(b.nikkei_contract).toBeNull();
 			expect(b.us_indexes).toEqual([]);

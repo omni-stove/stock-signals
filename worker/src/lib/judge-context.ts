@@ -12,6 +12,11 @@ import {
 	maDevPct,
 	withMovingAverages,
 } from "./indicators";
+import {
+	classifyUsSession,
+	parseUsIndexes,
+	resolveUsCloseJstDate,
+} from "./premarket";
 
 // (x*10|floor)/10。負値も下方向に floor。
 function floor1(x: number): number {
@@ -220,6 +225,8 @@ export function buildValuation(
 }
 
 // --- premarket: 鮮度判定 (age>20h で stale) ---------------------------------
+// us_session は休場またぎ判定 (premarket.ts): fresh = 前夜の新しい NY /
+// carried_over = 米国休場などで前営業日の東京セッションが既に消化した数字の持ち越し。
 export interface PremarketRow {
 	fetched_at?: string | null;
 	sox_change_pct?: number | null;
@@ -227,20 +234,28 @@ export interface PremarketRow {
 	dow_change_pct?: number | null;
 	nikkei_futures_price?: number | null;
 	nikkei_contract?: string | null;
+	us_indexes_json?: string | null;
 	[key: string]: unknown;
 }
 
 export function buildPremarket(
 	row: PremarketRow | null | undefined,
 	epochNow: number,
+	today: string,
 ): Record<string, unknown> {
 	if (!row?.fetched_at) return { status: "unavailable" };
 	const ageH = Math.floor(
 		(epochNow - new Date(row.fetched_at).getTime()) / 3600_000,
 	);
+	const usCloseJst = resolveUsCloseJstDate(
+		parseUsIndexes(row.us_indexes_json),
+		row.fetched_at,
+	);
 	return {
 		status: ageH > 20 ? "stale" : "ok",
 		age_hours: ageH,
+		us_close_jst_date: usCloseJst,
+		us_session: classifyUsSession(usCloseJst, today),
 		sox_change_pct: row.sox_change_pct ?? null,
 		nasdaq_change_pct: row.nasdaq_change_pct ?? null,
 		dow_change_pct: row.dow_change_pct ?? null,
@@ -634,27 +649,63 @@ if (import.meta.vitest) {
 	});
 
 	describe("buildPremarket", () => {
+		// 2026-06-20 は土曜だが、鮮度計算は epoch 差のみなので曜日は無関係。
 		const now = Date.parse("2026-06-20T00:00:00Z");
-		it("1時間前は ok、値を載せる", () => {
+		const today = "2026-06-20";
+		it("1時間前は ok、値を載せる (jst_time なしは us_session unknown)", () => {
 			const out = buildPremarket(
 				{
 					fetched_at: new Date(now - 3600_000).toISOString(),
 					sox_change_pct: 1.2,
 				},
 				now,
+				today,
 			);
 			expect(out.status).toBe("ok");
 			expect(out.sox_change_pct).toBe(1.2);
+			expect(out.us_close_jst_date).toBeNull();
+			expect(out.us_session).toBe("unknown");
 		});
 		it("24時間前は stale (>20h)", () => {
 			const out = buildPremarket(
 				{ fetched_at: new Date(now - 24 * 3600_000).toISOString() },
 				now,
+				today,
 			);
 			expect(out.status).toBe("stale");
 		});
+		it("米国休場明け (クローズが前営業日以前) は carried_over", () => {
+			// 月曜 7/6 朝: jst_time 3日 (金曜早朝) = 金曜の東京セッションが消化済み。
+			const monday = Date.parse("2026-07-05T23:30:00Z"); // JST 7/6 08:30
+			const out = buildPremarket(
+				{
+					fetched_at: new Date(monday).toISOString(),
+					sox_change_pct: -5.4,
+					us_indexes_json: '[{"key":"sox","jst_time":"03日 06:16"}]',
+				},
+				monday,
+				"2026-07-06",
+			);
+			expect(out.us_close_jst_date).toBe("2026-07-03");
+			expect(out.us_session).toBe("carried_over");
+		});
+		it("通常の週末明け (金曜クローズ = JST 土曜早朝) は fresh", () => {
+			const monday = Date.parse("2026-06-28T23:30:00Z"); // JST 6/29(月) 08:30
+			const out = buildPremarket(
+				{
+					fetched_at: new Date(monday).toISOString(),
+					us_indexes_json: '[{"key":"sox","jst_time":"27日 06:16"}]',
+				},
+				monday,
+				"2026-06-29",
+			);
+			expect(out.us_close_jst_date).toBe("2026-06-27");
+			expect(out.us_session).toBe("fresh");
+		});
 		it("行なしは unavailable", () => {
-			expect(buildPremarket(null, now)).toEqual({ status: "unavailable" });
+			expect(buildPremarket(null, now, today)).toEqual({
+				status: "unavailable",
+			});
 		});
 	});
 

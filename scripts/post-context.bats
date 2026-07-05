@@ -117,6 +117,49 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.news_cursor')" = "null" ]
 }
 
+# === 総量バックストップ (行数/文字数の上限) ==================================
+
+# 上限内なら通る (境界値: ちょうど上限)
+@test "size: passes at exactly the caps" {
+  local sf="$BATS_TEST_TMPDIR/context.json"
+  jq -n '{status:"ok", title:"t",
+    sections:[{heading:"h", lines:["1234567890","1234567890"]}],
+    ir_cursor:null, news_cursor:null}' >"$sf"
+  run env WORKER_URL="http://test.invalid" POST_CONTEXT_DRYRUN=1 \
+    POST_CONTEXT_MAX_LINES=2 POST_CONTEXT_MAX_CHARS=20 \
+    bash "$SCRIPT" 285A "$sf" 2>&1
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -q "context posted (D1)"
+}
+
+# 総行数が上限を超えると fail し、upsert/投稿は走らない
+@test "size: fails when total lines exceed cap" {
+  local sf="$BATS_TEST_TMPDIR/context.json"
+  jq -n '{status:"ok", title:"t",
+    sections:[{heading:"h1", lines:["a","b"]},{heading:"h2", lines:["c"]}],
+    ir_cursor:null, news_cursor:null}' >"$sf"
+  run env WORKER_URL="http://test.invalid" POST_CONTEXT_DRYRUN=1 \
+    POST_CONTEXT_MAX_LINES=2 \
+    bash "$SCRIPT" 285A "$sf" 2>&1
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -q "context too large"
+  [ -z "$(printf '%s\n' "$output" | awk '$1=="POST"')" ]
+}
+
+# 総文字数が上限を超えると fail する (文字数 = 全行の連結長)
+@test "size: fails when total chars exceed cap" {
+  local sf="$BATS_TEST_TMPDIR/context.json"
+  jq -n '{status:"ok", title:"t",
+    sections:[{heading:"h", lines:["12345678901"]}],
+    ir_cursor:null, news_cursor:null}' >"$sf"
+  run env WORKER_URL="http://test.invalid" POST_CONTEXT_DRYRUN=1 \
+    POST_CONTEXT_MAX_CHARS=10 \
+    bash "$SCRIPT" 285A "$sf" 2>&1
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -q "context too large"
+  [ -z "$(printf '%s\n' "$output" | awk '$1=="POST"')" ]
+}
+
 # === 2. Slack post ==========================================================
 
 # SLACK_CONTEXT_CHANNEL があれば channel 明示で context_sections を投稿する (blocks 整形は Worker)

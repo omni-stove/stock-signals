@@ -142,7 +142,9 @@ jobs:
               Null → say `context: unavailable` and answer on price + backdrop alone.
             - **`ticker_note`**: qualifies the other inputs, never leads.
             - **`prices` / `premarket` / `margin`** confirm the fundamental read with the current tape; don't let
-              them flip it. Pair **`market_phase`** with `prices.quote_status`: a `closed`/stale tape is about to
+              them flip it. `premarket.us_session: carried_over` = the US was closed and those numbers are a
+              carried-over prior close, not a fresh overnight move. Pair **`market_phase`** with
+              `prices.quote_status`: a `closed`/stale tape is about to
               open (premarket) vs already closed — demote a stale tape, don't read a fresh move into it.
               In-session, `daily` is the prior confirmed bar (so `vol_x_20d` is yesterday's); for today's 出来高
               read `daily.vol_x_20d_intraday`.

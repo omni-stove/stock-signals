@@ -78,12 +78,13 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 		if (row) liveIndexRows.push(row);
 	}
 
-	// premarket ブロック (鮮度判定 age>20h で stale)。整形は lib/premarket に集約。
-	// premarket_backdrop に date 列は無い (PK=fetched_at) ので date は常に null。
-	const premarketBlock = buildPremarketBlock(pmRow ?? null, epochNow);
+	// premarket ブロック (鮮度判定 age>20h で stale、休場またぎ判定 us_session)。
+	// 整形は lib/premarket に集約。date は jst_time から解決した米国クローズの JST 暦日。
+	const premarketBlock = buildPremarketBlock(pmRow ?? null, epochNow, today);
 	const premarketLine: PremarketLine | null = pmRow
 		? {
-				date: null,
+				date: (premarketBlock.date as string | null) ?? null,
+				us_session: (premarketBlock.us_session as string | null) ?? null,
 				sox_change_pct: pmRow.sox_change_pct,
 				nasdaq_change_pct: pmRow.nasdaq_change_pct,
 				dow_change_pct: pmRow.dow_change_pct,

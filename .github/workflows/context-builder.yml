@@ -125,7 +125,12 @@ jobs:
             detail (model numbers, spec figures, release dates, entity/person names, trademark symbols) and
             collapse variant lists into the one line that carries the call. When in doubt, cut.
 
-            One fact lives in one section. Place it where its lasting effect belongs and do not restate it elsewhere.
+            The whole body fits in ~30 lines and a line stays within 100 characters (the schema rejects
+            longer). Shrinking the body on a regeneration is normal; carrying every existing line forward
+            is not — the post step rejects a body over 35 lines / 2600 characters.
+
+            One fact lives in one section. Place it where its lasting effect belongs and do not restate it
+            elsewhere — never carry the same material in both 直近の重大トピック and 決算・ガイダンス.
 
             ## Inputs
 
@@ -173,15 +178,17 @@ jobs:
             - 経営判断・資本政策 — capex / capacity / M&A / alliances / capital policy; accumulate and revise on
               material events.
             - 直近の重大トピック — newest first by date; each line `YYYY-MM-DD: <one-line summary> — <その先数
-              週間への効き>`, tight enough to stay one line. Keep roughly the last ~6–10; prune once an effect is
-              absorbed into a structural section.
+              週間への効き>`, tight enough to stay one line. Merge lines telling one running story into the
+              newest line. Drop a line once its date is ~14 days old or its effect is absorbed into a
+              structural section — keeping it requires the effect to still be live, not merely plausible.
+              ~6 lines is the norm, 10 the hard cap.
             - 証券会社レーティング — newest first; each line `YYYY-MM-DD <機関>: <格付> 目標株価 <値> [信頼度: …]`.
               Keep while in ~12-month horizon; drop when the same 機関 issues a newer call.
             - 決算の特色・クセ — structural reaction pattern of this name's earnings: focus metric, ガイダンス vs
               実績 の効き方, ピア連動. When empty, research it once (web / past IR) and fill; otherwise revise only
               when fresh `ir_items` carry a 決算/業績修正/ガイダンス item, else carry it forward verbatim.
-            - 決算・ガイダンス — latest results vs expectations, current guidance, known next-earnings
-              considerations — facts only.
+            - 決算・ガイダンス — this name's own latest results vs expectations, current guidance, known
+              next-earnings considerations — facts only; never a recap of topic lines or peer/macro news.
 
             ### 4. Return the advanced cursors
 
@@ -199,6 +206,8 @@ jobs:
           # LLM に curl/sh を叩かせない: upsert/投稿は次ステップが行うので Bash/Write は渡さず Read のみ許可。
           # --json-schema で出力の形を縛る。status=no-update は本文を書かず終了する信号。
           # ok のとき title+sections=再生成コンテキスト (Markdown 記号なし)、ir_cursor/news_cursor=進めたカーソル (null 可)。
+          # 膨張防止はここで機械的に縛る: セクション数=7 固定、1 セクション 10 行まで、1 行 100 字まで。
+          # 合計量 (35 行 / 2600 字) は schema で縛れないので post-context.sh が検証する。
           claude_args: >-
             --allowedTools Read --max-turns 50
             --json-schema '{
@@ -207,11 +216,11 @@ jobs:
               "properties":{
                 "status":{"enum":["ok","no-update"],"description":"新規があり再生成したら ok、新規 0 なら no-update"},
                 "title":{"type":["string","null"],"description":"見出しタイトル。verbatim shape: [<ticker> <name>] 銘柄コンテキスト。no-update なら null"},
-                "sections":{"type":["array","null"],"description":"見出し+行のセクション配列。prompt の順序と exact heading 文字列で全セクションを出す (行が無くても残す)。no-update なら null",
+                "sections":{"type":["array","null"],"minItems":7,"maxItems":7,"description":"見出し+行のセクション配列。prompt の順序と exact heading 文字列で全 7 セクションを出す (行が無くても残す)。no-update なら null",
                   "items":{"type":"object","additionalProperties":false,"required":["heading","lines"],
                     "properties":{
                       "heading":{"type":"string","description":"セクション見出し。Markdown 記号 (#/*/-/backtick) なしのプレーンテキスト"},
-                      "lines":{"type":"array","items":{"type":"string"},"description":"本文行。1 行 1 要素、Markdown 記号なし。該当なしは空配列"}
+                      "lines":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":100},"description":"本文行。1 行 1 要素・100 字以内、Markdown 記号なし。該当なしは空配列"}
                     }}},
                 "ir_cursor":{"type":["string","null"],"description":"進めた IR カーソル (cursors.ir.next)。無ければ null"},
                 "news_cursor":{"type":["string","null"],"description":"進めた news カーソル (cursors.news.next)。無ければ null"}

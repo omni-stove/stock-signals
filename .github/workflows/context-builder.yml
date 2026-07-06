@@ -151,6 +151,8 @@ jobs:
             `ir_items` are official IR + TDnet + `rating`, lead on them. `news_items` are per-ticker news, noisier
             — confirm against an IR item or drop. Both are already filtered to since each cursor and ordered
             oldest-first. Empty `context_body` means first run — build the body from scratch (step 3).
+            `status: "ok"` with both item lists empty is a forced regeneration — never return no-update;
+            rebuild the existing body under the current rules (step 3).
 
             ### 2. Read each new item and select what is material to the context
 

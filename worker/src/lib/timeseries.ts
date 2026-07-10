@@ -8,8 +8,9 @@
 
 import * as cheerio from "cheerio";
 import { db } from "./db";
+import { sliceStockInfo } from "./kabutan";
 import { daily, fundamentals, prices } from "./schema";
-import { fetchHtml, sleep } from "./utils";
+import { fetchHtml, sleep, sliceTables } from "./utils";
 import { WATCHLIST, WATCHLIST_NAMES } from "./watchlist";
 
 export interface TimeseriesEnv {
@@ -63,7 +64,7 @@ type PriceParsed = {
 
 // 株探の現値ページをパースする。
 function parseKabutanPrice(html: string): PriceParsed {
-	const $ = cheerio.load(html);
+	const $ = cheerio.load(sliceStockInfo(html));
 	const block = $(".si_i1_2").first();
 
 	const price = toNumber(block.find(".kabuka").first().text());
@@ -142,7 +143,7 @@ type DailyBar = {
 
 // 株探の日足 (本日表 + 過去表) をパースする。
 function parseKabutanDaily(html: string): DailyBar[] {
-	const $ = cheerio.load(html);
+	const $ = cheerio.load(sliceTables(html, "stock_kabuka") ?? html);
 	const rows: DailyBar[] = [];
 
 	const harvest = (selector: string) => {
@@ -230,9 +231,10 @@ function isForecastRow(label: string): boolean {
 	return /予/.test(label);
 }
 
-// 株探の指標ページをパースする。
+// 株探の指標ページをパースする。対象は「PER/PBR ヘッダの表」と「決算期ヘッダの表」だけ
+// なので、それらを含むテーブル群に絞ってから読む。
 function parseKabutanFundamentals(html: string): FundParsed {
-	const $ = cheerio.load(html);
+	const $ = cheerio.load(sliceTables(html, "PER", "決算期") ?? html);
 
 	let per: number | null = null;
 	let pbr: number | null = null;

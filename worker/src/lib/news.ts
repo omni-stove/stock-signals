@@ -14,7 +14,7 @@
 import * as cheerio from "cheerio";
 import { seenArticleUrls } from "./articles";
 import { db } from "./db";
-import { parseKabutanNewsList } from "./kabutan";
+import { parseKabutanNewsList, sliceArticle } from "./kabutan";
 import { articles } from "./schema";
 import { WATCHLIST } from "./timeseries";
 import { fetchHtml, hash, normArticleDate, sleep } from "./utils";
@@ -39,7 +39,17 @@ function parseKabutanArticle(html: string): {
 	body: string;
 	published_at: string;
 } {
-	const $ = cheerio.load(html);
+	// 本文抽出のセレクタが目印にする id/class が <article> 外にあるレイアウトでは
+	// sliceArticle が全文を返すので、切り出しで欠測にはならない。
+	const $ = cheerio.load(
+		sliceArticle(html, [
+			"shijyo_news_text",
+			"news_contents",
+			"pdbt0",
+			"news_body",
+			"s_news_date",
+		]),
+	);
 	// 記事タイトルは本文ブロックの h1.pdbt0。ページ上部の h2 は銘柄名 (「6857 アドバンテスト」)
 	// なので拾わない。見つからなければ h1 全般 → <title> の順にフォールバック。
 	const title =

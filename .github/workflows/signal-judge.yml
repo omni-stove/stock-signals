@@ -128,9 +128,15 @@ jobs:
 
             Judge on what you can see now — context, numbers, `event_context` — never on hindsight ("priced in,"
             "unexplained" volume, a top being "in"). "after it falls further" / "once it settles" is not a verdict;
-            tomorrow's open, next week, the quarter ahead never decide. Default to `exec: now` (約定可能 at the
-            current price); take `exec: wait` only when a named support/MA sits just under, and put that line in
-            `line`. 過熱・地合い・不確実性 tighten the 損切り or size you down — they never push the entry down to wait.
+            tomorrow's open, next week, the quarter ahead never decide.
+
+            Default `exec: now`. Take `exec: wait` only when an anchor — `daily.ma5` / `daily.ma25` / the
+            20日 range edge (buy: low, sell: high) — sits on the entry side of the reference price (last trade;
+            `quote_status: closed` → `daily.close`) within 1.5×`atr_pct`, and put that anchor's value in `line`.
+            The posting step snaps `line` to the nearest such anchor and demotes to `now` when none qualifies —
+            any other number does not survive. `stop` beyond `line`, never equal. 過熱・地合い・不確実性・
+            予想される投げ/踏み tighten the 損切り or size, not the entry. When waiting, name the anchor in
+            the body.
 
             ## Inputs
 
@@ -187,7 +193,7 @@ jobs:
             **過熱 (how stretched the move is):**
 
             - **How far the move has run** → tighter (higher buy line, shallower add). `valuation.vs_fair`:
-              `above` tightens, `below` supports a deeper dip-buy.
+              `above` picks the nearer in-band anchor, `below` the lower one.
             - **Overbought** argues against adding, not holding.
               `daily.momentum_state`: `extended` = trend still working, `cracking` = turn toward exiting (so is
               the driving topic dropping out of 直近の重大トピック). The gate sets how hard it bites — リスクオン
@@ -200,8 +206,9 @@ jobs:
 
             - **Margin** contradicting the context → soften the 水準 one step.
             - **`forced`** (status `none` → skip): `summary` already states the forced-flow timing
-              (投げ/踏み, ~何営業日後のどのセッション, building=これから / exhausted=出尽くし); take it as given and
-              lead the 水準 to that dip rather than chasing into it. Never sets direction.
+              (投げ/踏み, ~何営業日後のどのセッション, building=これから / exhausted=出尽くし); take it as given.
+              A pending flush argues for `wait` at an in-band anchor and a 損切り beyond the flush — never a
+              `line` below the band. Never sets direction.
             - **Event context** — SQ週/メジャーSQ unwind distorts the tape (noise, fall back to fundamentals);
               SQ明け is clean; 米メジャーSQ reaches JP only via SOX. 海外ピア決算: `あとX日で` = pending, soften one
               step; `通過済み` = already in `premarket`/`sector`, do not re-weight. Never override context_body on a
@@ -230,7 +237,7 @@ jobs:
               "properties":{
                 "side":{"enum":["buy","sell"],"description":"market side: buy=買い場 / sell=売り場, one direction"},
                 "exec":{"enum":["now","wait"],"description":"now=現値約定 / wait=line で指値待ち"},
-                "line":{"type":["number","null"],"description":"limit price for wait; null when now"},
+                "line":{"type":["number","null"],"description":"limit price for wait (an anchor value; the posting step snaps it to the nearest data anchor); null when now"},
                 "stop":{"type":["string","null"],"description":"損切りライン (price or MA/range expression); null if none"},
                 "rr":{"enum":["良","可","薄"],"description":"リスクリワード read from upside-to-損切り"},
                 "headline":{"type":"string","description":"Slack first line, exact format verbatim: 🧭 <ticker> <name> signal: <buy|sell> (now|wait@<line>; 損切り=<line> / RR<良|可|薄>)"},
@@ -245,10 +252,12 @@ jobs:
       # skill の構造化出力 (structured_output) を Slack に投稿し、判定を Worker に保存する
       # (curl/jq/blocks 組み立て/フォールバックは script が持つ)。第2引数 = 判定 JSON、
       # 第3引数 = 前段で並行取得した指数リバランス窓の JSON (judge には渡していない観測事実)。
+      # 第4引数 = judge に渡したのと同じ numctx。post-signal.sh の押し目ガード (wait の指値が
+      # 参照価格から 1.5×ATR% 超乖離 or 判定方向と逆側なら now に降格) の参照価格/ATR に使う。
       - name: Post signal to Slack
         run: |
           printf '%s' "$SIGNAL_JSON" > "$RUNNER_TEMP/signal.json"
-          bash scripts/post-signal.sh "$TICKER" "$RUNNER_TEMP/signal.json" "$RUNNER_TEMP/rebalance.json"
+          bash scripts/post-signal.sh "$TICKER" "$RUNNER_TEMP/signal.json" "$RUNNER_TEMP/rebalance.json" "$RUNNER_TEMP/numctx.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}

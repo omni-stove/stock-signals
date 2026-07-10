@@ -325,15 +325,36 @@ export function buildForced(
 	};
 }
 
+// today (JST, YYYY-MM-DD) から n 営業日 (土日除く近似、祝日は非考慮) 前の日付。
+function businessDaysBefore(today: string, n: number): string {
+	const d = new Date(`${today}T00:00:00Z`);
+	let left = n;
+	while (left > 0) {
+		d.setUTCDate(d.getUTCDate() - 1);
+		const w = d.getUTCDay();
+		if (w !== 0 && w !== 6) left--;
+	}
+	return d.toISOString().slice(0, 10);
+}
+
 // --- daily: indicators.ts を使い 20日レンジ/MA位置/RSI/ATR を組む -------------
 // rows は date DESC (新しい順)。withMovingAverages で ma5/ma25 を付与してから指標を計算する。
 // intraday を渡すと、ザラ場中で daily に当日行がまだ無い局面の「当日ベース vol_x」を併記する。
+// today を渡すと鮮度を判定する: 最新足が2営業日前より古い (= eod 収集が2回以上落ちて確定足が
+// 欠けている) 場合は status を stale にし、judge に古い MA/レンジ/ATR を最新値として読ませない。
+// 正常時の最新足は前営業日 (ザラ場中) か当日 (引け後) なので、2営業日の猶予は祝日1日を吸収する
+// (連休明けの初日だけ保守側に stale と誤判定しうるが、価格と文脈だけで判定は継続できる)。
 export function buildDaily(
 	rowsDesc: DailyRow[],
 	intraday?: IntradayVol | null,
+	today?: string | null,
 ): Record<string, unknown> {
 	const n = rowsDesc?.length ?? 0;
 	if (n < 5) return { status: "insufficient", rows_n: n };
+	const latestDate = (rowsDesc[0]?.date as string | undefined) ?? null;
+	if (today && latestDate && latestDate < businessDaysBefore(today, 2)) {
+		return { status: "stale", rows_n: n, latest_date: latestDate };
+	}
 	// ma を付与した最新行を「現在地」とする。n と同数を要求して全行に ma を載せる。
 	const withMa = withMovingAverages(
 		rowsDesc as Record<string, unknown>[],
@@ -847,6 +868,30 @@ if (import.meta.vitest) {
 			);
 			expect(out.rsi_14).toBeNull();
 			expect(out.atr_pct).toBeNull();
+		});
+		it("最新足が2営業日前より古ければ stale (収集が落ちて確定足が欠けた状態)", () => {
+			// desc(30本) の最新足は 2026-06-30 (火)。today=07-03(金) の2営業日前は 07-01 →
+			// 06-30 < 07-01 で stale。指標は返さない。
+			const rows = desc(Array.from({ length: 30 }, (_, i) => 10 + i));
+			const out = buildDaily(rows, null, "2026-07-03");
+			expect(out).toEqual({
+				status: "stale",
+				rows_n: 30,
+				latest_date: "2026-06-30",
+			});
+		});
+		it("最新足が前営業日なら ok (ザラ場中の正常形)", () => {
+			const rows = desc(Array.from({ length: 30 }, (_, i) => 10 + i));
+			expect(buildDaily(rows, null, "2026-07-01").status).toBe("ok");
+		});
+		it("土日はギャップに数えない (金曜足 + 月曜 today は ok)", () => {
+			// desc(26本) の最新足は 2026-06-26 (金)。today=06-29(月) の2営業日前は 06-25(木)。
+			const rows = desc(Array.from({ length: 26 }, (_, i) => 10 + i));
+			expect(buildDaily(rows, null, "2026-06-29").status).toBe("ok");
+		});
+		it("today 未指定なら鮮度判定しない (後方互換)", () => {
+			const rows = desc(Array.from({ length: 30 }, (_, i) => 10 + i));
+			expect(buildDaily(rows).status).toBe("ok");
 		});
 	});
 

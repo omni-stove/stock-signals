@@ -11,7 +11,7 @@ import * as cheerio from "cheerio";
 import { db } from "./db";
 import { earnings } from "./schema";
 import { WATCHLIST } from "./timeseries";
-import { fetchHtml, sleep } from "./utils";
+import { fetchHtml, sleep, sliceTables } from "./utils";
 
 export interface EarningsEnv {
 	DB: D1Database;
@@ -47,7 +47,9 @@ function parseAnnounce(s: string | null | undefined): string | null {
 type QuarterRow = { q: Quarter; announce: string | null };
 
 function extractQuarterRows(html: string): QuarterRow[] {
-	const $ = cheerio.load(html);
+	// 対象は「決算期」「発表日」ヘッダを持つテーブルだけなので、発表日を含むテーブル群に
+	// 絞ってから読む (フルページの parse は CPU が高い)。無ければ全文へフォールバック。
+	const $ = cheerio.load(sliceTables(html, "発表日") ?? html);
 	// 「決算期」「発表日」ヘッダを持つテーブルのうち、実績四半期行が最も多いものを採用する。
 	let bestRows: QuarterRow[] = [];
 

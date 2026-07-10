@@ -14,6 +14,7 @@
 
 import * as cheerio from "cheerio";
 import { db } from "./db";
+import { sliceStockInfo } from "./kabutan";
 import { liveIndexes } from "./schema";
 import { fetchHtml, sleep } from "./utils";
 
@@ -69,7 +70,7 @@ function slot5min(iso: string): string {
 
 // 株探の指数ページ (日経平均/TOPIX 等)。個別銘柄の現値ページと同じ .si_i1_2 ブロック構造。
 function parseKabutanIndex(html: string): IndexQuote {
-	const $ = cheerio.load(html);
+	const $ = cheerio.load(sliceStockInfo(html));
 	const block = $(".si_i1_2").first();
 	const price = toNumber(block.find(".kabuka").first().text());
 	const dds = block.find(".si_i1_dl1 dd");
@@ -79,12 +80,27 @@ function parseKabutanIndex(html: string): IndexQuote {
 	return { price, change, change_pct, quote_time };
 }
 
+// investing.com のページは 1MB を超え、そのまま parse すると CPU を数百ms食う。
+// data-test 属性が並ぶ現値ブロック (price-last → change → change-percent →
+// trading-time-label の順) の数KBだけを切り出す。並びが違う/マーカーが無ければ全文を返す。
+function sliceInstrument(html: string): string {
+	const s = html.indexOf('data-test="instrument-price-last"');
+	const t = html.indexOf('data-test="trading-time-label"');
+	if (s < 0 || t < 0 || t < s) return html;
+	const start = html.lastIndexOf("<", s);
+	const timeEnd = html.indexOf("</time>", t);
+	return html.slice(
+		start,
+		timeEnd < 0 ? t + 2_000 : timeEnd + "</time>".length,
+	);
+}
+
 // investing.com の指数ページ。値は data-test 属性で安定して取れる:
 //   instrument-price-last / -change / -change-percent、時刻は <time data-test="trading-time-label">。
 //   change-percent は "(-2.04%)" のように括弧付きなので toNumber が括弧を剥がす。
 //   quote_time は <time dateTime="…"> の ISO8601 (UTC) を優先し、無ければ表示テキスト。
 function parseInvestingIndex(html: string): IndexQuote {
-	const $ = cheerio.load(html);
+	const $ = cheerio.load(sliceInstrument(html));
 	const price = toNumber(
 		$('[data-test="instrument-price-last"]').first().text(),
 	);

@@ -288,7 +288,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		premarket: premarketBlock,
 		// 対象銘柄が属する sector の1件だけ (rows は相対強弱の強い順)。sector 未設定なら null。
 		sector: sectorReports[0] ?? null,
-		daily: buildDaily(dailyRows, intradayVol),
+		daily: buildDaily(dailyRows, intradayVol, today),
 		prices: buildPrices(priceRows, epochNow),
 		margin: buildMargin(marginRows),
 		forced: buildForced(forcedRow ?? null),

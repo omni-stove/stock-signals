@@ -22,7 +22,7 @@ import { inArray } from "drizzle-orm";
 import { db } from "./db";
 import { parseKabutanNewsList } from "./kabutan";
 import { marketNews } from "./schema";
-import { fetchHtml, hash, normArticleDate, sleep } from "./utils";
+import { fetchHtml, hash, normArticleDate, sleep, sliceHtml } from "./utils";
 import { matchTickers } from "./watchlist";
 
 export interface MarketNewsEnv {
@@ -196,7 +196,11 @@ function parseArticle(html: string): {
 	body: string;
 	published_at: string;
 } {
-	const $ = cheerio.load(html);
+	// #shijyounews 〜 </article> だけを parse する (フルページは CPU が高い)。
+	// マーカーが無いページ (DOM 変更等) は全文へフォールバック。
+	const $ = cheerio.load(
+		sliceHtml(html, '<div id="shijyounews"', "</article>") ?? html,
+	);
 	// 本文コンテナは #shijyounews article。タイトルは article h1 (【市況】等の接頭辞付き)、
 	// 本文は article .body。フォールバックは article 全文 → <title>。
 	const $art = $("#shijyounews article").first();

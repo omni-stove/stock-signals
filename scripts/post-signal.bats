@@ -246,3 +246,130 @@ payload_for() {
   local p; p="$(payload_for "/slack/post")"
   [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
 }
+
+# === guard: 押し目ガード (wait の指値をデータ実在アンカーへ決定論で吸着) =======
+
+# ガード用の signal-file と numctx-file を書いて第4引数経路で実行する。
+# numctx のアンカーは ref から導出: ma5=ref*0.98 / ma25=ref*0.97 / レンジ下限=ref*0.90 /
+# レンジ上限=ref*1.02。$1=side $2=exec $3=line $4=ref $5=atr_pct("null" で欠損)
+run_guard() {
+  local side="$1" exec="$2" line="$3" ref="$4" atr="$5"
+  local f="$BATS_TEST_TMPDIR/signal.json" nf="$BATS_TEST_TMPDIR/numctx.json"
+  jq -n --arg side "$side" --arg exec "$exec" --argjson line "$line" \
+    '{side:$side,exec:$exec,line:$line,stop:"stop",rr:"可",
+      headline:("🧭 285A NAME signal: " + $side + " (" + (if $exec=="wait" then "wait@" + ($line|tostring) else "now" end) + "; 損切り=x / RR可)"),
+      body:["alpha"]}' > "$f"
+  jq -n --argjson ref "$ref" --argjson atr "$atr" \
+    '{prices:{latest:{price:$ref}},
+      daily:{close:($ref*0.99),atr_pct:$atr,ma5:($ref*0.98),ma25:($ref*0.97),
+             range_low_20d:($ref*0.90),range_high_20d:($ref*1.02)}}' > "$nf"
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
+    FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON='{"ok":true,"note":""}' \
+    bash "$SCRIPT" 285A "$f" "" "$nf" 2>&1
+}
+
+# 帯内アンカーから遠い買い指値は最寄りの有効アンカーへ吸着する (9200 → ma25=9700)
+@test "guard: deep buy line snaps to nearest in-band anchor" {
+  run_guard buy wait 9200 10000 2   # 許容3%: ma5=9800(2%) ma25=9700(3%) 下限9000(圏外)
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.signal.exec')" = "wait" ]
+  [ "$(printf '%s' "$p" | jq -r '.signal.line')" = "9700" ]
+  printf '%s' "$p" | jq -e '.signal.headline | test("wait@9700")' >/dev/null
+  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("押し目ガード") and test("9700")' >/dev/null
+}
+
+# 指値が既に有効アンカー値ならそのまま通す (補正行も付かない)
+@test "guard: line equal to an in-band anchor passes unchanged" {
+  run_guard buy wait 9800 10000 2   # = ma5
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.signal.line')" = "9800" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[-1].text.text | test("押し目ガード")')" = "false" ]
+}
+
+# 買いなのに現値より上の指値 (逆側) も正しい側のアンカーへ吸着する
+@test "guard: buy line above reference snaps back to a valid anchor" {
+  run_guard buy wait 10200 10000 5
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.signal.exec')" = "wait" ]
+  [ "$(printf '%s' "$p" | jq -r '.signal.line')" = "9800" ]
+  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("押し目ガード")' >/dev/null
+}
+
+# 売りは参照価格より上のアンカー (レンジ上限) へ吸着する
+@test "guard: sell line snaps to the upper-side anchor" {
+  run_guard sell wait 10150 10000 2   # 上側の有効アンカーは range_high=10200 のみ
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.signal.exec')" = "wait" ]
+  [ "$(printf '%s' "$p" | jq -r '.signal.line')" = "10200" ]
+}
+
+# ATR 欠損 (daily stale 等) は 5% を基準にした帯 (7.5%) で判定する
+@test "guard: null atr falls back to 5pct-based band" {
+  run_guard buy wait 9400 10000 null   # 許容7.5%: ma25=9700 が最寄り (下限9000 は圏外)
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.signal.exec')" = "wait" ]
+  [ "$(printf '%s' "$p" | jq -r '.signal.line')" = "9700" ]
+}
+
+# 帯内に有効アンカーが 1 つも無ければ now に降格する
+@test "guard: no valid anchor demotes to now" {
+  local f="$BATS_TEST_TMPDIR/signal.json" nf="$BATS_TEST_TMPDIR/numctx.json"
+  jq -n '{side:"buy",exec:"wait",line:9800,stop:"x",rr:"可",
+          headline:"🧭 285A NAME signal: buy (wait@9800; 損切り=x / RR可)",body:["alpha"]}' > "$f"
+  # 買い側アンカーが全滅: ma は参照より上、レンジ下限は帯 (3%) の外。
+  jq -n '{prices:{latest:{price:10000}},
+          daily:{close:9900,atr_pct:2,ma5:10100,ma25:10200,
+                 range_low_20d:9000,range_high_20d:11000}}' > "$nf"
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
+    FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON='{"ok":true,"note":""}' \
+    bash "$SCRIPT" 285A "$f" "" "$nf" 2>&1
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.signal.exec')" = "now" ]
+  [ "$(printf '%s' "$p" | jq -r '.signal.line')" = "null" ]
+  printf '%s' "$p" | jq -e '.signal.headline | test("now") and (test("wait@") | not)' >/dev/null
+  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("押し目ガード") and test("降格")' >/dev/null
+}
+
+# アンカー値の端数は買いで floor される (売りは ceil)
+@test "guard: fractional anchor value floors for buy" {
+  local f="$BATS_TEST_TMPDIR/signal.json" nf="$BATS_TEST_TMPDIR/numctx.json"
+  jq -n '{side:"buy",exec:"wait",line:9700,stop:"x",rr:"可",
+          headline:"🧭 285A NAME signal: buy (wait@9700; 損切り=x / RR可)",body:["alpha"]}' > "$f"
+  jq -n '{prices:{latest:{price:10000}},
+          daily:{close:9900,atr_pct:5,ma5:null,ma25:9700.7,
+                 range_low_20d:9000,range_high_20d:11000}}' > "$nf"
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
+    FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON='{"ok":true,"note":""}' \
+    bash "$SCRIPT" 285A "$f" "" "$nf" 2>&1
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.signal.line')" = "9700" ]
+}
+
+# exec=now はガード対象外 (line も見ない)
+@test "guard: exec now is not touched" {
+  run_guard buy now 1000 10000 2
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.signal.exec')" = "now" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[-1].text.text | test("押し目ガード")')" = "false" ]
+}
+
+# numctx-file を渡さなければガードはスキップ (従来挙動)
+@test "guard: omitted numctx-file skips the guard" {
+  local f="$BATS_TEST_TMPDIR/signal.json"
+  jq -n '{side:"buy",exec:"wait",line:9200,stop:"x",rr:"可",
+          headline:"🧭 285A NAME signal: buy (wait@9200; 損切り=x / RR可)",body:["alpha"]}' > "$f"
+  run env WORKER_URL="http://test.invalid" POST_SIGNAL_DRYRUN=1 \
+    FETCH_FORCED_JSON='{"rows":[]}' FETCH_REBALANCE_JSON='{"ok":true,"note":""}' \
+    bash "$SCRIPT" 285A "$f" 2>&1
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.signal.exec')" = "wait" ]
+}

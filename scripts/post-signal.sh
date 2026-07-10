@@ -22,6 +22,8 @@
 #   $3 = rebalance-file  (任意。前段ステップが /index-rebalance を並行取得して書いた JSON のパス。
 #                         judge には渡さない観測事実なので numctx とは別ファイルで運ぶ。
 #                         未指定/不在/空/窓外 (note 空) なら何も貼らない)
+#   $4 = numctx-file     (任意。judge に渡したのと同じ /judge-context JSON のパス。押し目ガード
+#                         (下記) の参照価格と ATR に使う。未指定/不在ならガードはスキップ)
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意)。
 #
 # 出力 (stdout): "slack ok" または "slack skipped" の 1 行。skill の stdout 行はこれを使う。
@@ -32,9 +34,10 @@
 
 set -euo pipefail
 
-TICKER="${1:?usage: post-signal.sh <ticker> <signal-file> [rebalance-file]}"
+TICKER="${1:?usage: post-signal.sh <ticker> <signal-file> [rebalance-file] [numctx-file]}"
 SIGNAL_FILE="${2:?signal-file required}"
 REBAL_FILE="${3:-}"
+NUMCTX_FILE="${4:-}"
 
 : "${WORKER_URL:?WORKER_URL is required}"
 [[ -f "$SIGNAL_FILE" ]] || { echo "post-signal.sh: signal-file not found: $SIGNAL_FILE" >&2; exit 1; }
@@ -50,6 +53,64 @@ HEADLINE="$(printf '%s' "$SIGNAL_JSON" | jq -r '.headline // ""')"
 [[ -n "$HEADLINE" ]] || { echo "post-signal.sh: empty headline in $SIGNAL_FILE" >&2; exit 1; }
 # body 配列を改行区切りの 1 文字列にする (後段で観測行を末尾に足し、split で blocks に戻す)。
 BODY="$(printf '%s' "$SIGNAL_JSON" | jq -r '(.body // []) | join("\n")')"
+
+# --- 押し目ガード (決定論): wait の指値をデータ実在アンカーに吸着する ------------
+# 指値の数値は LLM に決めさせない。アンカー = numctx の daily.ma5 / ma25 / 20日レンジ端
+# (買いは下限・売りは上限) のうち、参照価格 (現値、closed なら前日終値) の正しい側かつ
+# 1.5×ATR% (ATR 不明なら 5%) 以内にあるもの。judge の指値は最も近い有効アンカーの値へ
+# 吸着し (端数は買い floor / 売り ceil)、有効アンカーが 1 つも無ければ判定既定の now に
+# 降格する。どちらの場合も本文に補正内容を明記する。出力される line は必ずデータにある水準。
+if [[ -n "$NUMCTX_FILE" && -s "$NUMCTX_FILE" ]] \
+  && jq -e . "$NUMCTX_FILE" >/dev/null 2>&1 \
+  && [[ "$(printf '%s' "$SIGNAL_JSON" | jq -r '.exec // ""')" == "wait" ]]; then
+  GUARD="$(jq -c --argjson sig "$SIGNAL_JSON" '
+    def _abs: if . < 0 then -. else . end;
+    (.prices.latest.price // .daily.close) as $ref |
+    (.daily.atr_pct // 5) as $atr |
+    (1.5 * $atr) as $allowed |
+    if $ref == null then {verdict: "skip"}
+    else
+      ($sig.side == "buy") as $buy |
+      ([ {name: "ma5", v: .daily.ma5},
+         {name: "ma25", v: .daily.ma25},
+         {name: (if $buy then "20日レンジ下限" else "20日レンジ上限" end),
+          v: (if $buy then .daily.range_low_20d else .daily.range_high_20d end)} ]
+        | map(select(.v != null))
+        | map(select(if $buy then .v < $ref else .v > $ref end))
+        | map(select(((($ref - .v) | _abs) / $ref * 100) <= $allowed))) as $anchors |
+      if ($anchors | length) == 0
+      then {verdict: "demote", ref: $ref, allowed: ($allowed * 10 | round / 10)}
+      else
+        (if ($sig.line | type) == "number" then $sig.line else $ref end) as $want |
+        ($anchors | min_by((.v - $want) | _abs)) as $a |
+        {verdict: "snap", name: $a.name,
+         value: (if $buy then ($a.v | floor) else ($a.v | ceil) end)}
+      end
+    end' "$NUMCTX_FILE")"
+  VERDICT="$(printf '%s' "$GUARD" | jq -r '.verdict')"
+  LINE_ORIG="$(printf '%s' "$SIGNAL_JSON" | jq -r '.line // "?"')"
+  if [[ "$VERDICT" == "demote" ]]; then
+    REF="$(printf '%s' "$GUARD" | jq -r '.ref')"
+    ALLOWED="$(printf '%s' "$GUARD" | jq -r '.allowed')"
+    SIGNAL_JSON="$(printf '%s' "$SIGNAL_JSON" \
+      | jq -c '.exec = "now" | .line = null
+               | .headline |= sub("wait@[0-9.,]+"; "now")')"
+    HEADLINE="$(printf '%s' "$SIGNAL_JSON" | jq -r '.headline')"
+    BODY="${BODY}
+⚠️ 押し目ガード: 参照価格 ${REF} の許容帯 (${ALLOWED}% = 1.5×ATR) 内に有効なアンカー (ma5/ma25/20日レンジ端) が無いため wait@${LINE_ORIG} を now に降格"
+  elif [[ "$VERDICT" == "snap" ]]; then
+    VALUE="$(printf '%s' "$GUARD" | jq -r '.value')"
+    NAME="$(printf '%s' "$GUARD" | jq -r '.name')"
+    if [[ "$VALUE" != "$LINE_ORIG" ]]; then
+      SIGNAL_JSON="$(printf '%s' "$SIGNAL_JSON" \
+        | jq -c --argjson v "$VALUE" '.line = $v
+                 | .headline |= sub("wait@[0-9.,]+"; "wait@" + ($v | tostring))')"
+      HEADLINE="$(printf '%s' "$SIGNAL_JSON" | jq -r '.headline')"
+      BODY="${BODY}
+📌 押し目ガード: 指値を ${NAME} ${VALUE} に吸着 (judge 出力は wait@${LINE_ORIG})"
+    fi
+  fi
+fi
 
 # --- 強制決済スコアの観測行を D1 から引く (judge には渡さない。投稿末尾に貼るだけ) -----
 # stance!=none の最新行があれば summary を取り出す。fetch 失敗・行なし・stance==none は空文字。

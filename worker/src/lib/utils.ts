@@ -52,6 +52,45 @@ export async function fetchHtml(
 	}
 }
 
+// ── HTML 部分切り出し ────────────────────────────────────────────────────────
+// cheerio.load はページ全体 (数十KB〜1MB超) を渡すと 1 回で数十ms以上の CPU を食い、
+// Workers の CPU 上限で cron ごと殺される (exceededCpu)。parse の前に対象ブロックだけを
+// indexOf 走査で切り出して 1 桁以上安くする。マーカーが見つからないページ (DOM 変更等) では
+// null を返し、呼び出し側はフルページの parse にフォールバックする — CPU より欠測回避を優先。
+
+// startMarker から、その後最初に現れる endMarker の末尾までを返す。
+export function sliceHtml(
+	html: string,
+	startMarker: string,
+	endMarker: string,
+): string | null {
+	const s = html.indexOf(startMarker);
+	if (s < 0) return null;
+	const e = html.indexOf(endMarker, s + startMarker.length);
+	if (e < 0) return null;
+	return html.slice(s, e + endMarker.length);
+}
+
+// keywords のいずれかを含む <table …>…</table> を出現順に連結して返す。
+// 対象サイト (kabutan) のテーブルは入れ子にならない前提 (入れ子だと内側の </table> で切れる)。
+export function sliceTables(
+	html: string,
+	...keywords: string[]
+): string | null {
+	const out: string[] = [];
+	let from = 0;
+	for (;;) {
+		const t = html.indexOf("<table", from);
+		if (t < 0) break;
+		const e = html.indexOf("</table>", t);
+		if (e < 0) break;
+		from = e + "</table>".length;
+		const frag = html.slice(t, from);
+		if (keywords.some((k) => frag.includes(k))) out.push(frag);
+	}
+	return out.length > 0 ? out.join("\n") : null;
+}
+
 // 記事日付文字列を YYYY-MM-DD に正規化 (published_at / R2キー用)。
 // kabutan は場所により年4桁・年2桁 (開示行の "26/07/02 17:00")・年なし ("06/18") が混在する:
 //   - 年4桁はそのまま、年2桁 (YY/MM/DD) は 2000+YY で補完。
@@ -183,6 +222,49 @@ if (import.meta.vitest) {
 			} finally {
 				restore();
 			}
+		});
+	});
+
+	describe("sliceHtml", () => {
+		const html =
+			"<head><title>t</title></head><div id='a'>body<span>x</span></div><footer>f</footer>";
+
+		it("startMarker から endMarker の末尾までを返す", () => {
+			expect(sliceHtml(html, "<div id='a'>", "</div>")).toBe(
+				"<div id='a'>body<span>x</span></div>",
+			);
+		});
+		it("endMarker は startMarker より後ろから探す", () => {
+			expect(sliceHtml(html, "<title", "</title>")).toBe("<title>t</title>");
+		});
+		it("マーカーが見つからなければ null (呼び出し側がフルページへフォールバック)", () => {
+			expect(sliceHtml(html, "<article", "</article>")).toBeNull();
+			expect(sliceHtml(html, "<div id='a'>", "</article>")).toBeNull();
+		});
+	});
+
+	describe("sliceTables", () => {
+		const html = [
+			"<p>head</p>",
+			"<table class='nav'><tr><td>menu</td></tr></table>",
+			"<table class='s_news_list'><tr><td>news1</td></tr></table>",
+			"<table><thead><th>PER</th></thead><tr><td>12.3</td></tr></table>",
+			"<p>tail</p>",
+		].join("\n");
+
+		it("keyword を含むテーブルだけを返す", () => {
+			expect(sliceTables(html, "s_news_list")).toBe(
+				"<table class='s_news_list'><tr><td>news1</td></tr></table>",
+			);
+		});
+		it("複数 keyword はいずれか一致で拾い、出現順に連結する", () => {
+			const frag = sliceTables(html, "s_news_list", "PER");
+			expect(frag).toContain("news1");
+			expect(frag).toContain("12.3");
+			expect(frag).not.toContain("menu");
+		});
+		it("一致するテーブルが無ければ null", () => {
+			expect(sliceTables(html, "stock_kabuka")).toBeNull();
 		});
 	});
 

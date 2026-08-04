@@ -1,8 +1,8 @@
-# 銘柄コンテキスト + 価格/地合い → Claude Code Action で暴落プリモーテム → Slack通知。
+# 銘柄コンテキスト + 価格/市場状況 → Claude Code Action で暴落プリモーテム → Slack通知。
 #
-# signal-judge とは独立した補助ワークフロー。Slack の /crash スラッシュコマンドを受けた Worker が
+# ticker-brief とは独立した補助ワークフロー。Slack の /crash スラッシュコマンドを受けた Worker が
 # repository_dispatch (event_type=crash-scenario、client_payload.ticker に単一銘柄) で起動する。
-# buy/sell 判定ではなく「その銘柄が崩れる道筋」を銘柄固有/マクロの両面で列挙して Slack に流す
+# 売買判断ではなく「その銘柄が崩れる道筋」を銘柄固有/マクロの両面で列挙して Slack に流す
 # (プリモーテムのルールは prompt にベタ書き、数値コンテキストは @ で取り込み、scenario blocks を
 # structured_output で返す)。投稿は後続ステップ (post-reply.sh)。**Issue は一切書き換えない**(出力は Slack のみ)。
 #
@@ -10,7 +10,7 @@
 # (= config/watchlist.ts の写経先を増やさない。Slack の銘柄ピッカーは Worker が WATCHLIST から
 #  動的生成するので写経不要)。
 #
-# 認証は Claude サブスク (OAuth): signal-judge.yml と同じ CLAUDE_CODE_OAUTH_TOKEN。
+# 認証は Claude サブスク (OAuth): ticker-brief.yml と同じ CLAUDE_CODE_OAUTH_TOKEN。
 #
 # 必要な設定 (Settings → Secrets and variables → Actions):
 #   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
@@ -19,7 +19,7 @@
 #   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
 # Worker 側の追加設定 (スラッシュコマンド受け口):
 #   secret   SLACK_SIGNING_SECRET     … Slack App の Signing Secret (/slack/* の署名検証に必須)
-#   GitHub App 認証 (GH_APP_*) は signal-judge の dispatch と共用。
+#   GitHub App 認証 (GH_APP_*) は ticker-brief の dispatch と共用。
 
 name: crash-scenario
 
@@ -60,7 +60,7 @@ jobs:
 
       # 数値コンテキスト (earnings/prices/daily/premarket/margin/銘柄コンテキスト) と需給イベント文脈
       # (event_context: SQ/指数リバランス/FOMC/日銀/ピア決算。メジャーSQ unwind や near macro print は
-      # 暴落の trigger になりうる) を Worker /judge-context が 1 call で正規化して返す。signal-judge と
+      # 暴落の trigger になりうる) を Worker /judge-context が 1 call で正規化して返す。ticker-brief と
       # 同じエンドポイント (暴落プリモーテムも同じ数値=レンジ位置/MA乖離/信用残/days_to_earnings から
       # fragility を読む)。skill は JSON を Read するだけ。
       - name: Build numeric context
@@ -106,8 +106,9 @@ jobs:
 
             **Secondary — what raises 確度 or sets the channel, never invents 銘柄固有 risk:**
 
-            - **`market_regime`** (`{ regime, stance, headline }`): a リスクオフ regime raises the 確度 of the
-              macro / リスクオフ scenarios and shortens their trigger horizon.
+            - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary. A backdrop
+              of broad weakness in it raises the 確度 of the macro scenarios and shortens their trigger horizon;
+              null → no fresh morning summary, skip.
             - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>` (SQ + 指数リバランス +
               nearby macro/peer); a `特になし` tail means no event fired — ignore it.
             - **`ticker_note`**: qualifies the other inputs, not a scenario of its own.
@@ -142,14 +143,23 @@ jobs:
             - A メジャーSQ unwind, a near macro print, or a near 海外SOX系ピア決算 each stands up as its own macro
               scenario, with `premarket.sox_change_pct` as a leading sign.
 
+            ## Web research (supplementary)
+
+            The collected data is primary. You may use WebSearch/WebFetch to firm up a scenario — a fresh
+            一次情報 (会社 IR/取引所/当局), 海外報道, or アナリスト見解 that sharpens a trigger or 先行サイン —
+            under these rules: at most 4 search+fetch calls total; only to corroborate a fault line you
+            already see in the inputs; cite the source (媒体名, 日付) in the scenario line; if you find
+            nothing solid, write nothing — never invent a source.
+
             ## Output
 
             Return the scenarios as structured output and stop; the schema fixes the shape.
-          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず Read のみ許可。
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず
+          # Read + WebSearch/WebFetch (追加取材) のみ許可。
           # --json-schema で出力の形を縛る。blocks = scenario + 総括 の Slack section 配列
           # (ヘッダブロックは post-reply.sh が前置する)。
           claude_args: >-
-            --model opus --effort high --allowedTools Read --max-turns 40
+            --model opus --effort high --allowedTools Read,WebSearch,WebFetch --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
               "required":["blocks"],

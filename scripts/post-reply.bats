@@ -109,7 +109,7 @@ payload() {
 
 # channel / thread_ts は thread-json から抜く。text のみ引数。kind は付けない
 @test "reply: pulls channel/thread_ts from thread-json, text from signal-file" {
-  printf '{"channel":"C123","thread_ts":"1718000000.0001","kind":"signal-judge","replies":[]}' \
+  printf '{"channel":"C123","thread_ts":"1718000000.0001","kind":"ticker-brief","replies":[]}' \
     >"$BATS_TEST_TMPDIR/t.json"
   printf '{"reply":"押し目で見てます"}' >"$BATS_TEST_TMPDIR/reply.json"
   run_pr reply "$BATS_TEST_TMPDIR/t.json" "$BATS_TEST_TMPDIR/reply.json"

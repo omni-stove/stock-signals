@@ -15,7 +15,7 @@ import { collectMargin } from "./margin";
 import { collectMarketNews } from "./market-news";
 import { collectNews } from "./news";
 import { collectPeerEarnings } from "./peer-earnings";
-import { listPositionUsers } from "./position-review";
+import { listPositionUsers } from "./position-report";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
 import { notifyNewsSlack, notifyParseFailure } from "./slack";
@@ -133,10 +133,11 @@ export async function runScheduled(
 	}
 	if (kind === "intake") {
 		// intake cron (8:30/12:30/18:30) では IR とニュースを両方収集する。
-		// 寄り前(8:30)のときだけ先に当日の地合いを D1 に取る (失敗しても収集は続行)。
-		// premarket が揃った直後に market-check (地合いゲート) も kick する。地合いは前段ゲート
-		// なので、下で発火する個別 signal-judge より「先」に Slack へ出す必要がある。schedule cron
-		// で別に撃つと signal-judge より後ろにずれるため、ここで premarket 取得後すぐに発火する。
+		// 寄り前(8:30)のときだけ先に当日の premarket を D1 に取る (失敗しても収集は続行)。
+		// premarket が揃った直後に market-brief (朝のマーケットブリーフ) も kick する。市場全体の
+		// 事実サマリーなので、下で発火する個別 ticker-brief より「先」に Slack へ出す必要がある。
+		// schedule cron で別に撃つと ticker-brief より後ろにずれるため、ここで premarket 取得後
+		// すぐに発火する。
 		if (event.cron === "30 23 * * *") {
 			await collectBackdrop(env).catch((e) =>
 				console.error("backdrop failed:", e),
@@ -144,10 +145,10 @@ export async function runScheduled(
 			// 銘柄非依存なので client_payload は空。App 認証が無ければ no-op (false)。
 			await dispatchEventPayload(
 				env,
-				"market-check",
+				"market-brief",
 				{},
 				event.scheduledTime,
-			).catch((e) => console.error("market-check dispatch failed:", e));
+			).catch((e) => console.error("market-brief dispatch failed:", e));
 			// 重要イベント (watchlist 決算/FOMC/日銀/ピア決算/SQ/リバランス) の事前リマインダー。
 			// 3日前・前日・当日の朝にだけ Slack に1本流す (該当なしの朝は無音)。失敗しても収集は続行。
 			await remindUpcomingEvents(env, event.scheduledTime).catch((e) =>
@@ -155,9 +156,9 @@ export async function runScheduled(
 			);
 		}
 		// intake (寄り前 8:30 / 引け後 20:00) は新規の有無によらず全銘柄を signal-update する。
-		// fresh だけを撃つと、出来高/話題の薄い銘柄 (例: 6857 が数日ニュース 0) が一度も判定されず
-		// 取り残されるため。signal-judge はワークフロー側で無条件に発火する (context-builder.yml の
-		// dispatch ステップ) ので、価格/地合いの変化だけは寄り前/引け後ごとに必ず拾える。場中
+		// fresh だけを撃つと、出来高/話題の薄い銘柄 (例: 6857 が数日ニュース 0) のコンテキストが
+		// 一度も再生成されず取り残されるため。ticker-brief は新着材料があった銘柄だけ発火する
+		// (context-builder.yml の dispatch ステップが status=ok のときだけ撃つ)。場中
 		// (prices, 5分毎) は LLM コストを抑えるため新規ベース (下の分岐)。
 		//
 		// dispatch は 2 段で撃つ:
@@ -168,19 +169,19 @@ export async function runScheduled(
 		//   2) 収集後 (下の fresh 再dispatch): この回の収集で入った新規 IR/ニュースを「同じ回」の
 		//      context-builder に乗せる。1) だけだと context-builder が /context-input を引く時点で
 		//      新規がまだ articles に無く、反映が次の intake (半日後) にずれる (cron → 収集 →
-		//      context → judge の順序保証)。concurrency (cancel-in-progress) が銘柄単位なので、
+		//      context → brief の順序保証)。concurrency (cancel-in-progress) が銘柄単位なので、
 		//      1) の走行中ジョブは 2) が上書きし二重 LLM にはならない。
-		// 寄り前 (8:30) の地合い dispatch (market-check) は上で既に撃ち終えており、順序
-		// (地合い→個別) も保たれる。
+		// 寄り前 (8:30) の market-brief dispatch は上で既に撃ち終えており、順序
+		// (市場全体→個別) も保たれる。
 		await dispatchSignalUpdate(env, WATCHLIST);
 		// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) のいずれかに新規があった
 		// 銘柄をまとめて signal-report を起動する。適時開示は /pull の ir カーソルに合流する。
 		const ir = await collectAll(env, null, DEFAULT_LIMIT);
 		const disc = await collectDisclosures(env, null);
 		const news = await collectNews(env, null);
-		// 市場テーマニュース (半導体/AI/金利/米国市場) も収集する。market-check が /market-context
+		// 市場テーマニュース (半導体/AI/金利/米国市場) も収集する。market-brief が /market-context
 		// 経由で読むほか、新規見出しに watchlist 銘柄の言及 (matchTickers) があればその銘柄を
-		// freshTickers に合流させて個別判定も起動する (例: 「サムスン、HBM増産」→ 6857)。
+		// freshTickers に合流させて個別ブリーフも起動する (例: 「サムスン、HBM増産」→ 6857)。
 		// 失敗しても intake の主収集は壊さない (catch でログのみ)。
 		const mnews = await collectMarketNews(env).catch((e) => {
 			console.error("market-news failed:", e);
@@ -326,23 +327,24 @@ export async function runScheduled(
 			console.error("forced-liquidation failed:", err);
 			return null;
 		});
-		// ポジション評価は当夜に GitHub Actions (position-review) へ委譲する。建玉を持つユーザーが
-		// いれば repository_dispatch (position-review) を 1 回撃つだけ。ワークフローが /position-users で
-		// userId を引き、ユーザーごとに /position-context を読んで LLM 評価し各ユーザーへ DM する。
-		// signals は intake/場中で溜まっており、引け後に出揃った最新足 close を参照現値にする。建玉ゼロや
-		// App 認証情報未設定なら撃たない。失敗しても eod の主収集は壊さない (catch でログのみ)。
+		// ポジション事実レポートは当夜に GitHub Actions (position-report) へ委譲する。建玉を持つ
+		// ユーザーがいれば repository_dispatch (position-report) を 1 回撃つだけ。ワークフローが
+		// /position-users で userId を引き、ユーザーごとに /position-context を読んで LLM が建玉に
+		// 関係する材料を紐付け各ユーザーへ DM する。briefs は intake/場中で溜まっており、引け後に
+		// 出揃った最新足 close を参照現値にする。建玉ゼロや App 認証情報未設定なら撃たない。
+		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
 		const pr = await (async () => {
 			const users = await listPositionUsers(env);
 			if (users.length === 0) return { dispatched: false, users: 0 };
 			const ok = await dispatchEventPayload(
 				env,
-				"position-review",
+				"position-report",
 				{},
 				event.scheduledTime,
 			);
 			return { dispatched: ok, users: users.length };
 		})().catch((err) => {
-			console.error("position-review dispatch failed:", err);
+			console.error("position-report dispatch failed:", err);
 			return null;
 		});
 		console.log(

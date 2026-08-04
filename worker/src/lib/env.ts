@@ -36,7 +36,7 @@ export interface Env {
 	//   設定: npx wrangler secret put SLACK_BOT_TOKEN
 	SLACK_BOT_TOKEN?: string;
 	// 解析結果/返答の投稿先 Slack チャンネルID (例 C0123ABCD)。/slack/post で channel 省略時に使う。
-	// signal-judge/crash-scenario の投稿先 = 返信を受けるチャンネル。Secret でも Var でも可。
+	// ticker-brief/crash-scenario の投稿先 = 返信を受けるチャンネル。Secret でも Var でも可。
 	//   設定: npx wrangler secret put SLACK_REPLY_CHANNEL  (または wrangler.toml の [vars])
 	SLACK_REPLY_CHANNEL?: string;
 	// 銘柄コンテキスト (contexts テーブル) 更新時に living document 全文を投稿する Slack チャンネルID。

@@ -40,11 +40,11 @@ app.route("/run", run);
 app.route("/latest", latest);
 app.route("/", pull); // /pull, /pull-news
 app.route("/", context); // /context (GET=read, POST=upsert)
-app.route("/", judgeContext); // /judge-context (signal-judge/crash/slack-reply 用バンドル)
+app.route("/", judgeContext); // /judge-context (ticker-brief/crash/slack-reply 用バンドル)
 app.route("/", contextInput); // /context-input (context-builder 用バンドル)
-app.route("/", marketContext); // /market-context (market-check 用バンドル)
+app.route("/", marketContext); // /market-context (market-brief 用バンドル)
 app.route("/", threadContext); // /thread-context (slack-reply 用バンドル)
-app.route("/", position); // /position-users, /position-context (position-review 用バンドル)
+app.route("/", position); // /position-users, /position-context (position-report 用バンドル)
 app.route("/", misc); // /dispatch-test, /test-slack
 
 // 未捕捉例外を一元処理する。各ルートが投げる HTTPException (res に Response.json を載せている)

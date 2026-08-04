@@ -1,13 +1,13 @@
-// Cloudflare Worker: Slack スラッシュコマンド (/crash, /signal) の受け口。
+// Cloudflare Worker: Slack スラッシュコマンド (/crash, /brief) の受け口。
 //
-// 経路: Slack で `/crash` または `/signal` → POST /slack/command (このルート)。
+// 経路: Slack で `/crash` または `/brief` → POST /slack/command (このルート)。
 //   - 引数あり (`/crash 285A`)         → その銘柄で即 repository_dispatch (該当 event_type)。
 //   - 引数なし / 未知コード (`/crash`) → views.open で銘柄ピッカー modal を開く。modal 内の
 //       銘柄ボタンを押すと block_actions が POST /slack/interact に届き、そこで dispatch +
 //       views.update で結果文へ差し替える (Submit ボタンは持たず、押した瞬間に発火する)。
 //       ボタン平置きはスマホ最適化 (プルダウンの段数・スクロール探しを無くす)。
 //   コマンドの違い (どの解析を撃つか / 文言 / ピッカーの value 接頭辞) は COMMANDS で持つ。
-//   /crash → crash-scenario (暴落プリモーテム)、/signal → signal-judge (buy/sell 判定)。
+//   /crash → crash-scenario (暴落プリモーテム)、/brief → ticker-brief (材料ブリーフ)。
 //
 // 認証: Bearer (SYNC_TOKEN) は Slack が付けられないので使わない。なりすまし防止は
 //   Slack 署名検証 (verifySlackSignature) のみ。そのため index.ts では /slack/* を
@@ -201,8 +201,8 @@ async function verified(
 	return { raw };
 }
 
-// POST /slack/command : スラッシュコマンド (/crash, /signal, /context, /position, /profile, /mystatus) の受け口。
-// form.command (例 "/crash") の先頭 / を外して分岐する。/crash /signal は COMMANDS を引いて
+// POST /slack/command : スラッシュコマンド (/crash, /brief, /context, /position, /profile, /mystatus) の受け口。
+// form.command (例 "/crash") の先頭 / を外して分岐する。/crash /brief は COMMANDS を引いて
 // 解析を dispatch する。/context は D1 の living context を context チャンネルへ流す (dispatch しない別系統)。
 // /position /profile は dispatch ではなく登録 modal を開く (別系統)。/mystatus は登録済みの profile/建玉を
 // 本人に ephemeral で確認表示する読み取り専用 (dispatch も modal も無い)。
@@ -365,7 +365,7 @@ slack.post("/slack/command", async (c) => {
 const REPLY_EVENT_TYPE = "slack-reply";
 
 // POST /slack/events : Slack Events API の受け口 (message.channels)。
-// 解析結果 (signal-judge / crash-scenario) の投稿にスレッド返信されたら、その投稿の ts で
+// 解析結果 (ticker-brief / crash-scenario) の投稿にスレッド返信されたら、その投稿の ts で
 // slack_threads を引いて銘柄を復元し、slack-reply ワークフローを dispatch する。Action が
 // 銘柄コンテキスト+数値+スレッド履歴を読んで返答を生成し、同スレッドへ投稿する。
 //

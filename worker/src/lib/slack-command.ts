@@ -1,4 +1,4 @@
-// Slack スラッシュコマンド (/crash, /signal) の純粋ロジック。
+// Slack スラッシュコマンド (/crash, /brief) の純粋ロジック。
 // ルート (routes/slack.ts) は署名検証・D1・dispatch を担い、view 組み立て・コマンド定義・
 // イベント判定といった副作用のない部分はここに集約してテストを同伴させる。
 
@@ -29,11 +29,11 @@ export const COMMANDS: Record<string, Command> = {
 		failed: (t) =>
 			`${t} の起動に失敗しました (GitHub App 認証 / dispatch を確認してください)。`,
 	},
-	signal: {
-		eventType: "signal-judge",
-		pick: "buy/sell 判定を実行する銘柄を選んでください。",
+	brief: {
+		eventType: "ticker-brief",
+		pick: "材料ブリーフを実行する銘柄を選んでください。",
 		fired: (t) =>
-			`📈 ${t} の buy/sell 判定を起動しました。結果は数分後にこのチャンネルへ届きます。`,
+			`📰 ${t} の材料ブリーフを起動しました。結果は数分後にこのチャンネルへ届きます。`,
 		failed: (t) =>
 			`${t} の起動に失敗しました (GitHub App 認証 / dispatch を確認してください)。`,
 	},
@@ -44,7 +44,7 @@ export const COMMANDS: Record<string, Command> = {
 export const BLOCK_ID = "ticker_block";
 export const ACTION_ID = "ticker_select";
 // callback_id は "<PICKER_CALLBACK_ID>:<cmd>"。view_submission には元コマンドの手掛かりが
-// 残らないので、どの解析 (signal/crash) を撃つかを callback_id に埋めて往復させる。
+// 残らないので、どの解析 (brief/crash) を撃つかを callback_id に埋めて往復させる。
 // pickerView が組み立て、interact 側は ":" split で cmd を取るだけなので export 不要。
 const PICKER_CALLBACK_ID = "ticker_picker";
 
@@ -72,7 +72,7 @@ function tickerOptions() {
 // 置き、Submit ボタンを持つ。Submit を押すと view_submission が /slack/interact に飛び、そこで dispatch
 // したうえで response_action: "clear" を返すと modal が自動で閉じる (block_actions では clear が効かず
 // プログラムから modal を閉じる正規 API も無いため、Submit 方式にして閉じる)。
-// どの解析 (signal/crash) を撃つかは callback_id "<PICKER_CALLBACK_ID>:<cmd>" に埋めて往復させる。
+// どの解析 (brief/crash) を撃つかは callback_id "<PICKER_CALLBACK_ID>:<cmd>" に埋めて往復させる。
 export function pickerView(cmd: string, headline: string) {
 	return {
 		type: "modal",
@@ -1075,15 +1075,15 @@ if (import.meta.vitest) {
 	});
 
 	describe("COMMANDS", () => {
-		it("crash / signal を別々の event_type に対応づける", () => {
+		it("crash / brief を別々の event_type に対応づける", () => {
 			expect(COMMANDS.crash.eventType).toBe("crash-scenario");
-			expect(COMMANDS.signal.eventType).toBe("signal-judge");
+			expect(COMMANDS.brief.eventType).toBe("ticker-brief");
 		});
 	});
 
 	describe("pickerView", () => {
 		it("modal 型で見出し section と Submit を持ち、callback_id に cmd を埋める", () => {
-			const view = pickerView("signal", "見出し") as {
+			const view = pickerView("brief", "見出し") as {
 				type: string;
 				callback_id: string;
 				submit?: { text: string };
@@ -1100,7 +1100,7 @@ if (import.meta.vitest) {
 			};
 			expect(view.type).toBe("modal");
 			// callback_id は "<PICKER_CALLBACK_ID>:<cmd>"。view_submission で cmd を復元する。
-			expect(view.callback_id).toBe(`${PICKER_CALLBACK_ID}:signal`);
+			expect(view.callback_id).toBe(`${PICKER_CALLBACK_ID}:brief`);
 			// Submit を持つ (押すと view_submission が飛び、dispatch 後に clear で閉じる)。
 			expect(view.submit).toBeDefined();
 			const headline = view.blocks[0];

@@ -1,4 +1,4 @@
-# 新規IR/ニュース → Claude Code Action で「銘柄コンテキスト(D1)」を更新 → signal-judge を起動。
+# 新規IR/ニュース → Claude Code Action で「銘柄コンテキスト(D1)」を更新 → ticker-brief を起動。
 #
 # 2段アーキテクチャの前段。Worker (Cloudflare) が IR(寄り前 8:30 / 昼 12:30 / 引け後 20:00) と
 # per_ticker ニュース(IR時刻 + 場中5分毎)を取得し、どちらかに新規があった銘柄ごとに
@@ -8,12 +8,13 @@
 # 起動後は step が Worker /context-input を 1 call で引き(既存コンテキスト本文 + 2カーソル以降の
 # 新規 IR/ニュースを正規化済み JSON で同梱)、再生成ルールを prompt にベタ書きした Claude Code Action
 # がそれを @ で読んで銘柄の持続コンテキスト(経営判断/商品ラインナップ/技術ロードマップ + 直近の重大
-# トピック要約)を structured_output で返す。判定(buy/sell)はここでは出さない。後続ステップ
+# トピック要約)を structured_output で返す。売買判断はここでは出さない。後続ステップ
 # (post-context.sh) が D1 (Worker /context) を更新し全文を Slack (SLACK_CONTEXT_CHANNEL) に投稿、
-# 別ステップが repository_dispatch (event_type=signal-judge) で後段の判定を起動する。
+# 別ステップが status=ok (新着材料あり) のときだけ repository_dispatch (event_type=ticker-brief) で
+# 後段の材料ブリーフを起動する。
 #
-# 判定は signal-judge.yml が担う(D1 コンテキスト+価格/地合いを読み Slackに通知)。コンテキストには
-# 判定を書かないので、judge → context の編集ループは物理的に発生しない。
+# 材料ブリーフは ticker-brief.yml が担う(D1 コンテキスト+価格/市場ブリーフを読み Slackに通知)。
+# コンテキストにはブリーフを書かないので、brief → context の編集ループは物理的に発生しない。
 #
 # 認証は Claude サブスク (OAuth) 方式: ローカルで `claude setup-token` → 生成トークンを
 # リポジトリ Secret CLAUDE_CODE_OAUTH_TOKEN に設定する。
@@ -55,7 +56,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write   # signal-judge を repos/.../dispatches で起動するのに書き込みトークンが要る
+  contents: write   # ticker-brief を repos/.../dispatches で起動するのに書き込みトークンが要る
   id-token: write   # claude-code-action@v1 が OIDC トークン取得に要求する
 
 jobs:
@@ -248,17 +249,19 @@ jobs:
           SLACK_CONTEXT_CHANNEL: ${{ vars.SLACK_CONTEXT_CHANNEL }}
           CONTEXT_JSON: ${{ steps.builder.outputs.structured_output }}
 
-      # 新規 IR/ニュースの有無によらず、skill 実行後は必ず signal-judge を 1 回発火する。
-      # 発火を skill (post-context.sh = 新規があったときだけ走る) から切り離してここに一本化したのは、
-      # 新規が無い銘柄でも価格/地合いの変化を毎営業日ひろって判定を回したいため
-      # (出来高/話題の薄い銘柄が「新規ニュース 0 = 判定も来ない」状態に陥っていた)。
-      # if: always() で skill が失敗・キャンセルされても判定だけは回す。
-      # Worker 側 intake cron も新規有無によらず全銘柄を signal-update する (cron.ts) ので、
-      # 寄り前/引け後ごとに全銘柄が確実に judge される。
-      - name: Dispatch signal-judge (unconditional)
-        if: always()
-        run: bash scripts/dispatch-judge.sh "$TICKER"
+      # 新着材料があった (status=ok = コンテキストを再生成した) ときだけ ticker-brief を発火する。
+      # 材料ブリーフは新着材料の解説なので、no-update (新規 0) の回は出すものが無く発火しない。
+      # 手動の force 再生成 (workflow_dispatch) は新規 0 でも status=ok になるので必ずブリーフが続く。
+      - name: Dispatch ticker-brief (on new material)
+        run: |
+          status="$(printf '%s' "$CONTEXT_JSON" | jq -r '.status // empty' 2>/dev/null || true)"
+          if [ "$status" = "ok" ]; then
+            bash scripts/dispatch-brief.sh "$TICKER"
+          else
+            echo "ticker-brief skipped (status=${status:-unreadable})"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
+          CONTEXT_JSON: ${{ steps.builder.outputs.structured_output }}

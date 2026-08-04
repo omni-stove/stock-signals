@@ -1,0 +1,185 @@
+# ユーザーの建玉 × 最新材料ブリーフ (briefs) × 当日 close → Claude Code Action でポジション事実レポート → 各ユーザーへ DM。
+#
+# 引け後 (eod cron) に Worker が建玉を持つユーザーがいれば repository_dispatch (event_type=position-report)
+# を 1 回撃つ。このワークフローはまず fan-out ジョブで Worker /position-users から userId 配列を引き、
+# report ジョブを userId ごとに matrix 展開する (max-parallel: 1 = 1 ユーザーずつ直列、OAuth レート安全側)。
+#
+# 各 report ジョブは Worker /position-context?userId= で「全建玉 × 最新材料ブリーフ × close × 含み損益」
+# を 1 JSON で受け取り (数値はすべて Worker 側=決定論で算出済み)、レポートのルールを prompt にベタ書きした
+# Claude Code Action がそれを @ で読んで、ポートフォリオの事実 1 行 + 各建玉に関係する材料・リスクを
+# structured_output で返す。売買アクション (利確/損切り/増し玉) や緊急度は出さない — 判断は読み手が行う。
+# 建玉の事実行 (建値/現値/含み損益) は post-position-report.sh が posctx から決定論で組む。
+# 投稿 (DM) は後続ステップ (post-position-report.sh)。**このワークフローは briefs/positions を一切
+# 書き換えない** (出力は Slack DM のみ)。
+#
+# 認証は Claude サブスク (OAuth) 方式: ローカルで `claude setup-token` → 生成トークンを
+# リポジトリ Secret CLAUDE_CODE_OAUTH_TOKEN に設定する。
+#
+# 必要な設定 (Settings → Secrets and variables → Actions):
+#   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
+#   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
+#   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+# DM 投稿は post-position-report.sh が Worker /slack/post に投げる (Bot 投稿)。Worker 側の追加設定:
+# SLACK_BOT_TOKEN。未設定 (503) なら投稿スキップ。
+# 発火元 (eod cron) は GitHub App ("omnistove-internal-auth") で repos/.../dispatches を叩く。
+
+name: position-report
+
+on:
+  # eod cron (Worker) が建玉ユーザーありのとき叩く。手動でも実行できる (検証用)。
+  repository_dispatch:
+    types: [position-report]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # claude-code-action@v1 が OIDC トークン取得に要求する
+
+jobs:
+  # 建玉を持つユーザーの userId 配列を Worker から引き、report の matrix に渡す。
+  # 対象ゼロなら users=[] を出し、report は matrix 空でスキップされる。
+  fan-out:
+    runs-on: ubuntu-latest
+    outputs:
+      users: ${{ steps.collect.outputs.users }}
+    steps:
+      - name: Collect position users
+        id: collect
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          users="$(curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/position-users" | jq -c '.users // []')"
+          echo "users=$users" >> "$GITHUB_OUTPUT"
+          echo "::notice::position-report targets: $users"
+
+  report:
+    needs: fan-out
+    # 対象ユーザーが 1 人以上いるときだけ走る (空配列なら matrix が空でジョブ自体がスキップ)。
+    if: ${{ needs.fan-out.outputs.users != '[]' && needs.fan-out.outputs.users != '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # 1 ユーザーの失敗で他ユーザーのレポートを巻き込まない
+      max-parallel: 1 # 1 ユーザーずつ直列 (OAuth レート安全側)
+      matrix:
+        userId: ${{ fromJSON(needs.fan-out.outputs.users) }}
+    # 同一ユーザーのレポートは 1 本に抑え、走行中に新しい要求が来たら古いジョブをキャンセルする
+    # (DM を出すだけで状態を持たないのでキャンセルしても整合は崩れない)。
+    concurrency:
+      group: position-report-${{ matrix.userId }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+
+      # Action 実行時は CLAUDE.md / AGENTS.md の指示がレポートの邪魔になりうるので退避する (共通アクション)。
+      - uses: ./.github/actions/stash-claude-md
+
+      # ユーザーの全建玉 × 最新材料ブリーフ × 当日 close × 含み損益を Worker /position-context が
+      # 1 call で正規化して返す。数値はすべて Worker 側 (決定論的) で算出済み。skill には curl を
+      # 叩かせず材料の紐付けだけをさせる。userId が実在しない / 建玉ゼロなら 404 でここが落ち、当該
+      # ユーザーはスキップされる (fail-fast: false なので他ユーザーには波及しない)。JSON は特殊文字を
+      # 含むので prompt に直接埋めず、ファイルに書いて skill にパスを渡す。
+      - name: Build position context
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # matrix.userId は /position-users が返した実在 userId。env 経由で run へ渡す
+          # (prompt へは展開せず、context JSON にだけ載る userId を skill が読む)。
+          USER_ID: ${{ matrix.userId }}
+        run: |
+          curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/position-context?userId=${USER_ID}" > "$RUNNER_TEMP/posctx.json"
+
+      - name: Run position-report
+        id: report
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # eod cron 発の repository_dispatch は GitHub App ("omnistove-internal-auth") 発なので
+          # その Bot を許可する。手動/github.token 経由の github-actions[bot] も許す。
+          allowed_bots: "omnistove-internal-auth,github-actions[bot]"
+          # レポートのルールは prompt にベタ書きする (skill ファイルは持たない)。実行時に変わる建玉/材料の
+          # 数値コンテキストだけを @ でファイルから取り込む。skill には curl/sh を叩かせない (投稿は次ステップ):
+          # Bash は渡さず Read のみ許可、ファイルも書かせない。
+          prompt: |
+            # position-report — 1 ユーザーの保有ポジション事実レポート
+
+            You read one user's holdings, each tagged with that name's latest 材料ブリーフ and the day's
+            close, and return the **facts that bear on each position** — the fresh materials and standing
+            risks a holder of this name should know tonight. **Never output an action or a verdict**: no
+            利確/損切り/増し玉/継続, no urgency grade, no "should". The deterministic facts (建値, 現値,
+            含み損益) are rendered by the posting step — do not restate them; add only what the numbers
+            alone don't say.
+
+            Report on what you can see now — the brief, 含み損益, account type — never hindsight. Do not
+            invent a market view; when a position has no brief (`brief: null`), give it an empty `notes`.
+
+            ## Inputs
+
+            The position context JSON is embedded inline below. Do not post to Slack; do not run any
+            script; do not write any file — return structured output and stop.
+
+            How to read each position row:
+
+            - **`side`** (long=買建 / short=売建), **`account`** (cash=現物 / margin=信用), **`avgPrice`** 建値,
+              **`price`** 参照現値 (当日 close; null なら現値不明), **`pnlPct`** 含み損益%
+              (long は上昇で益 / short は下落で益; null なら算出不可).
+            - **`brief`** (null when none): `headline` + `body` = that name's latest 材料ブリーフ (新着材料の
+              要約と影響分析), `briefedAt` = when it was saved. Lead on it for `notes`; an old `briefedAt`
+              (days back) means the materials may predate today's tape — say so rather than presenting them
+              as fresh.
+
+            ## Writing `notes` (per position)
+
+            0–3 lines per holding: which fresh material or risk in the brief bears on *this* 建玉 and how
+            it relates to the position's situation (信用 with a loss makes a 需給 risk more relevant; a
+            large 含み益 makes a fading driver worth naming). Facts and their relevance only. A position
+            whose brief adds nothing gets an empty array — do not pad.
+
+            ## Writing `portfolio` (one string)
+
+            One factual Japanese line across all positions: セクター/方向の偏り, 含み損益の傾き, how many
+            names have fresh materials tonight. No recommendation.
+
+            ## ポジションコンテキスト
+
+            @${{ runner.temp }}/posctx.json
+          # --json-schema で出力の形を縛る。portfolio=事実 1 行、positions[]=建玉ごとの材料メモ。
+          # 検証済み JSON は steps.report.outputs.structured_output で受ける。skill には curl/sh を
+          # 叩かせない (投稿は次ステップ): Bash は渡さず Read のみ許可、ファイルも書かせない。
+          claude_args: >-
+            --model opus --effort high --allowedTools Read --max-turns 40
+            --json-schema '{
+              "type":"object","additionalProperties":false,
+              "required":["portfolio","positions"],
+              "properties":{
+                "portfolio":{"type":"string","description":"ポートフォリオ全体の事実 1 行 (日本語)。偏り・含み損益の傾き・新着材料のある銘柄数。推奨は書かない"},
+                "positions":{"type":"array","minItems":1,"items":{
+                  "type":"object","additionalProperties":false,
+                  "required":["ticker","notes"],
+                  "properties":{
+                    "ticker":{"type":"string","description":"銘柄コード (入力と一致。全建玉分を必ず出す)"},
+                    "notes":{"type":"array","items":{"type":"string"},"maxItems":3,"description":"この建玉に関係する新着材料・リスク要因 0〜3 行 (日本語、事実のみ)。無ければ空配列"}
+                  }
+                }}
+              }
+            }'
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+
+      # skill の構造化出力 (structured_output) を当該ユーザーへ DM 投稿する (curl/jq/blocks 組み立て/
+      # フォールバックは script が持つ)。第1引数 = DM 先 userId、第2引数 = レポート JSON、
+      # 第3引数 = LLM に渡したのと同じ posctx。建玉の事実行 (建値/現値/含み損益) は script が
+      # posctx から決定論で組む。
+      - name: Post report DM
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          USER_ID: ${{ matrix.userId }}
+          REPORT_JSON: ${{ steps.report.outputs.structured_output }}
+        run: |
+          printf '%s' "$REPORT_JSON" > "$RUNNER_TEMP/report.json"
+          bash scripts/post-position-report.sh "$USER_ID" "$RUNNER_TEMP/report.json" "$RUNNER_TEMP/posctx.json"

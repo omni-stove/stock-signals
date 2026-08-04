@@ -1,7 +1,7 @@
-# Slack スレッド返信 → 銘柄コンテキスト+価格/地合い+スレッド履歴 → Claude Code Action で
+# Slack スレッド返信 → 銘柄コンテキスト+価格/市場状況+スレッド履歴 → Claude Code Action で
 # 返答生成 → 同じ Slack スレッドへ投稿。
 #
-# signal-judge / crash-scenario が Bot トークン (Worker /slack/post) で投稿した解析結果に、
+# ticker-brief / crash-scenario が Bot トークン (Worker /slack/post) で投稿した解析結果に、
 # ユーザーがスレッド返信すると、Worker の /slack/events が thread_ts→銘柄を D1 で復元して
 # repository_dispatch (event_type=slack-reply) で起動する。client_payload に
 # ticker / kind(元の解析種別) / channel / thread_ts / text(ユーザーの返信本文) が入る。
@@ -9,7 +9,7 @@
 #
 # 起動は Slack 専用 (GitHub 画面からの手動実行は持たない = watchlist.ts の写経先を増やさない)。
 #
-# 認証は Claude サブスク (OAuth): signal-judge.yml と同じ CLAUDE_CODE_OAUTH_TOKEN。
+# 認証は Claude サブスク (OAuth): ticker-brief.yml と同じ CLAUDE_CODE_OAUTH_TOKEN。
 #
 # 必要な設定 (Settings → Secrets and variables → Actions):
 #   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
@@ -17,7 +17,7 @@
 #   secret   SLACK_BOT_TOKEN          … xoxb- トークン。スレッド履歴取得 (conversations.replies) に必須
 #   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
 # Worker 側の追加設定: SLACK_BOT_TOKEN / SLACK_REPLY_CHANNEL / SLACK_SIGNING_SECRET。
-#   GitHub App 認証 (GH_APP_*) は signal-judge の dispatch と共用。
+#   GitHub App 認証 (GH_APP_*) は ticker-brief の dispatch と共用。
 
 name: slack-reply
 
@@ -57,7 +57,7 @@ jobs:
           fi
 
       # 数値コンテキスト (earnings/prices/daily/premarket/margin/銘柄コンテキスト/event_context) を
-      # Worker /judge-context が 1 call で正規化して返す。signal-judge と同じエンドポイント。
+      # Worker /judge-context が 1 call で正規化して返す。ticker-brief と同じエンドポイント。
       - name: Build numeric context
         run: |
           curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
@@ -122,7 +122,8 @@ jobs:
             now; never on hindsight or a later result.
 
             The **thread JSON** is `{ channel, thread_ts, kind, replies: [...], positions }`. `replies` is
-            `[{ user, text, ts }, ...]`; `kind` (`signal-judge` / `crash-scenario`) is what the user is replying to; the last `replies` entry is the
+            `[{ user, text, ts }, ...]`; `kind` (`ticker-brief` / `crash-scenario`, older threads may carry
+            `signal-judge` — treat as `ticker-brief`) is what the user is replying to; the last `replies` entry is the
             question to answer, the earlier ones the original analysis and any back-and-forth. Empty `replies` →
             ask what they want to know, in one line, and stop.
 
@@ -153,16 +154,26 @@ jobs:
             ## What to do
 
             - Answer the user's actual question; don't re-run the whole analysis unless asked. If they push
-              back on the call, weigh their point against the data honestly — concede where they're right, hold
-              where the data holds, and say which. Don't shift your earlier direction to please them.
-            - When holdings are present, weigh the answer against the user's own entry, size, and unrealized
-              P&L, not just the generic call. Don't assume holdings beyond what's registered.
+              back on a reading, weigh their point against the data honestly — concede where they're right,
+              hold where the data holds, and say which.
+            - **You provide research and facts, not trading calls.** Do not tell the user to buy, sell, 利確,
+              損切り, or size a position — even when asked "should I". Lay out the materials, numbers, and
+              risks that bear on their question and leave the decision to them; say so plainly when they ask
+              for a verdict.
+            - When holdings are present, relate the facts to the user's own entry, size, and unrealized
+              P&L. Don't assume holdings beyond what's registered.
             - When `profile` is set, frame the answer to the user's risk tolerance, hold style, size cap, and
-              特記事項. Don't override the data — surface where their preference and the call diverge.
-            - Stay consistent with the original `kind`: a signal-judge thread is about the buy/sell direction
-              and 水準; a crash-scenario thread is about the crash paths, triggers, and defenses. Don't
+              特記事項. Don't override the data — surface where their preference and the data diverge.
+            - Stay consistent with the original `kind`: a ticker-brief thread is about the materials and
+              their impact; a crash-scenario thread is about the crash paths, triggers, and defenses. Don't
               silently switch frames.
             - Keep it to a few sentences unless they asked for depth; no preamble.
+
+            ## Web research (supplementary)
+
+            The collected data is primary. You may use WebSearch/WebFetch when the user's question needs a
+            fact the inputs don't carry — at most 4 search+fetch calls total; cite the source (媒体名, 日付);
+            if you find nothing solid, say so — never invent a source.
 
             ## Output
 
@@ -175,10 +186,11 @@ jobs:
             ## 数値コンテキスト
 
             @${{ runner.temp }}/numctx.json
-          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず Read のみ許可。
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず
+          # Read + WebSearch/WebFetch (追加取材) のみ許可。
           # --json-schema で出力の形を縛る。reply = 同スレッドへ貼る返信本文 (日本語)。
           claude_args: >-
-            --model opus --effort high --allowedTools Read --max-turns 40
+            --model opus --effort high --allowedTools Read,WebSearch,WebFetch --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
               "required":["reply"],

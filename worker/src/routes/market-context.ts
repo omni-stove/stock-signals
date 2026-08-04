@@ -1,11 +1,11 @@
-// Cloudflare Worker: market-check に渡す地合い (market regime) コンテキストを 1 call で返す。
+// Cloudflare Worker: market-brief (朝のマーケットブリーフ) に渡す市場コンテキストを 1 call で返す。
 //
 //   GET /market-context?now=<ISO8601 任意>
 //
 // 取得は D1 直読み。出力構造:
 //   { asof, market_phase, event_context, premarket, live_indexes, sectors, market_news }
 //
-// premarket は judge-context と違い us_indexes / date も載せる (市場全体の地合い判定に使うため)。
+// premarket は judge-context と違い us_indexes / date も載せる (市場全体のマーケットブリーフに使うため)。
 // live_indexes は場中に同時進行で動く指数 (日経225/KOSPI) の最新現値 (premarket=前夜確定 と対)。
 
 import { desc, eq } from "drizzle-orm";

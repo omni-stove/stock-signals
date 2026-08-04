@@ -45,7 +45,7 @@ export const articles = sqliteTable(
 // ── market_news (銘柄に紐付かない市場テーマニュース。PK = url) ───────────────
 // 株探の市場ニュース総合 (https://kabutan.jp/news/marketnews/) から、半導体/AI/金利/米国市場の
 // テーマに当たった見出しだけを拾う。銘柄が確定しない (= articles.ticker を持てない) ため別テーブル。
-// 地合い判定 (market-check) が /market-context 経由で最新数件を読む。重複排除は url PK + INSERT OR IGNORE。
+// マーケットブリーフ (market-brief) が /market-context 経由で最新数件を読む。重複排除は url PK + INSERT OR IGNORE。
 // topic は当たったテーマタグ (semi|ai|rates|us を "," 連結。複数該当しうる)。本文は R2 に置く。
 export const marketNews = sqliteTable(
 	"market_news",
@@ -202,7 +202,7 @@ export const margin = sqliteTable(
 // ── forced_liquidation (強制決済スコア。冪等キー = (ticker, date)) ───────────
 // 「他プレイヤーの強制的な売買フロー」(追証売り=買い方のロスカット / 踏み上げ=売り方のロスカット)
 // を eod cron で決定論的に算出して保存する。judge-context が最新行を forced ブロックとして
-// judge (signal-judge=LLM) に渡し「投げ/踏みが今日いつ出るか」の推論材料にする。post-signal.sh も
+// judge (ticker-brief=LLM) に渡し「投げ/踏みが今日いつ出るか」の推論材料にする。post-brief.sh も
 // 投稿時にここから最新行を引き、stance!=none のとき観測行を本文末尾に貼る。direction は
 // long(投げ)/short(踏み上げ)、stance は building(これから出る)/exhausted(出尽くし)/none(対象外)。
 export const forcedLiquidation = sqliteTable(
@@ -262,38 +262,21 @@ export const contexts = sqliteTable("contexts", {
 	updatedAt: text("updated_at").notNull(),
 });
 
-// ── market_regime (当日の地合いコール。PK = JST暦日) ─────────────────────────
-// 当日の地合い (リスクオン/中立/リスクオフ + 拾い場/様子見/守り) を 1 行で控える。
-// 1日1行 (当日分を upsert で上書き)。
-export const marketRegime = sqliteTable("market_regime", {
-	date: text("date").primaryKey(),
-	regime: text("regime").notNull(),
-	stance: text("stance").notNull(),
-	headline: text("headline").notNull(),
-	fetchedAt: text("fetched_at").notNull(),
-});
-
-// ── signals (signal-judge の最新判定。PK = ticker) ───────────────────────────
-// signal-judge が銘柄ごとに出す方向 (buy/sell) + 価格ラインを 1 銘柄 1 行で控える。
-// 判定本体は GitHub Actions の signal-judge スキルが out-file に書き、その末尾に機械可読な
-// signal JSON (side/line/stop/rr) を 1 行で添える。post-signal.sh がその JSON を抜き出して
-// /slack/post に signal フィールドとして渡し、投稿経路 (misc.ts /slack/post) がここに upsert
-// する (market_regime を同経路で控えるのと同じ流儀)。判定の度に当該銘柄を上書きするので、常に
-// 各銘柄の最新コールが 1 行残る。ポジション評価 (eod cron) がこの行を引き、ユーザーの建値
-// (positions) と決定論的に突き合わせて利確/損切り/継続を DM する。
-export const signals = sqliteTable("signals", {
-	ticker: text("ticker").primaryKey(), // 銘柄コード (例 285A)
-	side: text("side").notNull(), // buy (買い場) | sell (売り場) — judge の方向 1 本
-	exec: text("exec").notNull().default("now"), // now (現値約定) | wait (line で指値待ち) — 約定タイミング
-	line: text("line"), // 約定価格 (数値文字列)。now=現値なので null、wait=その指値。読めなければ null
-	stop: text("stop"), // 損切りライン (価格 or MA/range 表現)。読めなければ null
-	rr: text("rr"), // リスクリワード 良 | 可 | 薄。読めなければ null
-	headline: text("headline").notNull(), // 判定の headline 全文 (DM 文面に流用)
-	judgedAt: text("judged_at").notNull(), // 保存時刻 (ISO8601)
+// ── briefs (最新の材料ブリーフ。PK = ticker) ─────────────────────────────────
+// ticker-brief (個別銘柄の材料ブリーフ) と market-brief (朝のマーケットブリーフ、ticker='market')
+// の最新 1 件を 1 行で控える。post-brief.sh / post-market.sh が /slack/post に brief_body を載せ、
+// 投稿経路 (misc.ts /slack/post) がここに upsert する。ブリーフの度に当該行を上書きするので、
+// 常に最新ブリーフだけが残る。読み手は 2 つ: ポジション事実レポート (eod cron) が建玉銘柄の
+// 最新材料として引き、judge-context が ticker='market' の当日行を market_brief として同梱する。
+export const briefs = sqliteTable("briefs", {
+	ticker: text("ticker").primaryKey(), // 銘柄コード (例 285A)。マーケットブリーフは 'market'
+	headline: text("headline").notNull(), // ブリーフの headline 全文
+	body: text("body"), // 本文 (materials/強気/弱気を改行連結した素テキスト)。読めなければ null
+	briefedAt: text("briefed_at").notNull(), // 保存時刻 (ISO8601)
 });
 
 // ── positions (ユーザーの保有ポジション。冪等キー = (userId, ticker, account)) ──
-// ユーザーが /position コマンドで登録する自分の建玉。判定 (signal-judge / crash-scenario) は
+// ユーザーが /position コマンドで登録する自分の建玉。解析 (ticker-brief / crash-scenario) は
 // 汎用のまま据え置き、これは slack-reply だけが読む (スレッド返信で「建値から見て今どうか」を
 // 答えるため)。/thread-context が返信した本人 (userId) の当該銘柄行を引いて positions ブロックに同梱する。
 //
@@ -318,7 +301,7 @@ export const positions = sqliteTable(
 );
 
 // ── user_profiles (ユーザーの好み・特記事項。PK = userId) ──────────────────────
-// ユーザーが /profile コマンドで登録する自分の売買スタイル。判定 (signal-judge / crash-scenario)
+// ユーザーが /profile コマンドで登録する自分の売買スタイル。解析 (ticker-brief / crash-scenario)
 // は汎用のまま据え置き、これは positions と同じく slack-reply だけが読む (スレッド返信で「この人の
 // 玉の持ち方・リスク許容度を踏まえて」答えるため)。/thread-context が返信した本人 (userId) の行を
 // 引いて profile ブロックに同梱する。

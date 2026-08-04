@@ -11,9 +11,9 @@
 #   - 整形 (sections → 保存テキスト / Slack blocks) は Worker (lib/context-format.ts) に集約する。
 #     skill は Markdown 記号を持たない sections (見出し+行) を返し、このスクリプトは title+sections を
 #     /context (保存) と /slack/post (context_sections で blocks 投稿) にそのまま渡すだけ。
-#   - signal-judge の発火はここでは行わない。新規 0 (no-update) の日でも判定だけは毎営業日
-#     回せるよう、発火は context-builder ワークフローの独立ステップ (scripts/dispatch-judge.sh)
-#     に一本化した。post-context.sh は「新規があったときのコンテキスト確定」だけに責務を絞る。
+#   - ticker-brief の発火はここでは行わない。発火は context-builder ワークフローの独立ステップ
+#     (scripts/dispatch-brief.sh、status=ok のときだけ) に一本化した。post-context.sh は
+#     「新規があったときのコンテキスト確定」だけに責務を絞る。
 #
 # 入力:
 #   $1 = ticker          (必須)
@@ -121,5 +121,5 @@ else
   echo "slack skipped (no channel)"
 fi
 
-# signal-judge の発火はここでは行わない (scripts/dispatch-judge.sh に一本化)。
+# ticker-brief の発火はここでは行わない (scripts/dispatch-brief.sh に一本化)。
 # 理由はファイル冒頭の設計コメントを参照。

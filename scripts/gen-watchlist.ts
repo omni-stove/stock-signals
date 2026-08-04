@@ -9,7 +9,7 @@
 //
 // 生成先:
 //   ① .github/workflows/context-builder.yml      … workflow_dispatch.inputs.ticker.options
-//   ② .github/workflows/signal-judge.yml         … 同上
+//   ② .github/workflows/ticker-brief.yml         … 同上
 //      (`# GEN:watchlist:start` 〜 `# GEN:watchlist:end` で囲った領域だけ差し替える)
 //
 // 実行:   node scripts/gen-watchlist.ts            (= npm run gen:watchlist)
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
 	const targets: Target[] = [];
 	for (const rel of [
 		"../.github/workflows/context-builder.yml",
-		"../.github/workflows/signal-judge.yml",
+		"../.github/workflows/ticker-brief.yml",
 	]) {
 		const cur = await read(rel);
 		targets.push({ rel, next: renderYml(TICKERS, cur, rel) });

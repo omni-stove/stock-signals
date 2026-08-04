@@ -3,7 +3,7 @@
 # 監視4銘柄 (config/watchlist.yaml) はいずれも半導体で、SOX (フィラデルフィア半導体指数) 経由で
 # 海外ピアの決算に強く連動する。MU/NVDA/AMAT 等の大物が決算を出すと、結果次第で翌日の SOX が振れ、
 # 日本の半導体株がギャップで寄る。これは「いつ起きるか先に分かる」スケジュール型イベントなので、
-# FOMC/日銀と同じく事前にカレンダー化して signal-judge / crash-scenario の prompt に
+# FOMC/日銀と同じく事前にカレンダー化して ticker-brief / crash-scenario の prompt に
 # 「あとX日でMU決算→SOX変動リスク」を載せる。
 #
 # データの流れ:

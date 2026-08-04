@@ -1,6 +1,6 @@
 // ユーザー保有ポジションを slack-reply 用に整形する純粋関数。
 //
-// 設計: signal-judge / crash-scenario は汎用判定のまま据え置き、ポジションは slack-reply だけが
+// 設計: ticker-brief / crash-scenario は汎用解析のまま据え置き、ポジションは slack-reply だけが
 // 読む。/thread-context が positions テーブルの当該銘柄行 + 参照現値を渡し、ここで「平均建値からの
 // 含み損益%」を決定論的に計算して返す。判断 (利確/損切り/ホールド) は LLM に委ね、ここは数値整形に
 // 徹する (judge-context.ts と同じ流儀)。

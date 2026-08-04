@@ -2,7 +2,7 @@
 
 import type { Env } from "./env";
 
-// Bot トークンで chat.postMessage する。返信対話の起点になる解析結果投稿 (signal-judge /
+// Bot トークンで chat.postMessage する。返信対話の起点になる解析結果投稿 (ticker-brief /
 // crash-scenario) と、その返信への返答投稿の両方に使う。webhook と違い ts を取得できるので、
 // 親投稿の ts を D1 (slack_threads) に控えてスレッド返信から銘柄を復元できる。
 // thread_ts を渡すとスレッド返信として投稿する (返答はこれで同スレッドにぶら下げる)。

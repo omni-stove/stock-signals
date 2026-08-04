@@ -1,6 +1,6 @@
 // Cloudflare Worker: slack-reply に渡すスレッド文脈を 1 call で返すバンドルエンドポイント。
 //
-//   GET /thread-context?channel=C123&thread_ts=1700000000.000100&kind=signal-judge&text=<ユーザー返信>
+//   GET /thread-context?channel=C123&thread_ts=1700000000.000100&kind=ticker-brief&text=<ユーザー返信>
 //
 // conversations.replies を Worker から取得し整形する。
 //
@@ -11,7 +11,7 @@
 // text (= client_payload のユーザー返信本文) が履歴に未反映なら末尾に user メッセージとして足す
 // (Slack のイベント反映遅延で最新の問いが replies に来ていないケースの保険)。
 //
-// positions: ユーザーが /position で登録した保有建玉。signal-judge / crash-scenario は汎用判定の
+// positions: ユーザーが /position で登録した保有建玉。ticker-brief / crash-scenario は汎用解析の
 // まま据え置き、ポジション考慮は slack-reply だけが行うため、judge-context ではなくここに乗せる。
 // 参照現値は prices の live があればそれ、無ければ daily 最新 close を使い、各行の含み損益%を出す。
 // code (= 銘柄コード) は client_payload の ticker を Worker が渡す。未指定 / 未登録は status:none。

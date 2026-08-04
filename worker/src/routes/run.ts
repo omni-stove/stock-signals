@@ -63,7 +63,7 @@ run.get("/", async (c) => {
 		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
 	}
 	if (kind === "market-news") {
-		// 銘柄非依存の市場テーマニュースを収集 → market_news + R2 に保存。地合い判定の材料。
+		// 銘柄非依存の市場テーマニュースを収集 → market_news + R2 に保存。マーケットブリーフの材料。
 		// dispatch=1 のときだけ Slack 通知の副作用を起こす。
 		const result = await collectMarketNews(env);
 		if (dispatch) {

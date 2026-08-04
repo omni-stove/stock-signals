@@ -18,7 +18,7 @@ setup() {
 }
 
 # dryrun で post-market.sh を実行。stderr も取り込む。引数: $1=headline $2=body。
-# 構造化 JSON (market-check の structured_output 相当 {headline, body[]}) を組んで signal-file に
+# 構造化 JSON (market-brief の structured_output 相当 {headline, body[]}) を組んで signal-file に
 # 書き、script には <signal-file> を渡す。リテラル "\n" は body 配列の分割点にする。
 run_pm() {
   local headline="$1" body="$2"
@@ -70,11 +70,11 @@ payload() {
 # === payload 構造 ===========================================================
 
 # kind / text / ticker(=market) が載り、先頭 section は headline
-@test "payload: carries market-check kind, market ticker, and headline as first block" {
+@test "payload: carries market-brief kind, market ticker, and headline as first block" {
   run_pm "HEAD line" "one line body"
   [ "$status" -eq 0 ]
   local p; p="$(payload)"
-  [ "$(printf '%s' "$p" | jq -r '.kind')" = "market-check" ]
+  [ "$(printf '%s' "$p" | jq -r '.kind')" = "market-brief" ]
   [ "$(printf '%s' "$p" | jq -r '.ticker')" = "market" ]
   [ "$(printf '%s' "$p" | jq -r '.text')" = "HEAD line" ]
   [ "$(printf '%s' "$p" | jq -r '.blocks[0].text.text')" = "HEAD line" ]

@@ -1,6 +1,6 @@
 // ユーザーの好み・特記事項を slack-reply 用に整形する純粋関数。
 //
-// 設計: signal-judge / crash-scenario は汎用判定のまま据え置き、プロフィールは positions と同じく
+// 設計: ticker-brief / crash-scenario は汎用解析のまま据え置き、プロフィールは positions と同じく
 // slack-reply だけが読む。/thread-context が user_profiles の当該ユーザー行を渡し、ここで Slack へ
 // 返す形に整える。判断 (この好みをどう効かせるか) は LLM に委ね、ここは整形に徹する。
 

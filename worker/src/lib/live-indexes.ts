@@ -1,7 +1,7 @@
 // Cloudflare Worker: 場中リアルタイム指数の収集 (live indexes)
 //
 // 前夜確定の premarket_backdrop (SOX/Nasdaq/Dow/日経先物) と違い、日本市場と同時進行で動く
-// 指数の「今の現値」を場中 5分毎 cron に相乗りして貯める。地合い (market-check) が、寄り前の
+// 指数の「今の現値」を場中 5分毎 cron に相乗りして貯める。マーケットブリーフ (market-brief) が、寄り前の
 // premarket に加えて「アジアが今どう動いているか」を読めるようにするのが狙い。
 //
 // 収集対象:

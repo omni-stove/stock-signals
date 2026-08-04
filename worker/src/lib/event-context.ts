@@ -1,4 +1,4 @@
-// 需給イベント文脈を 1 行に組み立てる純粋関数。signal-judge / crash-scenario / market-check が読む。
+// 需給イベント文脈を 1 行に組み立てる純粋関数。ticker-brief / crash-scenario / market-brief が読む。
 //
 // 設計:
 //   - SQ は日付計算で出る: 日本SQ=各月 第2金曜 / 米SQ=各月 第3金曜 / 3・6・9・12月=メジャーSQ。

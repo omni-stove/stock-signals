@@ -1,11 +1,11 @@
-// Cloudflare Worker: ポジション評価 (position-review ワークフロー) 用バンドル (要 SYNC_TOKEN 認証)。
+// Cloudflare Worker: ポジション事実レポート (position-report ワークフロー) 用バンドル (要 SYNC_TOKEN 認証)。
 //   GET /position-users            … 建玉を持つユーザーの userId 配列。fan-out が matrix に展開する。
-//   GET /position-context?userId=  … そのユーザーの全建玉 × 最新判定 × 当日 close × 含み損益 (決定論)。
-//                                    LLM がこれを読んでアクション/優先度/ポートフォリオ所見を出す。
+//   GET /position-context?userId=  … そのユーザーの全建玉 × 最新材料ブリーフ × 当日 close × 含み損益 (決定論)。
+//                                    LLM がこれを読んで建玉に関係する材料・リスクを事実として並べる。
 //
-// 取得は D1 直読み (サブリクエストなし)。正規化は lib/position-review.ts に集約。judge-context と
-// 同じ流儀で、数値・順行/逆行の判定は Worker 側 (決定論) で済ませ、skill には curl を叩かせず
-// 判断だけをさせる。userId は positions に実在するものだけが context を返す (空配列なら 404)。
+// 取得は D1 直読み (サブリクエストなし)。正規化は lib/position-report.ts に集約。judge-context と
+// 同じ流儀で、数値は Worker 側 (決定論) で済ませ、skill には curl を叩かせず材料の紐付けだけを
+// させる。userId は positions に実在するものだけが context を返す (空配列なら 404)。
 
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -13,7 +13,7 @@ import type { Env } from "../lib/env";
 import {
 	buildPositionContext,
 	listPositionUsers,
-} from "../lib/position-review";
+} from "../lib/position-report";
 
 export const position = new Hono<{ Bindings: Env }>();
 

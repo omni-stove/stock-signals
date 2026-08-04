@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # scripts/post-context.bats
 # post-context.sh の後処理 2 つ (D1 upsert / Slack 投稿) の分岐と、組み立てる JSON
-# ペイロードを検証する。signal-judge の発火は dispatch-judge.sh が担うので、
-# ここでは「judge を撃たない」ことだけ確認する。
+# ペイロードを検証する。ticker-brief の発火は dispatch-brief.sh が担うので、
+# ここでは「brief を撃たない」ことだけ確認する。
 #
 # 実行: pnpm run test:sh
 #
@@ -186,12 +186,12 @@ payload_for() {
   [ -z "$(payload_for "/slack/post")" ]
 }
 
-# === 3. signal-judge は撃たない (発火は dispatch-judge.sh に一本化した) ========
+# === 3. ticker-brief は撃たない (発火は dispatch-brief.sh に一本化した) ========
 
-# GITHUB_REPOSITORY が設定されていても post-context.sh は judge を発火しない
-@test "dispatch: post-context never fires signal-judge (moved to dispatch-judge.sh)" {
+# GITHUB_REPOSITORY が設定されていても post-context.sh は brief を発火しない
+@test "dispatch: post-context never fires ticker-brief (moved to dispatch-brief.sh)" {
   GITHUB_REPOSITORY="foo/bar" run_pc 285A "285A context" "" ""
   [ "$status" -eq 0 ]
-  printf '%s\n' "$output" | grep -vq "signal-judge"
+  printf '%s\n' "$output" | grep -vq "ticker-brief"
   printf '%s\n' "$output" | grep -vq "dispatches"
 }

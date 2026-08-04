@@ -1,0 +1,156 @@
+# 朝のマーケットブリーフ → Claude Code Action で市場全体の事実サマリー → Slack通知。
+#
+# 銘柄非依存の市場全体スキル。ticker-brief (個別の材料ブリーフ) や crash-scenario (個別の下落経路)
+# の前に、「前夜と今日の市場全体で何が起きているか」を事実として 1 本にまとめて届ける。
+# 地合いラベル (リスクオン/リスクオフ) や売買可否 (拾い場/様子見/守り) は出さない — 判断は読み手が行う。
+#
+# 起動経路は 2 つ:
+#   - repository_dispatch (event_type=market-brief) … Worker の寄り前 intake cron (JST 08:30) が
+#       premarket (SOX/NASDAQ/Dow/日経先物) を D1 に取得した「直後」に発火する (worker/src/lib/cron.ts)。
+#       市場全体のサマリーなので、同じ寄り前 intake で後段の個別 ticker-brief を撃つより「先」に
+#       発火させる (schedule cron で別に撃つと後段より遅れて本末転倒)。
+#       JST 土日は cron.ts の isJstWeekend ガードで intake 自体がスキップされるので発火しない。
+#       premarket が stale なら skill 側が demote する。
+#   - workflow_dispatch … 手動実行 (検証用)。引数なし。
+#
+# 起動後はブリーフのルールを prompt にベタ書きした Claude Code Action が Worker /market-context の
+# 出した市場 JSON (premarket + 需給イベント + セクター内の値動きの広がり) を @ で読み、朝の事実
+# サマリーを structured_output で返す。投稿は後続ステップ (post-market.sh)。投稿経路 (/slack/post)
+# が headline+body を briefs (ticker='market') に upsert し、judge-context が market_brief として
+# 個別ブリーフに同梱する。**このワークフローはコンテキストを一切書き換えない** (出力は Slack のみ)。
+#
+# 認証・Secret は ticker-brief.yml と同じ:
+#   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
+#   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
+#   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+# 投稿は skill が Worker /slack/post に投げる (Bot 投稿)。SLACK_BOT_TOKEN 未設定 (503) なら投稿スキップ。
+
+name: market-brief
+
+on:
+  repository_dispatch:
+    types: [market-brief]    # Worker の寄り前 intake (JST 08:30) が premarket 取得直後に発火する。
+  workflow_dispatch: {}      # 手動実行 (検証用)。引数なし。
+
+# 同時実行は 1 本に抑え、走行中に新しい market-brief が来たら古いジョブをキャンセルする。
+# ブリーフは Slack に出すだけで状態を持たないのでキャンセルしても整合は崩れない。
+concurrency:
+  group: market-brief
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
+
+jobs:
+  market-brief:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Action 実行時は CLAUDE.md / AGENTS.md の指示がブリーフの邪魔になりうるので退避する (共通アクション)。
+      - uses: ./.github/actions/stash-claude-md
+
+      # 市場 JSON (premarket + 需給イベント event_context + セクター内の値動きの広がり) を Worker
+      # /market-context が 1 call で正規化して返す。鮮度判定・event 同梱・sectors 集計は Worker 側
+      # (決定論的) で行い、skill には curl を叩かせず数値の読解と要約だけをさせる。JSON は複数行・
+      # 特殊文字を含むので prompt に直接埋めず、ファイルに書いて skill にパスを渡す。skill は Read するだけ。
+      - name: Build market context
+        run: |
+          curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/market-context" > "$RUNNER_TEMP/marketctx.json"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      # ブリーフのルールは prompt にベタ書きする (skill ファイルは持たない)。実行時に変わる数値コンテキスト
+      # だけを @ でファイルから取り込む (外部由来 JSON を ${{ }} で prompt に生展開せず、YAML 破壊と
+      # prompt インジェクションを防ぐ)。skill は @ で読み込んだ JSON を要約して structured_output
+      # で返すだけ — curl も file write もしない (投稿は次ステップ)。
+      - name: Run market-brief
+        id: brief
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # 起動 actor: repository_dispatch は Worker の GitHub App (omnistove-internal-auth)、
+          # 手動 workflow_dispatch は github-actions[bot]。既定では Bot 起動を Action が弾くので両方許可する。
+          allowed_bots: "omnistove-internal-auth,github-actions[bot]"
+          prompt: |
+            # market-brief
+
+            Produce the morning **マーケットブリーフ** — a factual digest of last night and today's setup for
+            a human to make their own decisions. Report what moved, how broadly, and what is on today's
+            calendar. **Never output a verdict**: no regime label (リスクオン/リスクオフ), no 売買可否
+            (拾い場/様子見/守り), no advice verbs. Point at which numbers matter most today and why; leave
+            the conclusion to the reader.
+
+            Do not post to Slack; do not run any script; do not write any file — return structured output
+            and stop. Report only what these inputs show now; never hindsight or a later result. When every
+            field is stale or unavailable, say so in one body line and keep the rest empty.
+
+            ## Inputs
+
+            How to read the fields (what leads, what confirms):
+
+            - **`premarket`** is last night's NY session — the primary pre-open input. `sox_change_pct` matters
+              most for this semis-heavy watchlist; `nasdaq_change_pct` / `dow_change_pct` give breadth,
+              `nikkei_futures_price` the home tape's own gap. `status: stale` → demote it; `unavailable`
+              → report from `sectors` + event alone. `us_session: carried_over` = 米国休場明け — the numbers are
+              the prior close (`date`) that the last JP session already traded on; say so and don't report them
+              as fresh overnight news.
+            - **`live_indexes`** is Asia trading live in the same session. Each entry: `key` (`nikkei225` =
+              Tokyo's own live tape / `kospi` = semis-heavy Korea, Samsung / SK hynix), `price`, `change_pct`,
+              `status` (`ok` / `stale` = older than 1h → demote). Pre-open (`market_phase: premarket`) they
+              haven't opened → expect stale, skip.
+            - **`sectors`** is how the watchlist itself moved. Per sector: `tone` (SOX-derived backdrop),
+              `avg_change_pct` (直近営業日のセクター平均前日比), `avg_ret_5d_pct` (5日のトレンド); per-name
+              `rel_strength_pct` (relative strength vs sector avg) and `vol_ratio` (出来高の盛り上がり).
+              Missing or empty → skip.
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>` (SQ週 / SQ明け /
+              FOMC / 日銀 近接); a `特になし` tail means no event fired — ignore it.
+            - **`market_news`**: recent market-wide theme headlines not tied to a watchlist name, each with
+              `title` / `topic` (`semi`/`ai`/`rates`/`us`/`market`) / `published_at`. Pick the 1-2 that bear on
+              today's tape; ignore the rest. Empty array → ignore.
+            - **`market_phase`** (JST trading-day position) frames what the numbers mean: `premarket` (the gap
+              isn't in yet), 場中 (`sectors` is live, read breadth directly), `closed` (report today's close
+              plus tonight's NY setup).
+
+            ## Writing the body
+
+            Lead with the strongest fact of the morning. Note whether the moves agree across SOX / NASDAQ /
+            日経先物 / live Asia / セクター平均 (breadth) or split — a split tape is worth saying plainly.
+            Give real numbers (% moves), not adjectives alone. One line for today's calendar when an event
+            fired. Close with the single number or event most worth watching today — as a fact to watch,
+            not an instruction.
+
+            ## 数値コンテキスト
+
+            @${{ runner.temp }}/marketctx.json
+          # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず Read のみ許可。
+          # --json-schema で出力の形を縛る (= market-brief の構造化スキーマの唯一の定義場所)。
+          # headline は自由文 (Worker はパースせず briefs にそのまま保存する)。body = Slack 本文 3〜6 行。
+          claude_args: >-
+            --model opus --effort high --allowedTools Read --max-turns 30
+            --json-schema '{
+              "type":"object","additionalProperties":false,
+              "required":["headline","body"],
+              "properties":{
+                "headline":{"type":"string","description":"Slack first line: 🌅 マーケットブリーフ: <前夜と今日の一言サマリー> (自由文。ラベルや売買可否は書かない)"},
+                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":6,"description":"Slack 本文 3〜6 行 (日本語、事実のみ): 前夜米市場の実数 (SOX/NASDAQ/Dow/日経先物)、場中なら live 日経225/KOSPI、セクター・監視銘柄の動きと breadth、当日イベント、今日効く数字 1 行"}
+              }
+            }'
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+
+      # skill の構造化出力 (structured_output) を Slack に投稿する (curl/jq/フォールバックは script が持つ)。
+      # /slack/post が kind=market-brief を見て briefs (ticker='market') に upsert する。
+      - name: Post market-brief to Slack
+        run: |
+          printf '%s' "$MARKET_JSON" > "$RUNNER_TEMP/market.json"
+          bash scripts/post-market.sh "$RUNNER_TEMP/market.json"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          MARKET_JSON: ${{ steps.brief.outputs.structured_output }}

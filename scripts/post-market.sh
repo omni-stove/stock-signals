@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # scripts/post-market.sh
-# market-check の地合い判定を Slack に投稿する。
+# market-brief の朝のマーケットブリーフを Slack に投稿し、briefs (ticker='market') に保存させる。
 #
 # 設計:
 #   - skill 本体に curl を叩かせない。投稿経路 (Worker /slack/post, Bearer 認証, kind 付与,
 #     503=Bot未設定→stdout フォールバック) は決定論的なのでこのスクリプトが持つ。
 #     skill は「ヘッドライン・本文行」を引数で渡すだけ。
-#   - 地合いは銘柄非依存なので ticker は固定で "market"。blocks は本文行 (改行区切り) を
+#   - ブリーフは銘柄非依存なので ticker は固定で "market"。blocks は本文行 (改行区切り) を
 #     section に詰めるだけ。
 #
 # 入力:
-#   $1 = signal-file (必須。market-check スキルの構造化出力 (structured_output) を書いた JSON の
-#                    パス。{headline, body[]} を持つ。skill は curl を一切叩かず判定するだけ。
+#   $1 = signal-file (必須。market-brief スキルの構造化出力 (structured_output) を書いた JSON の
+#                    パス。{headline, body[]} を持つ。skill は curl を一切叩かず要約するだけ。
 #                    投稿はこのスクリプト = workflow の後続ステップが行う)
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意)。
 #
@@ -26,7 +26,7 @@ SIGNAL_FILE="${1:?usage: post-market.sh <signal-file>}"
 : "${WORKER_URL:?WORKER_URL is required}"
 [[ -f "$SIGNAL_FILE" ]] || { echo "post-market.sh: signal-file not found: $SIGNAL_FILE" >&2; exit 1; }
 
-# structured_output JSON を読む。空/不正 JSON は判定不成立として落とす (投稿しない)。
+# structured_output JSON を読む。空/不正 JSON はブリーフ不成立として落とす (投稿しない)。
 SIGNAL_JSON="$(cat "$SIGNAL_FILE")"
 printf '%s' "$SIGNAL_JSON" | jq -e . >/dev/null 2>&1 || {
   echo "post-market.sh: signal-file is not valid JSON: $SIGNAL_FILE" >&2; exit 1; }
@@ -37,13 +37,16 @@ BODY="$(printf '%s' "$SIGNAL_JSON" | jq -r '(.body // []) | join("\n")')"
 
 # headline + 本文行を section blocks に組み立てる。リテラル "\n" も実改行も
 # どちらで渡されても同じになるよう gsub で正規化してから split する。
+# brief_body は本文素テキスト。Worker /slack/post が briefs (ticker='market') に upsert し、
+# judge-context が market_brief として個別ブリーフに同梱する。
 PAYLOAD="$(jq -n \
   --arg headline "$HEADLINE" \
   --arg body "$BODY" \
   '{
     ticker: "market",
-    kind: "market-check",
+    kind: "market-brief",
     text: $headline,
+    brief_body: $body,
     blocks: ([{type:"section", text:{type:"mrkdwn", text:$headline}}]
       + ([$body | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0)
           | {type:"section", text:{type:"mrkdwn", text:.}}]))

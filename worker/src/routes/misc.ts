@@ -9,8 +9,7 @@ import type { Env } from "../lib/env";
 import { checkIndexRebalance } from "../lib/event-context";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
 import { resolveMarketPhase } from "../lib/market-phase";
-import { parseMarketRegime } from "../lib/market-regime";
-import { marketRegime, signals, slackThreads } from "../lib/schema";
+import { briefs, slackThreads } from "../lib/schema";
 import { notifySlack, postMessage } from "../lib/slack";
 
 export const misc = new Hono<{ Bindings: Env }>();
@@ -97,15 +96,9 @@ misc.post("/slack/post", async (c) => {
 		blocks?: unknown[];
 		context_sections?: { title: string; sections: ContextSection[] };
 		thread_ts?: string;
-		// signal-judge の構造化判定 (post-signal.sh が structured_output を載せる)。
-		// signals テーブルに最新コールとして upsert する。他 kind / 未設定なら保存しない。
-		signal?: {
-			side?: string;
-			exec?: string;
-			line?: number | null;
-			stop?: string | null;
-			rr?: string | null;
-		} | null;
+		// ブリーフ本文の素テキスト (post-brief.sh / post-market.sh が載せる)。
+		// kind が ticker-brief / market-brief のとき briefs テーブルに最新ブリーフとして upsert する。
+		brief_body?: string | null;
 	};
 	const channel = b.channel || env.SLACK_REPLY_CHANNEL;
 	// context_sections を渡されたら blocks/text を Worker で組む (整形ロジックを 1 か所に集約)。
@@ -142,65 +135,22 @@ misc.post("/slack/post", async (c) => {
 		});
 	}
 
-	// market-check の地合いコールは market_regime に当日分を控える (judge-context が前段ゲートに使う)。
-	// b.text = ヘッドライン (`🌐 地合い: <regime>・<stance>`)。3 値が読めた時だけ書く。
-	if (b.kind === "market-check" && b.text) {
-		const parsed = parseMarketRegime(b.text);
-		if (parsed) {
-			const nowIso = new Date().toISOString();
-			const { today } = resolveMarketPhase(null, Date.now());
-			await db(env.DB)
-				.insert(marketRegime)
-				.values({
-					date: today,
-					regime: parsed.regime,
-					stance: parsed.stance,
-					headline: b.text,
-					fetchedAt: nowIso,
-				})
-				.onConflictDoUpdate({
-					target: marketRegime.date,
-					set: {
-						regime: parsed.regime,
-						stance: parsed.stance,
-						headline: b.text,
-						fetchedAt: nowIso,
-					},
-				})
-				.run();
-		}
-	}
-
-	// signal-judge の最新判定を signals に upsert する (1 銘柄 1 行で上書き)。eod cron の
-	// ポジション評価がこの行を引き、ユーザーの建値と突き合わせて利確/損切り/継続を DM する。
-	// side が読めた時だけ保存する (判定不成立や他 kind は触らない)。
-	if (b.kind === "signal-judge" && b.ticker && b.signal?.side && b.text) {
-		const judgedAt = new Date().toISOString();
-		const { side } = b.signal;
-		// exec が読めなければ now (現値約定) を既定にする。
-		const exec = b.signal.exec === "wait" ? "wait" : "now";
-		// 指値 (wait) のときだけ価格を控える。now は現値約定なので line は null。
-		const line =
-			exec === "wait" && b.signal.line != null && Number.isFinite(b.signal.line)
-				? String(b.signal.line)
-				: null;
-		const stop = b.signal.stop ?? null;
-		const rr = b.signal.rr ?? null;
+	// 最新ブリーフを briefs に upsert する (1 銘柄 1 行で上書き。マーケットブリーフは ticker='market')。
+	// ポジション事実レポート (eod cron) が建玉銘柄の最新材料として引き、judge-context が
+	// ticker='market' の当日行を market_brief として同梱する。
+	if (
+		(b.kind === "ticker-brief" || b.kind === "market-brief") &&
+		b.ticker &&
+		b.text
+	) {
+		const briefedAt = new Date().toISOString();
+		const body = b.brief_body ?? null;
 		await db(env.DB)
-			.insert(signals)
-			.values({
-				ticker: b.ticker,
-				side,
-				exec,
-				line,
-				stop,
-				rr,
-				headline: b.text,
-				judgedAt,
-			})
+			.insert(briefs)
+			.values({ ticker: b.ticker, headline: b.text, body, briefedAt })
 			.onConflictDoUpdate({
-				target: signals.ticker,
-				set: { side, exec, line, stop, rr, headline: b.text, judgedAt },
+				target: briefs.ticker,
+				set: { headline: b.text, body, briefedAt },
 			})
 			.run();
 	}
@@ -208,7 +158,7 @@ misc.post("/slack/post", async (c) => {
 	// 解析結果 (親投稿) のみ slack_threads に控える。返答 (thread_ts 有り) は記録しない。
 	if (!b.thread_ts && b.ticker) {
 		const createdAt = new Date().toISOString();
-		const kind = b.kind || "signal-judge";
+		const kind = b.kind || "ticker-brief";
 		await db(env.DB)
 			.insert(slackThreads)
 			.values({

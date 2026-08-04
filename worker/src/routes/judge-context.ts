@@ -1,13 +1,13 @@
-// Cloudflare Worker: signal-judge / crash-scenario / slack-reply に渡す数値コンテキストを
+// Cloudflare Worker: ticker-brief / crash-scenario / slack-reply に渡す数値コンテキストを
 // 1 call で返すバンドルエンドポイント。
 //
 //   GET /judge-context?code=285A&now=<ISO8601 任意>
 //
 // 取得は D1/R2 直読み (サブリクエストなし)。正規化は lib/judge-context.ts に集約。
 //
-// 出力 (event_context は需給イベント1行、market_regime は当日の market-check 地合いコール / 無ければ null、
+// 出力 (event_context は需給イベント1行、market_brief は当日朝のマーケットブリーフ / 無ければ null、
 // forced は強制決済フローのスコア / stance==none なら {status:"none"}):
-//   { ticker, today, market_phase, market_regime, event_context, ticker_note,
+//   { ticker, today, market_phase, market_brief, event_context, ticker_note,
 //     context_body, earnings, earnings_result, valuation, premarket, sector, daily, prices, margin, forced }
 // sector は対象銘柄が属する同一セクタのピアの相対強弱 (無ければ null)。
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
@@ -36,6 +36,7 @@ import {
 } from "../lib/judge-context";
 import { resolveMarketPhase, sessionElapsedFrac } from "../lib/market-phase";
 import {
+	briefs,
 	contexts,
 	daily,
 	earnings,
@@ -43,7 +44,6 @@ import {
 	fundamentals,
 	macroEvents,
 	margin,
-	marketRegime,
 	premarketBackdrop,
 	prices,
 } from "../lib/schema";
@@ -174,17 +174,21 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.limit(1)
 		.get()) as ForcedRow | undefined;
 
-	// 当日の地合いコール (market-check が寄り前に書いたもの)。前段ゲートとして signal-judge /
-	// crash-scenario に market_regime として渡す。当日分が無ければ null (= 銘柄単体で判断)。
-	const regimeRow = await db(env.DB)
+	// 当日朝のマーケットブリーフ (market-brief が寄り前に書いたもの、briefs の ticker='market' 行)。
+	// 市場全体の事実サマリーとして ticker-brief / crash-scenario に market_brief として渡す。
+	// briefedAt が JST 当日でなければ null (= 古い朝の材料を今日の地合いと誤読させない)。
+	const marketBriefRow = await db(env.DB)
 		.select({
-			regime: marketRegime.regime,
-			stance: marketRegime.stance,
-			headline: marketRegime.headline,
+			headline: briefs.headline,
+			body: briefs.body,
+			briefedAt: briefs.briefedAt,
 		})
-		.from(marketRegime)
-		.where(eq(marketRegime.date, today))
+		.from(briefs)
+		.where(eq(briefs.ticker, "market"))
 		.get();
+	const marketBriefDate = marketBriefRow
+		? resolveMarketPhase(marketBriefRow.briefedAt, epochNow).today
+		: null;
 
 	// 需給イベント文脈: SQ/指数リバランスは today から計算、FOMC/日銀/ピア決算は macro_events 全件を渡す。
 	const macroRows = (await db(env.DB)
@@ -266,13 +270,14 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		ticker: code,
 		today,
 		market_phase: marketPhase,
-		market_regime: regimeRow
-			? {
-					regime: regimeRow.regime,
-					stance: regimeRow.stance,
-					headline: regimeRow.headline,
-				}
-			: null,
+		market_brief:
+			marketBriefRow && marketBriefDate === today
+				? {
+						headline: marketBriefRow.headline,
+						body: marketBriefRow.body,
+						date: marketBriefDate,
+					}
+				: null,
 		event_context: buildEventContext(today, macroRows, marketPhase),
 		// 当該銘柄分の固定注記だけ同梱 (watchlist は静的、note 未設定なら null)。
 		ticker_note: TICKERS.find((t) => t.code === code)?.note ?? null,

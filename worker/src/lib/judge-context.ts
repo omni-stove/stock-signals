@@ -1,4 +1,4 @@
-// signal-judge / crash-scenario / slack-reply に渡す「数値コンテキスト」を組み立てる純粋関数群。
+// ticker-brief / crash-scenario / slack-reply に渡す「数値コンテキスト」を組み立てる純粋関数群。
 //
 // 設計:
 //   - 取得 (D1 read) は routes/judge-context.ts が行い、ここは「生 rows → 正規化済みブロック」の
@@ -81,7 +81,7 @@ export function buildEarnings(
 // (ticker, date) で毎日1スナップショット入るので、actual_period (最後の実績四半期) が
 // 前の取得日から別四半期へ切り替わった日 = その四半期決算が出た日、と捉えられる。
 // その日から FRESH_DAYS 営業日以内なら fresh とし、実績EPS vs 予想EPS のサプライズ符号を渡す。
-// 判定の強弱は signal-judge (SKILL) に委ね、ここは事実 (beat/miss と経過日) だけ出す。
+// 読み(材料としての重み付け)は ticker-brief (LLM) に委ね、ここは事実 (beat/miss と経過日) だけ出す。
 
 // fundamentals の1スナップショット (取得日 date と、その時点の実績/予想)。
 export interface FundamentalsSnapshot {
@@ -185,8 +185,8 @@ export function buildEarningsResult(
 
 // --- valuation: 現値 × 予想EPS の実績PER を fair_per と突き合わせる -----------
 // fair_per は watchlist の静的値 (妥当と判断する予想PER)。現値と forecast_eps から実績PER を
-// 出し、fair_per の上/下/同等を判定する。判定の強弱 (上なら締め、下なら押し目を深く) は
-// signal-judge に委ね、ここは per_now と vs_fair の事実だけ出す。
+// 出し、fair_per の上/下/同等を判定する。読み (割高/割安をどう扱うか) は
+// ticker-brief に委ね、ここは per_now と vs_fair の事実だけ出す。
 export interface ValuationBlock {
 	status: "ok" | "unavailable";
 	per_now: number | null; // 現値 / forecast_eps、floor1

@@ -1,0 +1,246 @@
+# 銘柄コンテキスト + 価格/市場状況 → Claude Code Action で材料ブリーフ → Slack通知。
+#
+# 2段アーキテクチャの後段。前段 context-builder が銘柄の持続コンテキストを更新したあと、
+# repository_dispatch (event_type=ticker-brief、client_payload.ticker に単一銘柄) でこのワークフローを
+# 起動する。手動でも実行できる。
+#
+# 起動後はブリーフのルールを prompt にベタ書きした Claude Code Action が対象銘柄の数値コンテキスト
+# (context-builder が育てたコンテキスト本文 + Worker /judge-context の価格/日足/市場ブリーフ/決算日/信用残)
+# を @ で読み、新着材料の要約と背景・影響分析・強気/弱気材料を structured_output で返す。
+# 売買判断 (buy/sell・指値・損切り) は出さない — 判断は読み手 (人間) が行い、ここは判断材料を
+# 並べる係。投稿は後続ステップ (post-brief.sh)。**このワークフローはコンテキストを一切書き換えない**
+# (出力は Slack のみ)。context-builder がコンテキストを書き、ticker-brief が Slack を書く、という
+# 役割の固定により、brief → context の編集ループは発生しない。
+#
+# 認証は Claude サブスク (OAuth) 方式: ローカルで `claude setup-token` → 生成トークンを
+# リポジトリ Secret CLAUDE_CODE_OAUTH_TOKEN に設定する。
+#
+# 必要な設定 (Settings → Secrets and variables → Actions):
+#   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
+#   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
+#   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+# ブリーフ通知は script が Worker /slack/post に投げる (Bot 投稿)。Worker 側の追加設定:
+# SLACK_BOT_TOKEN / SLACK_REPLY_CHANNEL。未設定 (503) なら投稿スキップ。
+# 発火元 (context-builder) は github.token (GITHUB_TOKEN) で repos/.../dispatches を叩く。
+
+name: ticker-brief
+
+on:
+  # context-builder がコンテキストを更新した (新着材料があった) あとに銘柄ごとに叩く。
+  repository_dispatch:
+    types: [ticker-brief]
+  workflow_dispatch:       # 手動実行 (検証用)。対象銘柄を選んで実行する。
+    inputs:
+      ticker:
+        description: 対象銘柄コード
+        required: true
+        type: choice
+        # worker/src/lib/watchlist.ts の TICKERS と同期させる。
+        # 下の options は `npm run gen:watchlist` が自動生成する (手で編集しないこと)。
+        options:
+          # GEN:watchlist:start
+          - "285A"  # キオクシアホールディングス
+          - "6857"  # アドバンテスト
+          - "6920"  # レーザーテック
+          - "6976"  # 太陽誘電
+          - "6981"  # 村田製作所
+          # GEN:watchlist:end
+
+# 銘柄ごとに同時実行を1本に抑え、走行中に同じ銘柄の新しいブリーフ要求が来たら古いジョブをキャンセルする。
+# ticker-brief は Slack に出すだけで状態を持たない (Issueを書かない) ので、キャンセルしても整合は崩れない。
+concurrency:
+  group: ticker-brief-${{ github.event.client_payload.ticker || inputs.ticker }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
+
+jobs:
+  ticker-brief:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Action 実行時は CLAUDE.md / AGENTS.md の指示がブリーフの邪魔になりうるので退避する (共通アクション)。
+      - uses: ./.github/actions/stash-claude-md
+
+      # payload/inputs.ticker を watchlist の許可リストと照合し、未知の銘柄なら即 fail する。
+      # ticker は後段で skill prompt に文字列展開されるため、ここで弾くことで
+      # 細工した銘柄文字列による prompt インジェクションを防ぐ (env 経由 + 許可リスト)。
+      - name: Validate ticker
+        env:
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
+        run: |
+          if ! grep -qE "^[[:space:]]*code:[[:space:]]*\"${TICKER}\",[[:space:]]*$" worker/src/lib/watchlist.ts; then
+            echo "::error::unknown ticker: $TICKER"; exit 1
+          fi
+
+      # 数値コンテキスト (earnings/prices/daily/premarket/margin/銘柄コンテキスト) と需給イベント文脈
+      # (SQ/指数リバランス/FOMC/日銀/ピア決算) を Worker /judge-context が 1 call で正規化して返す。
+      # 鮮度判定・20日レンジ位置・MA位置・出来高倍率・days_to_earnings・market_phase・event_context は
+      # すべて Worker 側 (決定論的) で算出済み。skill には curl を叩かせず材料の読解と分析だけをさせる。
+      # JSON は複数行・特殊文字を含むので prompt に直接埋めず、ファイルに書いて skill にパスを渡す。
+      #
+      # 指数リバランス窓 (/index-rebalance) は LLM には渡さない観測事実なので、numctx.json とは
+      # **別ファイル** (rebalance.json) に保存する。同じファイルに混ぜると skill に余計なリバランス
+      # 情報が渡ってしまうため、保存場所を情報ごとに分ける。両 curl は依存が無いので & で並行に
+      # 走らせ、wait で揃える (judge-context のレイテンシに相乗りで実質ゼロコスト)。
+      # リバランスは窓外なら note が空になり、post-brief.sh 側で何も貼らない。fetch 失敗は空ファイル。
+      - name: Build numeric context
+        run: |
+          curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/judge-context?code=${TICKER}" > "$RUNNER_TEMP/numctx.json" &
+          numctx_pid=$!
+          # リバランスはブリーフに必須でない観測事実。fetch 失敗でもブリーフを止めず空ファイルで続ける。
+          ( curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+              "${WORKER_URL%/}/index-rebalance" > "$RUNNER_TEMP/rebalance.json" || : > "$RUNNER_TEMP/rebalance.json" ) &
+          rebal_pid=$!
+          # judge-context は必須。失敗したらここで落とす。リバランスは結果を問わず待つだけ。
+          wait "$numctx_pid"
+          wait "$rebal_pid" || true
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # payload/inputs 由来の ticker は run へ生展開せず env 経由で渡す。
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
+
+      - name: Run ticker-brief
+        id: brief
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # context-builder 発の repository_dispatch を許可する。context-builder は OAuth
+          # (claude_code_oauth_token) で走るため、その中から叩く dispatch の actor は
+          # github-actions[bot] ではなく claude (type: Bot) になる。手動/github.token 経由の
+          # github-actions[bot] も許すため両方を列挙する。既定では Bot起動を Action が弾く。
+          # Slack スラッシュコマンド /brief 経由は Worker (GitHub App "omnistove-internal-auth")
+          # 発の dispatch なので、その App の Bot も許可する (slack-reply.yml と同じ)。
+          allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
+          # ブリーフのルールは prompt にベタ書きする (skill ファイルは持たない)。実行時に変わる数値コンテキスト
+          # だけを @ でファイルから取り込む (外部由来 JSON を ${{ }} で prompt に生展開せず YAML 破壊・
+          # prompt インジェクションを防ぐ)。ticker は Validate 済みなので prose に展開してよい。
+          prompt: |
+            # ticker-brief — 対象銘柄 ${{ github.event.client_payload.ticker || inputs.ticker }}
+
+            Produce a **材料ブリーフ** — a research digest for a human to make their own trading decision.
+            Summarize the fresh materials on this name, explain **why each matters** (the transmission path
+            into 業績/株価, precedents when you know one), and lay out the standing 強気/弱気 case. **Never
+            output a trading call**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs (買い/売り/
+            利確/増し玉/様子見). Price levels belong to the posting step, which appends the real ones
+            (現値/MA/レンジ/ATR) deterministically — do not restate numeric levels in your text. You may —
+            and should — describe what the tape did (急伸/出来高急増/セクタ内で劣後 など) as fact.
+
+            Report what you can see now — context, numbers, `event_context` — never hindsight framing
+            ("priced in", "unexplained" volume, a top being "in"). Ground every claim in a material,
+            a number, or a sourced find; write nothing you cannot attribute.
+
+            ## Output shape
+
+            - `status`: default `brief`. Return `no_update` only when the freshest entry in 直近の重大トピック
+              is stale (>14日) AND nothing else fired (no fresh earnings/guidance, no forced-flow reading,
+              no notable tape move worth reporting). When in doubt, brief. On `no_update` leave `headline`
+              null and every array empty.
+            - `headline`: verbatim format `📰 <ticker> <name> 材料ブリーフ: <新着材料の一言サマリー>`.
+            - `materials`: the fresh items (newest first, up to 4). `title` = `YYYY-MM-DD <何が起きたか>` in
+              one line. `analysis` = 1–3 lines: なぜ重要か / 業績・株価への波及経路 / 過去の類似例や市場の
+              初期反応. Write the path concretely (「HBM 検査需要 → 後工程テスタの受注に数四半期先行」),
+              not conditional boilerplate.
+            - `bull` / `bear`: the standing case each way, 0–4 lines each, drawn from context + fresh
+              materials + numbers. State facts and their weight, not recommendations. It is fine for one
+              side to be empty when the materials genuinely lean one way.
+            - `watch`: 0–2 lines — the next verifiable fact that would change the picture (次回決算日,
+              続報の出所, セクタ指標). Not advice.
+
+            ## Web research (supplementary)
+
+            The collected data (`numctx.json` + `context_body`) is primary. You may use WebSearch/WebFetch
+            to enrich `materials` — 一次情報 (会社 IR/取引所/当局), 海外報道, アナリスト見解 — under these
+            rules: at most 4 search+fetch calls total; only to corroborate or deepen a material you already
+            see in the inputs, not to hunt for unrelated stories; cite the source inline in `analysis`
+            (媒体名, 日付); if you find nothing solid, write nothing — never invent a source or a fact.
+
+            ## Inputs
+
+            How to read the fields (what to lead on, what to ignore):
+
+            - **`context_body`** carries three layers: 直近の重大トピック (freshest), older structural context,
+              証券会社レーティング (6–12mo, weight by 発行日 / アップサイド% / 信頼度). Null → note
+              `context: unavailable` and brief on price/tape facts alone.
+            - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary (前夜米市場・
+              先物・セクター・当日イベント). Use it to frame today's backdrop; null → no fresh morning
+              summary, skip.
+            - **`prices`**: ignore `pts_price`; use `change_pct`/`volume`/`quote_time`/`slot` (`slot` =
+              `premarket`/`regular`/`closing`). `quote_status: closed` → stale tape, demoted to backdrop.
+            - **`market_phase`** (JST trading-day position) says what to lead on: `premarket` → lead on
+              `premarket`/context (digesting overnight NY); `afternoon_session` with a live tape → lead on the
+              live tape; `closed` → describe the close.
+              - **During the session** (`morning_session`/`lunch_break`/`afternoon_session`) `daily` has no
+                confirmed bar for today yet, so `daily.latest_date` is the **prior** trading day and `vol_x_20d` /
+                `range_pct` / MA乖離 are all on that prior bar — do not read them as today's. For 出来高 use
+                `daily.vol_x_20d_intraday` (today's cumulative volume pace-projected to a full day ÷ 20日平均);
+                null near the open means too little has traded to project. After `closed`, `vol_x_20d` is the
+                confirmed value again and `vol_x_20d_intraday` is null.
+            - **`premarket`** (prior NY session): `sox_change_pct` is the overnight external backdrop —
+              `sector` leads over it; `nasdaq_change_pct` / `dow_change_pct` / `nikkei_futures_price` only confirm.
+              `us_session: carried_over` = the US was closed overnight (休場明け) and these numbers are the prior
+              close (printed `us_close_jst_date`) that the previous JP session already traded on — treat as no new
+              overnight information, don't report it as fresh.
+            - **`valuation`** (`{ per_now, fair_per, vs_fair }`): `vs_fair` is the 実績PER vs 妥当PER read —
+              `above`/`inline`/`below`. Report it as a fact in bull/bear when it matters.
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`; a `特になし` tail
+              means no event fired — ignore it.
+            - **`sector`** (`{ backdrop, avg_ret_5d_pct, rows }`, null → skip): peer tape, `rows` sorted 相対強弱の強い順.
+              This ticker's `rel_strength_pct` (its 5日リターン − セクタ平均) is the sector read — lead on it over SOX.
+            - **`forced`** (status `none` → skip): `summary` already states the forced-flow timing
+              (投げ/踏み, ~何営業日後のどのセッション, building=これから / exhausted=出尽くし); take it as
+              given and report it as a 需給 fact (投げ pending is usually a `bear` line, 踏み上げ a `bull`
+              line, or a `watch` line).
+            - **Margin** (信用残): report a buildup contradicting the context as a 需給 fact.
+            - **Earnings near** (`earnings`) is binary-event risk — report the date as a `watch`/`bear` fact.
+              **Just out** (`earnings_result.status: fresh`): report `verdict` (beat/miss/inline) as a
+              material, and read the price reaction through **## 決算の特色・クセ** in `context_body` (the
+              name may move on a metric other than EPS).
+            - **`ticker_note`**: qualifies the other inputs.
+            - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
+            - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.
+
+            ## 数値コンテキスト
+
+            @${{ runner.temp }}/numctx.json
+          # --json-schema で出力の形を縛る (= ticker-brief の構造化スキーマの唯一の定義場所)。
+          # 検証済み JSON は steps.brief.outputs.structured_output で受ける。skill には curl/sh を
+          # 叩かせない (投稿/保存は次ステップ): Bash は渡さず Read + WebSearch/WebFetch (追加取材) のみ許可。
+          claude_args: >-
+            --model opus --effort high --allowedTools Read,WebSearch,WebFetch --max-turns 50
+            --json-schema '{
+              "type":"object","additionalProperties":false,
+              "required":["status","headline","materials","bull","bear","watch"],
+              "properties":{
+                "status":{"enum":["brief","no_update"],"description":"brief=材料ブリーフを出す / no_update=新着も特筆事項も無し (投稿しない)"},
+                "headline":{"type":["string","null"],"description":"Slack first line, exact format verbatim: 📰 <ticker> <name> 材料ブリーフ: <新着材料の一言サマリー>; null when no_update"},
+                "materials":{"type":"array","maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["title","analysis"],"properties":{"title":{"type":"string","description":"1 line: YYYY-MM-DD <何が起きたか>"},"analysis":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3,"description":"1-3 lines in Japanese: なぜ重要か / 業績・株価への波及経路 / 過去の類似例。Web で裏取りした場合は出典 (媒体名, 日付) を明記"}}},"description":"新着材料 (newest first)。no_update なら空"},
+                "bull":{"type":"array","items":{"type":"string"},"maxItems":4,"description":"強気材料 (事実とその重み。推奨は書かない)"},
+                "bear":{"type":"array","items":{"type":"string"},"maxItems":4,"description":"弱気材料・リスク要因 (事実とその重み。推奨は書かない)"},
+                "watch":{"type":"array","items":{"type":"string"},"maxItems":2,"description":"次に確認すべき事実 (次回決算・続報の出所・セクタ指標)"}
+              }
+            }'
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+
+      # skill の構造化出力 (structured_output) を Slack に投稿し、ブリーフを Worker に保存する
+      # (curl/jq/blocks 組み立て/フォールバックは script が持つ)。第2引数 = ブリーフ JSON、
+      # 第3引数 = 前段で並行取得した指数リバランス窓の JSON (LLM には渡していない観測事実)。
+      # 第4引数 = LLM に渡したのと同じ numctx。post-brief.sh が 📏 注目水準 (現値/MA5/MA25/20日レンジ/
+      # ATR) を numctx の実在値から決定論で組んで本文末尾に貼る (LLM は水準の数値を出さない)。
+      - name: Post brief to Slack
+        run: |
+          printf '%s' "$BRIEF_JSON" > "$RUNNER_TEMP/brief.json"
+          bash scripts/post-brief.sh "$TICKER" "$RUNNER_TEMP/brief.json" "$RUNNER_TEMP/rebalance.json" "$RUNNER_TEMP/numctx.json"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
+          BRIEF_JSON: ${{ steps.brief.outputs.structured_output }}

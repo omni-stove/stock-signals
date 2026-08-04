@@ -26,7 +26,7 @@
 //      業種水準や許容PERを踏まえて更新する主観値。
 //  - note        : 判定に毎回効かせたい固定注記 (任意)。living context は IR/news で再生成され
 //      密度基準で削られるが、これは人手で据える不変の判断材料 (例「決算先行ピアは MU、時間外が
-//      翌朝の寄りを規定」)。judge-context が当該銘柄分だけ JSON に同梱し signal-judge 等が読む。
+//      翌朝の寄りを規定」)。judge-context が当該銘柄分だけ JSON に同梱し ticker-brief 等が読む。
 
 // ticker.ir の形 (site パーサキー + 取得 URL)。外部が使うのは導出後の IrSourceEntry。
 interface IrSource {

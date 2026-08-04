@@ -4,7 +4,7 @@
 // D1 テーブル premarket_backdrop に INSERT OR REPLACE で冪等に書く。
 //
 // 前夜の米国市場 (とくに SOX) と日経先物が寄り付きの方向をかなり決めるため、これを
-// 寄り前 intake cron が取得し、signal-judge の pre-open weighting の入力にする。
+// 寄り前 intake cron が取得し、ticker-brief の pre-open weighting の入力にする。
 //
 // ※LLM は使わない。スクレイピング・正規化のみ。kabutan は全ソース UTF-8 なので iconv 不要。
 

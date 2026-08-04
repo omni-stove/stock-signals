@@ -71,6 +71,20 @@
       "when": 1782946908848,
       "tag": "0009_giant_silk_fever",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1785880338581,
+      "tag": "0010_shocking_leopardon",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1785880344233,
+      "tag": "0011_mean_exiles",
+      "breakpoints": true
     }
   ]
 }

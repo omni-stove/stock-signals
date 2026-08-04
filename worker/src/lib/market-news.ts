@@ -1,7 +1,7 @@
 // Cloudflare Worker: 市場テーマニュース収集 (kabutan 市場ニュース総合 + ITmedia AI+ RSS)
 //
 // 銘柄ページ (news.ts) に載らない市場全体・テーマニュースを拾う。半導体/AI/金利/米国市場の
-// テーマに当たった見出しだけを market_news テーブル + R2 に保存し、地合い判定 (market-check) が
+// テーマに当たった見出しだけを market_news テーブル + R2 に保存し、マーケットブリーフ (market-brief) が
 // /market-context 経由で最新数件を読む。新規見出しに watchlist 銘柄の言及 (matchTickers) が
 // あれば freshTickers として返し、個別判定 (signal-report) の起動にも使う。
 //   source は持たない (銘柄非依存)。重複排除は market_news.url PK + INSERT OR IGNORE。

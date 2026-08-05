@@ -11,9 +11,9 @@
 //
 // 全ソース UTF-8 (調査済) なので TextDecoder で十分。iconv 不要。
 
-import * as cheerio from "cheerio";
 import { seenArticleUrls } from "./articles";
 import { db } from "./db";
+import { firstAttr, firstText, queryAll } from "./html";
 import { parseKabutanNewsList, sliceArticle } from "./kabutan";
 import { articles } from "./schema";
 import { WATCHLIST } from "./timeseries";
@@ -34,14 +34,14 @@ const SITE = "kabutan";
 const NEWS_LIMIT = 20;
 
 // 株探の記事本文ページから本文を抽出。
-function parseKabutanArticle(html: string): {
+async function parseKabutanArticle(html: string): Promise<{
 	title: string;
 	body: string;
 	published_at: string;
-} {
+}> {
 	// 本文抽出のセレクタが目印にする id/class が <article> 外にあるレイアウトでは
 	// sliceArticle が全文を返すので、切り出しで欠測にはならない。
-	const $ = cheerio.load(
+	const q = await queryAll(
 		sliceArticle(html, [
 			"shijyo_news_text",
 			"news_contents",
@@ -49,27 +49,40 @@ function parseKabutanArticle(html: string): {
 			"news_body",
 			"s_news_date",
 		]),
+		[
+			"h1.pdbt0",
+			"#news_contents h1",
+			"h1",
+			"title",
+			"#shijyo_news_text",
+			".news_body",
+			"#news_contents .body",
+			"article",
+			"main",
+			"time.s_news_date",
+			'time[itemprop="datePublished"]',
+		],
 	);
 	// 記事タイトルは本文ブロックの h1.pdbt0。ページ上部の h2 は銘柄名 (「6857 アドバンテスト」)
 	// なので拾わない。見つからなければ h1 全般 → <title> の順にフォールバック。
 	const title =
-		$("h1.pdbt0").first().text().trim() ||
-		$("#news_contents h1").first().text().trim() ||
-		$("h1").first().text().trim() ||
-		$("title").text().trim();
+		firstText(q, "h1.pdbt0") ||
+		firstText(q, "#news_contents h1") ||
+		firstText(q, "h1") ||
+		firstText(q, "title");
 	const body =
-		$("#shijyo_news_text").text().trim() ||
-		$(".news_body").text().trim() ||
-		$("#news_contents .body").text().trim() ||
-		$("article").text().trim() ||
-		$("main").text().trim();
+		firstText(q, "#shijyo_news_text") ||
+		firstText(q, ".news_body") ||
+		firstText(q, "#news_contents .body") ||
+		firstText(q, "article") ||
+		firstText(q, "main");
 	// 公開日は記事の datePublished (time.s_news_date[itemprop=datePublished])。
-	// $("time").first() はページ上部の株価更新時刻 (class="close") を拾ってしまい、
+	// 無条件の time 先頭一致はページ上部の株価更新時刻 (class="close") を拾ってしまい、
 	// 記事と無関係の「現在日」になるため使わない (これが publised_at 化けの原因だった)。
 	const published_at =
-		$("time.s_news_date").first().attr("datetime") ||
-		$('time[itemprop="datePublished"]').first().attr("datetime") ||
-		$("time.s_news_date").first().text().trim();
+		firstAttr(q, "time.s_news_date", "datetime") ||
+		firstAttr(q, 'time[itemprop="datePublished"]', "datetime") ||
+		firstText(q, "time.s_news_date");
 	return { title, body: body.replace(/\s+\n/g, "\n").trim(), published_at };
 }
 
@@ -133,7 +146,7 @@ async function collectNewsOne(
 	fresh: FreshNews[];
 }> {
 	const listHtml = await fetchHtml(URL_NEWS(code), env);
-	const items = parseKabutanNewsList(listHtml, URL_NEWS(code)).slice(
+	const items = (await parseKabutanNewsList(listHtml, URL_NEWS(code))).slice(
 		0,
 		NEWS_LIMIT,
 	);
@@ -153,7 +166,7 @@ async function collectNewsOne(
 		await sleep(interval);
 		try {
 			const artHtml = await fetchHtml(it.url, env);
-			const parsed = parseKabutanArticle(artHtml);
+			const parsed = await parseKabutanArticle(artHtml);
 			const title = parsed.title || it.title;
 			const date = normArticleDate(parsed.published_at || it.date, Date.now());
 			await saveArticle(env, {
@@ -210,19 +223,19 @@ if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
 
 	describe("parseKabutanArticle", () => {
-		it("見出し (h1.pdbt0) と本文を抽出する", () => {
+		it("見出し (h1.pdbt0) と本文を抽出する", async () => {
 			const html =
 				"<h1 class='pdbt0'>テスト見出し</h1><div id='shijyo_news_text'>  本文テキスト  </div>";
-			const r = parseKabutanArticle(html);
+			const r = await parseKabutanArticle(html);
 			expect(r.title).toBe("テスト見出し");
 			expect(r.body).toBe("本文テキスト");
 		});
-		it("本文の優先順 (#shijyo_news_text → .news_body → #news_contents .body → article → main)", () => {
+		it("本文の優先順 (#shijyo_news_text → .news_body → #news_contents .body → article → main)", async () => {
 			const html =
 				"<h1 class='pdbt0'>T</h1><div class='news_body'>fallback本文</div>";
-			expect(parseKabutanArticle(html).body).toBe("fallback本文");
+			expect((await parseKabutanArticle(html)).body).toBe("fallback本文");
 		});
-		it("ページ上部の銘柄名 h2 や株価更新時刻 time は拾わず、記事の datePublished を取る", () => {
+		it("ページ上部の銘柄名 h2 や株価更新時刻 time は拾わず、記事の datePublished を取る", async () => {
 			// kabutan の実構造: 上部に銘柄名 h2 と株価更新時刻 (time.close=現在日) があり、
 			// その後に記事の time.s_news_date[itemprop=datePublished] と h1.pdbt0 が来る。
 			// h2 と time.first() ではなく記事側の要素を拾う。
@@ -235,7 +248,7 @@ if (import.meta.vitest) {
 				'<div class="body">記事本文ここ</div>',
 				"</div>",
 			].join("");
-			const r = parseKabutanArticle(html);
+			const r = await parseKabutanArticle(html);
 			expect(r.title).toBe("アドバンテストが上値追い");
 			expect(r.published_at).toBe("2026-06-19T09:06:00+09:00");
 			expect(

@@ -12,8 +12,8 @@
 //
 // prices と同じ「5分枠で1行」冪等モデル (slot5min + onConflictDoNothing)。※LLM は使わない。
 
-import * as cheerio from "cheerio";
 import { db } from "./db";
+import { decodeEntities, firstText, queryAll, scanHtml } from "./html";
 import { sliceStockInfo } from "./kabutan";
 import { liveIndexes } from "./schema";
 import { fetchHtml, sleep } from "./utils";
@@ -69,15 +69,64 @@ function slot5min(iso: string): string {
 }
 
 // 株探の指数ページ (日経平均/TOPIX 等)。個別銘柄の現値ページと同じ .si_i1_2 ブロック構造。
-function parseKabutanIndex(html: string): IndexQuote {
-	const $ = cheerio.load(sliceStockInfo(html));
-	const block = $(".si_i1_2").first();
-	const price = toNumber(block.find(".kabuka").first().text());
-	const dds = block.find(".si_i1_dl1 dd");
-	const change = toNumber(dds.eq(0).find("span").first().text());
-	const change_pct = toNumber(dds.eq(1).find("span").first().text());
-	const quote_time = $("#stockinfo_i1 time").first().attr("datetime") || null;
-	return { price, change, change_pct, quote_time };
+// dd ごとの先頭 span ([0]=前日比, [1]=変化率) は出現順の状態機械で追う。
+async function parseKabutanIndex(html: string): Promise<IndexQuote> {
+	const frag = sliceStockInfo(html);
+	const dds: string[] = [];
+	let inFirstSpan = false;
+	let sawSpanInDd = false;
+	let price = "";
+	let priceCount = 0;
+	let quote_time: string | null = null;
+	await scanHtml(frag, [
+		[
+			".si_i1_2 .kabuka",
+			{
+				element() {
+					priceCount++;
+				},
+				text(t) {
+					if (priceCount === 1) price += t.text;
+				},
+			},
+		],
+		[
+			".si_i1_2 .si_i1_dl1 dd",
+			{
+				element() {
+					dds.push("");
+					sawSpanInDd = false;
+					inFirstSpan = false;
+				},
+			},
+		],
+		[
+			".si_i1_2 .si_i1_dl1 dd span",
+			{
+				element() {
+					inFirstSpan = !sawSpanInDd;
+					sawSpanInDd = true;
+				},
+				text(t) {
+					if (inFirstSpan) dds[dds.length - 1] += t.text;
+				},
+			},
+		],
+		[
+			"#stockinfo_i1 time",
+			{
+				element(e) {
+					quote_time ??= e.getAttribute("datetime");
+				},
+			},
+		],
+	]);
+	return {
+		price: toNumber(decodeEntities(price)),
+		change: toNumber(decodeEntities(dds[0] ?? "")),
+		change_pct: toNumber(decodeEntities(dds[1] ?? "")),
+		quote_time: quote_time || null,
+	};
 }
 
 // investing.com のページは 1MB を超え、そのまま parse すると CPU を数百ms食う。
@@ -99,27 +148,27 @@ function sliceInstrument(html: string): string {
 //   instrument-price-last / -change / -change-percent、時刻は <time data-test="trading-time-label">。
 //   change-percent は "(-2.04%)" のように括弧付きなので toNumber が括弧を剥がす。
 //   quote_time は <time dateTime="…"> の ISO8601 (UTC) を優先し、無ければ表示テキスト。
-function parseInvestingIndex(html: string): IndexQuote {
-	const $ = cheerio.load(sliceInstrument(html));
-	const price = toNumber(
-		$('[data-test="instrument-price-last"]').first().text(),
-	);
-	const change = toNumber(
-		$('[data-test="instrument-price-change"]').first().text(),
-	);
-	const change_pct = toNumber(
-		$('[data-test="instrument-price-change-percent"]').first().text(),
-	);
-	const timeEl = $('[data-test="trading-time-label"]').first();
-	const quote_time =
-		timeEl.attr("dateTime") ||
-		timeEl.attr("datetime") ||
-		timeEl.text().trim() ||
-		null;
-	return { price, change, change_pct, quote_time };
+//   属性名は HTML パース上は小文字化されるので datetime だけ見れば dateTime も拾える。
+async function parseInvestingIndex(html: string): Promise<IndexQuote> {
+	const q = await queryAll(sliceInstrument(html), [
+		'[data-test="instrument-price-last"]',
+		'[data-test="instrument-price-change"]',
+		'[data-test="instrument-price-change-percent"]',
+		'[data-test="trading-time-label"]',
+	]);
+	const time = q['[data-test="trading-time-label"]'][0];
+	return {
+		price: toNumber(firstText(q, '[data-test="instrument-price-last"]')),
+		change: toNumber(firstText(q, '[data-test="instrument-price-change"]')),
+		change_pct: toNumber(
+			firstText(q, '[data-test="instrument-price-change-percent"]'),
+		),
+		quote_time:
+			time?.attrs.datetime || time?.attrs.dateTime || time?.text.trim() || null,
+	};
 }
 
-function parse(parser: Parser, html: string): IndexQuote {
+function parse(parser: Parser, html: string): Promise<IndexQuote> {
 	return parser === "kabutan"
 		? parseKabutanIndex(html)
 		: parseInvestingIndex(html);
@@ -137,7 +186,7 @@ export async function collectLiveIndexes(
 		if (!first) await sleep(interval);
 		first = false;
 		try {
-			const q = parse(def.parser, await fetchHtml(def.url, env));
+			const q = await parse(def.parser, await fetchHtml(def.url, env));
 			const fetched_at = new Date().toISOString();
 			const slot = slot5min(q.quote_time || fetched_at);
 			const r = await db(env.DB)
@@ -252,16 +301,16 @@ if (import.meta.vitest) {
 				</div>
 				<time datetime="2026-07-01T15:30+09:00"></time>
 			</div>`;
-		it("現値・前日比・変化率・時刻を抽出する", () => {
-			expect(parseKabutanIndex(html)).toEqual({
+		it("現値・前日比・変化率・時刻を抽出する", async () => {
+			expect(await parseKabutanIndex(html)).toEqual({
 				price: 70474.96,
 				change: 412.64,
 				change_pct: 0.59,
 				quote_time: "2026-07-01T15:30+09:00",
 			});
 		});
-		it("空 HTML は全 null", () => {
-			expect(parseKabutanIndex("<html></html>")).toEqual({
+		it("空 HTML は全 null", async () => {
+			expect(await parseKabutanIndex("<html></html>")).toEqual({
 				price: null,
 				change: null,
 				change_pct: null,
@@ -277,22 +326,22 @@ if (import.meta.vitest) {
 			<span data-test="instrument-price-change">-173.07</span>
 			<span data-test="instrument-price-change-percent">(-2.04%)</span>
 			<time dateTime="2026-07-01T06:29:59.000Z" data-test="trading-time-label">02:29:59</time>`;
-		it("現値・前日比・括弧付き変化率・ISO時刻を抽出する", () => {
-			expect(parseInvestingIndex(html)).toEqual({
+		it("現値・前日比・括弧付き変化率・ISO時刻を抽出する", async () => {
+			expect(await parseInvestingIndex(html)).toEqual({
 				price: 8303.41,
 				change: -173.07,
 				change_pct: -2.04,
 				quote_time: "2026-07-01T06:29:59.000Z",
 			});
 		});
-		it("dateTime が無ければ表示テキストを時刻に使う", () => {
-			const q = parseInvestingIndex(
+		it("dateTime が無ければ表示テキストを時刻に使う", async () => {
+			const q = await parseInvestingIndex(
 				'<time data-test="trading-time-label">02:29:59</time>',
 			);
 			expect(q.quote_time).toBe("02:29:59");
 		});
-		it("空 HTML は全 null", () => {
-			expect(parseInvestingIndex("<html></html>")).toEqual({
+		it("空 HTML は全 null", async () => {
+			expect(await parseInvestingIndex("<html></html>")).toEqual({
 				price: null,
 				change: null,
 				change_pct: null,

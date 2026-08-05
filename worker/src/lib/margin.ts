@@ -4,11 +4,11 @@
 // テーブル (日付 / 売り残 / 買い残 / 倍率) から取得し D1 margin に蓄積する。1回で過去5週が返る。
 // 冪等キー = (ticker, 集計基準日)。毎日取っても1週1行に収束する流儀は schema.ts の margin を参照。
 
-import * as cheerio from "cheerio";
 import { db } from "./db";
+import { scanTables } from "./html";
 import { margin } from "./schema";
 import { WATCHLIST } from "./timeseries";
-import { fetchHtml, sleep } from "./utils";
+import { fetchHtml, sleep, sliceTables } from "./utils";
 
 export interface MarginEnv {
 	DB: D1Database;
@@ -54,40 +54,38 @@ type MarginRow = {
 
 // 個別ページから信用残テーブル (ヘッダに「売り残」「買い残」「倍率」を持つ table) を抽出する。
 // 行 = 日付(MM/DD) / 売り残 / 買い残 / 倍率。日付は normalizeMarginDate で YYYY-MM-DD に正規化。
-function parseKabutanMargin(html: string, nowIso: string): MarginRow[] {
-	const $ = cheerio.load(html);
+// 信用残テーブルを含む table 群に絞ってから読む (sliceTables。無ければ全文へフォールバック)。
+async function parseKabutanMargin(
+	html: string,
+	nowIso: string,
+): Promise<MarginRow[]> {
+	const tables = await scanTables(sliceTables(html, "売り残") ?? html);
 	const rows: MarginRow[] = [];
 
-	$("table").each((_, table) => {
-		if (rows.length > 0) return; // 最初に見つかった信用残テーブルだけ使う
-		const $t = $(table);
-		const headers = $t
-			.find("thead th")
-			.map((_, th) => $(th).text().trim())
-			.get();
+	for (const t of tables) {
+		if (rows.length > 0) break; // 最初に見つかった信用残テーブルだけ使う
 		// 「売り残」「買い残」「倍率」を持つテーブルが信用残テーブル。
 		if (
 			!(
-				headers.includes("売り残") &&
-				headers.includes("買い残") &&
-				headers.includes("倍率")
+				t.headers.includes("売り残") &&
+				t.headers.includes("買い残") &&
+				t.headers.includes("倍率")
 			)
 		)
-			return;
+			continue;
 
-		$t.find("tbody tr").each((_, tr) => {
-			const cells = $(tr).find("th, td");
-			if (cells.length < 4) return;
-			const date = normalizeMarginDate(cells.eq(0).text().trim(), nowIso);
-			if (!date) return;
+		for (const { cells } of t.rows) {
+			if (cells.length < 4) continue;
+			const date = normalizeMarginDate(cells[0].text.trim(), nowIso);
+			if (!date) continue;
 			rows.push({
 				date,
-				short_qty: toNumber(cells.eq(1).text()),
-				long_qty: toNumber(cells.eq(2).text()),
-				ratio: toNumber(cells.eq(3).text()),
+				short_qty: toNumber(cells[1].text),
+				long_qty: toNumber(cells[2].text),
+				ratio: toNumber(cells[3].text),
 			});
-		});
-	});
+		}
+	}
 
 	return rows;
 }
@@ -98,7 +96,7 @@ async function collectMarginOne(
 ): Promise<{ written: number; skipped: number }> {
 	const html = await fetchHtml(URL_MARGIN(code), env);
 	const fetched_at = new Date().toISOString();
-	const bars = parseKabutanMargin(html, fetched_at);
+	const bars = await parseKabutanMargin(html, fetched_at);
 	if (bars.length === 0) return { written: 0, skipped: 0 };
 	const source = `${SITE}:${code}`;
 
@@ -214,17 +212,19 @@ if (import.meta.vitest) {
 			"</tbody></table>",
 		].join("");
 
-		it("信用残テーブルの各行を正規化して返す", () => {
-			const rows = parseKabutanMargin(html, "2026-06-20T10:00:00Z");
+		it("信用残テーブルの各行を正規化して返す", async () => {
+			const rows = await parseKabutanMargin(html, "2026-06-20T10:00:00Z");
 			expect(rows).toEqual([
 				{ date: "2026-06-13", short_qty: 120000, long_qty: 360000, ratio: 3 },
 				{ date: "2026-06-06", short_qty: 110000, long_qty: 330000, ratio: 3 },
 			]);
 		});
-		it("該当ヘッダの無いテーブルは無視する", () => {
+		it("該当ヘッダの無いテーブルは無視する", async () => {
 			const other =
 				"<table><thead><tr><th>日付</th><th>株価</th></tr></thead><tbody><tr><td>06/13</td><td>1000</td></tr></tbody></table>";
-			expect(parseKabutanMargin(other, "2026-06-20T10:00:00Z")).toEqual([]);
+			expect(await parseKabutanMargin(other, "2026-06-20T10:00:00Z")).toEqual(
+				[],
+			);
 		});
 	});
 }

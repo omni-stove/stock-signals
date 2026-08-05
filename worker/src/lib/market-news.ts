@@ -17,9 +17,9 @@
 //   日付 = time.s_news_date[datetime] (これは銘柄ニュースと共通)。
 // 銘柄ニュース用 parseKabutanArticle は #shijyo_news_text / h1.pdbt0 を見るため流用できない。
 
-import * as cheerio from "cheerio";
 import { inArray } from "drizzle-orm";
 import { db } from "./db";
+import { firstAttr, firstText, parseXmlItems, queryAll } from "./html";
 import { parseKabutanNewsList } from "./kabutan";
 import { marketNews } from "./schema";
 import { fetchHtml, hash, normArticleDate, sleep, sliceHtml } from "./utils";
@@ -160,25 +160,26 @@ function matchTopics(title: string): string | null {
 	return hit.length > 0 ? hit.map((g) => g.key).join(",") : null;
 }
 
-// RSS 2.0 の <item> を url/title/date/body に抽出 (cheerio の xmlMode)。ITmedia AI+ 用。
+// RSS 2.0 の <item> を url/title/date/body に抽出 (html.ts の parseXmlItems)。ITmedia AI+ 用。
 // body は description をそのまま使う (記事ページ再取得は不要)。date は pubDate を YYYY-MM-DD に正規化。
 function parseRss(
 	xml: string,
 ): { url: string; title: string; date: string; body: string }[] {
-	const $ = cheerio.load(xml, { xmlMode: true });
 	const out: { url: string; title: string; date: string; body: string }[] = [];
-	$("item").each((_, el) => {
-		const $it = $(el);
-		const url = $it.find("link").first().text().trim();
-		const title = $it.find("title").first().text().trim();
-		if (!url || !title) return;
+	for (const item of parseXmlItems(xml, [
+		"link",
+		"title",
+		"pubDate",
+		"description",
+	])) {
+		if (!item.link || !item.title) continue;
 		out.push({
-			url,
-			title,
-			date: rssDate($it.find("pubDate").first().text().trim()),
-			body: $it.find("description").first().text().trim(),
+			url: item.link,
+			title: item.title,
+			date: rssDate(item.pubDate),
+			body: item.description,
 		});
-	});
+	}
 	return out;
 }
 
@@ -191,29 +192,39 @@ function rssDate(raw: string): string {
 }
 
 // 市場ニュースの記事本文ページを抽出 (銘柄ニュースと DOM が異なる、冒頭コメント参照)。
-function parseArticle(html: string): {
+async function parseArticle(html: string): Promise<{
 	title: string;
 	body: string;
 	published_at: string;
-} {
-	// #shijyounews 〜 </article> だけを parse する (フルページは CPU が高い)。
+}> {
+	// #shijyounews 〜 </article> だけを parse する (流すバイト数を絞る)。
 	// マーカーが無いページ (DOM 変更等) は全文へフォールバック。
-	const $ = cheerio.load(
+	const q = await queryAll(
 		sliceHtml(html, '<div id="shijyounews"', "</article>") ?? html,
+		[
+			"#shijyounews article",
+			"#shijyounews article h1",
+			"#shijyounews article .body",
+			"article",
+			"article h1",
+			"article .body",
+			"h1",
+			"title",
+			"time.s_news_date",
+			'time[itemprop="datePublished"]',
+		],
 	);
 	// 本文コンテナは #shijyounews article。タイトルは article h1 (【市況】等の接頭辞付き)、
 	// 本文は article .body。フォールバックは article 全文 → <title>。
-	const $art = $("#shijyounews article").first();
-	const scope = $art.length ? $art : $("article").first();
+	const scoped = q["#shijyounews article"].length > 0;
+	const scope = scoped ? "#shijyounews article" : "article";
 	const title =
-		scope.find("h1").first().text().trim() ||
-		$("h1").first().text().trim() ||
-		$("title").text().trim();
-	const body = scope.find(".body").first().text().trim() || scope.text().trim();
+		firstText(q, `${scope} h1`) || firstText(q, "h1") || firstText(q, "title");
+	const body = firstText(q, `${scope} .body`) || firstText(q, scope);
 	const published_at =
-		$("time.s_news_date").first().attr("datetime") ||
-		$('time[itemprop="datePublished"]').first().attr("datetime") ||
-		$("time.s_news_date").first().text().trim();
+		firstAttr(q, "time.s_news_date", "datetime") ||
+		firstAttr(q, 'time[itemprop="datePublished"]', "datetime") ||
+		firstText(q, "time.s_news_date");
 	return { title, body: body.replace(/\s+\n/g, "\n").trim(), published_at };
 }
 
@@ -286,7 +297,7 @@ export async function collectMarketNews(env: MarketNewsEnv): Promise<{
 	emptyParse: boolean;
 }> {
 	const listHtml = await fetchHtml(URL_LIST, env);
-	const all = parseKabutanNewsList(listHtml, URL_LIST);
+	const all = await parseKabutanNewsList(listHtml, URL_LIST);
 	// topic に当たったものだけを上限まで (新しい順に並んでいる前提)。
 	const items = all
 		.map((it) => ({ ...it, topic: matchTopics(it.title) }))
@@ -305,7 +316,7 @@ export async function collectMarketNews(env: MarketNewsEnv): Promise<{
 		await sleep(interval);
 		try {
 			const artHtml = await fetchHtml(it.url, env);
-			const parsed = parseArticle(artHtml);
+			const parsed = await parseArticle(artHtml);
 			const title = parsed.title || it.title;
 			const date = normArticleDate(parsed.published_at || it.date, Date.now());
 			await saveArticle(env, {
@@ -463,7 +474,7 @@ if (import.meta.vitest) {
 	});
 
 	describe("parseArticle", () => {
-		it("#shijyounews article から h1(接頭辞付き) と .body を拾う", () => {
+		it("#shijyounews article から h1(接頭辞付き) と .body を拾う", async () => {
 			const html = [
 				'<div id="shijyounews"><article>',
 				'<time class="s_news_date" datetime="2026-06-26T11:47:00+09:00">26/06/26</time>',
@@ -471,7 +482,7 @@ if (import.meta.vitest) {
 				'<div class="body">韓国総合株価指数が大幅安。</div>',
 				"</article></div>",
 			].join("");
-			const r = parseArticle(html);
+			const r = await parseArticle(html);
 			expect(r.title).toBe("【市況】韓国株6%安、オープンAI上場延期も重石");
 			expect(r.body).toContain("韓国総合株価指数");
 			expect(r.published_at).toBe("2026-06-26T11:47:00+09:00");
@@ -482,9 +493,9 @@ if (import.meta.vitest) {
 				),
 			).toBe("2026-06-26");
 		});
-		it("article 直下に .body が無ければ article 全文へフォールバック", () => {
+		it("article 直下に .body が無ければ article 全文へフォールバック", async () => {
 			const html = "<article><h1>T</h1>本文だけ</article>";
-			expect(parseArticle(html).body).toContain("本文だけ");
+			expect((await parseArticle(html)).body).toContain("本文だけ");
 		});
 	});
 }

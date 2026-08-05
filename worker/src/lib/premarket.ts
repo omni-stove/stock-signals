@@ -8,8 +8,8 @@
 //
 // ※LLM は使わない。スクレイピング・正規化のみ。kabutan は全ソース UTF-8 なので iconv 不要。
 
-import * as cheerio from "cheerio";
 import { db } from "./db";
+import { stripTags } from "./html";
 import { premarketBackdrop } from "./schema";
 import { fetchHtml, sleep } from "./utils";
 
@@ -59,15 +59,23 @@ function toNumber(raw: string | undefined | null): number | null {
 	return Number.isFinite(n) ? n : null;
 }
 
-// us.kabutan.jp の指数ページ。現値ブロック (.text-3xl) の親要素テキストは
+// us.kabutan.jp の指数ページ。現値ブロック (.text-3xl) の周辺テキストは
 //   "12,876.90 前日比 +674.36 (+5.53%) NY時間 26日 17:16 日本時間 27日 06:16"
-// の形。正規表現で分解する。レイアウトが変わったら price だけでも返す。
-function parseUsIndex(html: string, idx: UsIndexDef): IndexQuote {
-	const $ = cheerio.load(html);
-	const priceEl = $(".text-3xl").first();
-	const block = priceEl.parent().text().replace(/\s+/g, " ").trim();
+// の形。最初の text-3xl 要素から 2KB 窓のタグを剥がしてテキスト化し (親要素テキスト相当)、
+// 正規表現で分解する。レイアウトが変わったら price だけでも返す。
+function textAroundPriceEl(html: string): string {
+	const anchor = html.indexOf("text-3xl");
+	if (anchor < 0) return "";
+	const start = html.lastIndexOf("<", anchor);
+	return stripTags(html.slice(start, start + 2_000));
+}
 
-	const price = toNumber(priceEl.text());
+function parseUsIndex(html: string, idx: UsIndexDef): IndexQuote {
+	const block = textAroundPriceEl(html);
+
+	// 窓テキストは現値そのものから始まる (.text-3xl のタグ直後のテキスト)。
+	const priceMatch = block.match(/^[＋+\-－ー]?[\d,]+(?:\.\d+)?/);
+	const price = toNumber(priceMatch ? priceMatch[0] : null);
 
 	const chgMatch = block.match(
 		/前日比\s*([+\-－ー]?[\d,]+(?:\.\d+)?)\s*\(\s*([+\-－ー]?[\d.]+)\s*%\s*\)/,
@@ -89,16 +97,15 @@ function parseUsIndex(html: string, idx: UsIndexDef): IndexQuote {
 	};
 }
 
-// CME日経225先物(ドル建て)ページ。.text-3xl 親は "65,560円 ー 円 ー 6月限" のように
+// CME日経225先物(ドル建て)ページ。.text-3xl 周辺は "65,560円 ー 円 ー 6月限" のように
 // 現値+限月。前日比は空欄のことが多いので現値と限月だけ取る。
 function parseNikkeiFutures(html: string): {
 	price: number | null;
 	contract: string | null;
 } {
-	const $ = cheerio.load(html);
-	const priceEl = $(".text-3xl").first();
-	const block = priceEl.parent().text().replace(/\s+/g, " ").trim();
-	const price = toNumber(priceEl.text());
+	const block = textAroundPriceEl(html);
+	const priceMatch = block.match(/^[\d,]+(?:\.\d+)?/);
+	const price = toNumber(priceMatch ? priceMatch[0] : null);
 	const contractMatch = block.match(/([0-9]{1,2}月限)/);
 	return { price, contract: contractMatch ? contractMatch[1] : null };
 }

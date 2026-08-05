@@ -3,10 +3,10 @@
 // 一覧はいずれも同一構造なので、行の抽出はここに一本化する (DOM 変更時の修正箇所も1つ)。
 // 記事本文ページの DOM は用途ごとに異なるため、本文パーサは各モジュールに残る。
 //
-// 各パーサは cheerio.load の前に対象ブロックを切り出す (utils の sliceHtml/sliceTables 参照)。
-// フルページ (数十KB) の parse は Workers の CPU 上限に対して高すぎるため。
+// 各パーサは HTMLRewriter (html.ts) の前に対象ブロックを切り出す (utils の
+// sliceHtml/sliceTables 参照)。ネイティブパースでも流すバイト数は少ないほど安い。
 
-import * as cheerio from "cheerio";
+import { scanTables, tablesWithClass } from "./html";
 import { sliceHtml, sliceTables } from "./utils";
 
 export interface KabutanListItem {
@@ -17,24 +17,27 @@ export interface KabutanListItem {
 
 // 一覧 (table.s_news_list の各 tr) を抽出。a リンクの無い行 (ヘッダ等) は除外し、
 // 相対 href は baseUrl で絶対 URL に解決する。date は time 要素 (無ければ先頭 td) の生文字列。
-export function parseKabutanNewsList(
+export async function parseKabutanNewsList(
 	html: string,
 	baseUrl: string,
-): KabutanListItem[] {
-	const $ = cheerio.load(sliceTables(html, "s_news_list") ?? html);
+): Promise<KabutanListItem[]> {
+	const tables = await scanTables(sliceTables(html, "s_news_list") ?? html);
 	const out: KabutanListItem[] = [];
-	$("table.s_news_list tr").each((_, tr) => {
-		const $tr = $(tr);
-		const a = $tr.find("a").first();
-		const href = a.attr("href");
-		if (!href) return;
-		const url = new URL(href, baseUrl).toString();
-		const title = a.text().trim();
-		const date =
-			$tr.find("time").first().text().trim() ||
-			$tr.find("td").first().text().trim();
-		if (title) out.push({ url, title, date });
-	});
+	for (const t of tablesWithClass(tables, "s_news_list")) {
+		for (const { cells } of t.rows) {
+			// 行内最初の a (href 必須)。
+			const linkCell = cells.find((c) => c.aHref !== null || c.aText !== "");
+			if (!linkCell?.aHref) continue;
+			const url = new URL(linkCell.aHref, baseUrl).toString();
+			const title = linkCell.aText.trim();
+			const timeCell = cells.find((c) => c.timeText !== "");
+			const date =
+				timeCell?.timeText ??
+				cells.find((c) => c.tag === "td")?.text.trim() ??
+				"";
+			if (title) out.push({ url, title, date });
+		}
+	}
 	return out;
 }
 
@@ -80,8 +83,8 @@ if (import.meta.vitest) {
 			"</table>",
 		].join("");
 
-		it("相対hrefを絶対URLに解決しタイトル・日付 (生文字列) を拾う", () => {
-			expect(parseKabutanNewsList(html, BASE)).toEqual([
+		it("相対hrefを絶対URLに解決しタイトル・日付 (生文字列) を拾う", async () => {
+			expect(await parseKabutanNewsList(html, BASE)).toEqual([
 				{
 					url: "https://kabutan.jp/news/marketnews/?b=n1",
 					title: "業績上方修正",
@@ -94,12 +97,19 @@ if (import.meta.vitest) {
 				},
 			]);
 		});
-		it("aリンクの無い行 (ヘッダ等) は除外する", () => {
-			expect(parseKabutanNewsList(html, BASE)).toHaveLength(2);
+		it("aリンクの無い行 (ヘッダ等) は除外する", async () => {
+			expect(await parseKabutanNewsList(html, BASE)).toHaveLength(2);
 		});
-		it("一覧テーブルの前後に別テーブルがあっても対象だけを読む (切り出し確認)", () => {
+		it("一覧テーブルの前後に別テーブルがあっても対象だけを読む (切り出し確認)", async () => {
 			const page = `<table class='nav'><tr><td><a href='/x'>menu</a></td></tr></table>${html}`;
-			expect(parseKabutanNewsList(page, BASE)).toHaveLength(2);
+			expect(await parseKabutanNewsList(page, BASE)).toHaveLength(2);
+		});
+		it("time が無い行は先頭 td のテキストを日付に使う", async () => {
+			const page =
+				"<table class='s_news_list'><tr><td>06/19</td><td><a href='/n3'>題</a></td></tr></table>";
+			expect(await parseKabutanNewsList(page, BASE)).toEqual([
+				{ url: "https://kabutan.jp/n3", title: "題", date: "06/19" },
+			]);
 		});
 	});
 

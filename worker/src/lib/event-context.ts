@@ -4,7 +4,13 @@
 //   - SQ は日付計算で出る: 日本SQ=各月 第2金曜 / 米SQ=各月 第3金曜 / 3・6・9・12月=メジャーSQ。
 //     2 窓を出す: 「SQ週 (当日を含む月〜金)」= 建玉調整で歪む / 「SQ明け (翌週)」= 清算が抜け実勢。
 //   - 指数リバランスも日付計算 (MSCI=2/5/8/11月末, FTSE=3/6/9/12月第3金曜, 日経=4/10月初, TOPIX=10月末)。
-//   - FOMC/日銀/海外ピア決算は計算できないので D1 macro_events から渡す (呼び出し側が rows を注入)。
+//   - 入替「銘柄発表」の接近窓も日付計算 (日経225=3・9月上旬公表 / MSCI=実施の約2週間前公表)。
+//     発表日そのものは事前確定しないので窓で語る。FTSE の発表窓は影響が小さいので出さない。
+//   - FOMC/日銀/ピア決算 (海外SOX系 + 国内同業) は計算できないので D1 macro_events から渡す
+//     (呼び出し側が rows を注入)。
+//   - 指数採用・除外の「個別確定イベント」(例: watchlist 銘柄の日経225採用が公表された) は
+//     kind=index_change:* の macro_events 行 (date=実施日) で渡す。発表〜実施のパッシブ先回り期間が
+//     長いので専用の長い窓 (INDEX_CHANGE_LEAD) で出す。投入方法は config/events.yaml 参照。
 //   - 全て UTC 正午アンカーで日付計算する。
 
 // macro_events の 1 行 (D1 macroEvents の select 結果と同じキー)。
@@ -25,6 +31,10 @@ const IDX_AFTER = 2; // 指数リバランス: 実施後の窓 (反動取りの�
 // 週明けや連休を跨いでも直近決算の反応を地合いの材料として残す。
 const PEER_LEAD = 2; // ピア決算: SOX 波及前の窓 (これから織り込む側。当日〜N 日後まで)
 const PEER_AFTER = 5; // ピア決算: SOX 波及後の窓 (直近に出た決算が当日の地合いの正体である可能性を出す)
+// 指数採用・除外の個別確定イベント (kind=index_change:*)。発表から実施までパッシブ先回りが
+// 続くため、定期リバランス (IDX_LEAD) より大幅に長い窓で出す。実施後は反動の窓のみ。
+const INDEX_CHANGE_LEAD = 21;
+const INDEX_CHANGE_AFTER = 2;
 
 // --- 日付ヘルパー (全て UTC 正午アンカーで計算。DST/端数の影響を受けない) ---
 
@@ -208,6 +218,35 @@ function push(arr: string[], v: string | null): void {
 	if (v) arr.push(v);
 }
 
+// --- 入替「銘柄発表」の接近窓 -------------------------------------------------
+// リバランスの実施日 (checkIndexRebalance) とは別に、「どの銘柄が採用/除外されるか」の公表前後は
+// 思惑と発表直後のパッシブ先回りで個別需給が動く。発表日そのものは事前確定しないので窓で語る。
+//   - 日経225定期入替: 実施=4月初/10月初、銘柄発表は例年その前月 (3月/9月) 上旬 → 1〜7日を窓に。
+//   - MSCI: 実施=2/5/8/11月末、銘柄発表は実施の約2週間前 → 実施の 9〜15日前を窓に。
+function checkIndexAnnouncement(today: string): string[] {
+	const notes: string[] = [];
+	const m = Number(today.slice(5, 7));
+	const day = Number(today.slice(8, 10));
+	if ((m === 3 || m === 9) && day <= 7) {
+		notes.push(
+			`日経225定期入替 銘柄発表窓(例年${m}月上旬公表・実施=翌月初/採用・除外の思惑と発表後のパッシブ先回りで個別需給が動く)`,
+		);
+	}
+	const thisYm = ymOf(today);
+	for (const ym of [thisYm, nextYm(thisYm)]) {
+		const mm = Number(ym.slice(5, 7));
+		if (mm !== 2 && mm !== 5 && mm !== 8 && mm !== 11) continue;
+		const impl = lastBusinessDay(ym);
+		const diff = daysDiff(today, impl);
+		if (diff < 9 || diff > 15) continue;
+		const name = mm === 5 || mm === 11 ? "MSCI半期" : "MSCI四半期";
+		notes.push(
+			`${name}リバランス 銘柄発表接近(実施=${impl}の約2週間前に公表・採用/除外の思惑で個別需給が動く)`,
+		);
+	}
+	return notes;
+}
+
 // --- カレンダーイベントの日付列挙 (event-reminder 用) -------------------------
 // buildEventContext が judge 向けに「窓」(SQ週/明け等) で語るのに対し、こちらは
 // today〜today+horizonDays に入る実施日そのものを {date, label} で返す。
@@ -245,16 +284,17 @@ export function upcomingCalendarEvents(
 	return out;
 }
 
-// --- マクロイベント (FOMC/日銀) + 海外ピア決算 を近接で拾う -------------------
+// --- マクロイベント (FOMC/日銀) + ピア決算 (海外/国内) + 指数採用 を近接で拾う --
 // peerResultOut: 波及日当日が「寄り後」(=前夜 NY でピア決算結果が既に出ている) なら true。
 // 寄り前 (premarket) は前夜 NY 消化中で結果未着なので false。
 function collectMacro(
 	today: string,
 	rows: MacroEventRow[],
 	peerResultOut: boolean,
-): { macro: string[]; peer: string[] } {
+): { macro: string[]; peer: string[]; indexChange: string[] } {
 	const macro: string[] = [];
 	const peer: string[] = [];
+	const indexChange: string[] = [];
 	const horizon = addDays(today, DAYS);
 	for (const r of rows) {
 		const eff = r.jst_effect_date || r.date;
@@ -264,14 +304,44 @@ function collectMacro(
 			continue;
 		const daysUntil = daysDiff(today, eff);
 		const kind = r.kind || "";
+
+		// 指数採用・除外の個別確定イベント (date=実施日)。発表〜実施のパッシブ先回りが長いので
+		// 専用の長い窓。実施後は反動取りの窓 (INDEX_CHANGE_AFTER) のみ。
+		if (kind.startsWith("index_change")) {
+			if (daysUntil > 0 && daysUntil <= INDEX_CHANGE_LEAD) {
+				indexChange.push(
+					`${r.label}(実施=${eff}/${daysUntil}日後・発表済みの個別指数イベント, 実施日までパッシブ先回りで需給が実勢から乖離しうる)`,
+				);
+			} else if (daysUntil === 0) {
+				indexChange.push(
+					`${r.label}(実施=本日${eff}/引けにパッシブ売買集中・寄りと引けで需給が大きく振れうる)`,
+				);
+			} else if (daysUntil < 0 && -daysUntil <= INDEX_CHANGE_AFTER) {
+				indexChange.push(
+					`${r.label}(実施=${eff}/${-daysUntil}日前に通過・パッシブ需給が剥落する局面で反動 (戻り/反落) が出やすい)`,
+				);
+			}
+			continue;
+		}
+
 		// ピア決算は [today-PEER_AFTER, today+PEER_LEAD]: 済んだ決算の余韻を厚く、先読みは短く。
 		// それ以外 (FOMC/日銀) は近接窓 today〜horizon のみ。
 		const isPeer = kind.startsWith("peer_earnings:");
-		const lowerBound = isPeer ? addDays(today, -PEER_AFTER) : today;
-		const upperBound = isPeer ? addDays(today, PEER_LEAD) : horizon;
+		const isJpPeer = kind.startsWith("peer_earnings_jp:");
+		const lowerBound = isPeer || isJpPeer ? addDays(today, -PEER_AFTER) : today;
+		const upperBound = isPeer || isJpPeer ? addDays(today, PEER_LEAD) : horizon;
 		if (eff < lowerBound || eff > upperBound) continue;
 		const when = daysUntil === 0 ? "本日" : `${daysUntil}日後`;
-		if (isPeer) {
+		if (isJpPeer) {
+			// 国内ピア: 引け後発表 → 波及日 (翌営業日) には結果が既出。市場フェーズで時制は変わらない。
+			peer.push(
+				daysUntil === 0
+					? `本日${r.label}の結果を消化(前日引け後既出)→同業連想の変動に注意(波及=${eff})`
+					: daysUntil > 0
+						? `あと${daysUntil}日で${r.label}→国内同業へ連想波及リスク(波及=${eff})`
+						: `${r.label}は通過済み(波及=${eff}/${-daysUntil}日前)→当日の地合いの正体の可能性`,
+			);
+		} else if (isPeer) {
 			// 波及日当日: 寄り前 (premarket) は「これから織り込む」、寄り後は前夜 NY で結果が
 			// 出ているので「結果既出・地合いに織り込み中」と時制を分ける (未来扱いの誤読を防ぐ)。
 			const todayPeer = peerResultOut
@@ -292,7 +362,7 @@ function collectMacro(
 			macro.push(`${r.label}(${eff}/${when})${imp}`);
 		}
 	}
-	return { macro, peer };
+	return { macro, peer, indexChange };
 }
 
 // today (基準日 JST) と macro_events 行から需給イベント1行を組み立てる。
@@ -306,9 +376,14 @@ export function buildEventContext(
 ): string {
 	const sq = checkSq(today);
 	const idx = checkIndexRebalance(today);
+	const idxAnn = checkIndexAnnouncement(today);
 	const peerResultOut = phase != null && phase !== "premarket";
-	const { macro, peer } = collectMacro(today, macroRows, peerResultOut);
-	const all = [...sq, ...idx, ...macro, ...peer];
+	const { macro, peer, indexChange } = collectMacro(
+		today,
+		macroRows,
+		peerResultOut,
+	);
+	const all = [...sq, ...idx, ...idxAnn, ...indexChange, ...macro, ...peer];
 	if (all.length === 0) return `需給イベント(${today}): 特になし`;
 	return `需給イベント(${today}): ${all.join("; ")}`;
 }
@@ -582,6 +657,108 @@ if (import.meta.vitest) {
 			expect(out).toContain("エヌビディア(NVDA) 決算");
 			expect(out).toContain("アプライド(AMAT) 決算");
 		});
+	});
+
+	describe("国内ピア決算", () => {
+		const tel: MacroEventRow[] = [
+			{
+				date: "2026-08-06",
+				kind: "peer_earnings_jp:8035",
+				label: "東京エレクトロン(8035) 決算",
+				impact: "high",
+				jst_effect_date: "2026-08-07",
+			},
+		];
+		it("先読み窓内は あとX日で→国内同業へ連想波及リスク (SOX とは言わない)", () => {
+			const out = buildEventContext("2026-08-05", tel);
+			expect(out).toContain(
+				"あと2日で東京エレクトロン(8035) 決算→国内同業へ連想波及リスク(波及=2026-08-07)",
+			);
+			expect(out).not.toContain("SOX");
+		});
+		it("波及日当日は 結果を消化(前日引け後既出)。市場フェーズで時制は変わらない", () => {
+			for (const phase of [undefined, "premarket", "afternoon_session"]) {
+				expect(buildEventContext("2026-08-07", tel, phase)).toContain(
+					"本日東京エレクトロン(8035) 決算の結果を消化(前日引け後既出)→同業連想の変動に注意(波及=2026-08-07)",
+				);
+			}
+		});
+		it("波及後は通過済み (海外ピアと同じ余韻)", () => {
+			expect(buildEventContext("2026-08-10", tel)).toContain(
+				"東京エレクトロン(8035) 決算は通過済み(波及=2026-08-07/3日前)→当日の地合いの正体の可能性",
+			);
+		});
+		it("波及から PEER_AFTER (5日) を超えたら出さない", () => {
+			expect(buildEventContext("2026-08-13", tel)).not.toContain(
+				"東京エレクトロン",
+			);
+		});
+	});
+
+	describe("指数採用の個別確定イベント (index_change)", () => {
+		const adoption: MacroEventRow[] = [
+			{
+				date: "2026-10-01",
+				kind: "index_change:285A",
+				label: "キオクシアHD(285A) 日経225採用",
+				impact: "high",
+				jst_effect_date: null,
+			},
+		];
+		it("実施前は長い窓 (21日) でパッシブ先回りを出す", () => {
+			const out = buildEventContext("2026-09-15", adoption);
+			expect(out).toContain(
+				"キオクシアHD(285A) 日経225採用(実施=2026-10-01/16日後",
+			);
+			expect(out).toContain("パッシブ先回り");
+		});
+		it("窓 (21日) より前は出さない", () => {
+			expect(buildEventContext("2026-09-05", adoption)).not.toContain(
+				"キオクシアHD",
+			);
+		});
+		it("実施当日は引けのパッシブ売買集中を出す", () => {
+			const out = buildEventContext("2026-10-01", adoption);
+			expect(out).toContain("実施=本日2026-10-01");
+			expect(out).toContain("パッシブ売買集中");
+		});
+		it("通過直後 (2日) は反動の窓、それ以降は出さない", () => {
+			expect(buildEventContext("2026-10-02", adoption)).toContain(
+				"実施=2026-10-01/1日前に通過",
+			);
+			expect(buildEventContext("2026-10-06", adoption)).not.toContain(
+				"キオクシアHD",
+			);
+		});
+	});
+
+	describe("入替 銘柄発表窓 (checkIndexAnnouncement)", () => {
+		it("日経225: 3月・9月の1〜7日に発表窓を出す", () => {
+			expect(buildEventContext("2026-09-03")).toContain(
+				"日経225定期入替 銘柄発表窓(例年9月上旬公表",
+			);
+			expect(buildEventContext("2026-03-05")).toContain(
+				"日経225定期入替 銘柄発表窓(例年3月上旬公表",
+			);
+		});
+		it("日経225: 8日以降・対象外の月は出さない", () => {
+			expect(buildEventContext("2026-09-08")).not.toContain("銘柄発表窓");
+			expect(buildEventContext("2026-04-03")).not.toContain("銘柄発表窓");
+		});
+		it("MSCI: 実施の 9〜15日前に発表接近を出す (四半期/半期の名称を分ける)", () => {
+			expect(buildEventContext("2026-08-20")).toContain(
+				"MSCI四半期リバランス 銘柄発表接近(実施=2026-08-31",
+			);
+			expect(buildEventContext("2026-11-18")).toContain(
+				"MSCI半期リバランス 銘柄発表接近(実施=2026-11-30",
+			);
+		});
+		it("MSCI: 窓の外 (実施6日前) は発表接近を出さない", () => {
+			expect(buildEventContext("2026-08-25")).not.toContain("銘柄発表接近");
+		});
+	});
+
+	describe("海外SOX系ピア決算 (続き)", () => {
 		it("FOMC とピアが同時近接でも別枠で出る", () => {
 			const out = buildEventContext("2026-07-30", [
 				{

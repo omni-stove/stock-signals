@@ -9,7 +9,7 @@
 // ここからは re-export するだけ。新しい site を足すときは下記パーサを追加し、watchlist.ts の
 // ticker.ir.site をそのキーにする。
 
-import * as cheerio from "cheerio";
+import { firstText, parseXmlItems, queryAll, scanHtml } from "./html";
 import { IR_SOURCES, type IrSourceEntry } from "./watchlist";
 
 // 銘柄ごとの IR スクレイプ定義 (code/site/list_url)。collectOne の引数型に使う。
@@ -34,23 +34,49 @@ function categoryFromUrl(url: string): string {
 }
 
 // kioxia ニュース一覧パーサ。
-function parseKioxiaList(html: string, baseUrl: string): ListItem[] {
-	const $ = cheerio.load(html);
+async function parseKioxiaList(
+	html: string,
+	baseUrl: string,
+): Promise<ListItem[]> {
+	type Raw = { href: string | null; btnText: string; allText: string };
+	const raws: Raw[] = [];
+	let cur: Raw | null = null;
+	await scanHtml(html, [
+		[
+			"a.cmp-button",
+			{
+				element(e) {
+					cur = { href: e.getAttribute("href"), btnText: "", allText: "" };
+					raws.push(cur);
+				},
+				text(t) {
+					if (cur) cur.allText += t.text;
+				},
+			},
+		],
+		[
+			"a.cmp-button .cmp-button__text",
+			{
+				text(t) {
+					if (cur) cur.btnText += t.text;
+				},
+			},
+		],
+	]);
+
 	const out: ListItem[] = [];
 	const seenUrl = new Set<string>();
-	$("a.cmp-button").each((_, a) => {
-		const href = $(a).attr("href");
-		if (!href) return;
-		const url = new URL(href, baseUrl).toString();
+	for (const raw of raws) {
+		if (!raw.href) continue;
+		const url = new URL(raw.href, baseUrl).toString();
 		const date = dateFromUrl(url);
-		if (!date) return;
-		if (seenUrl.has(url)) return;
+		if (!date) continue;
+		if (seenUrl.has(url)) continue;
 		seenUrl.add(url);
-		const title =
-			$(a).find(".cmp-button__text").text().trim() || $(a).text().trim();
-		if (!title) return;
+		const title = raw.btnText.trim() || raw.allText.trim();
+		if (!title) continue;
 		out.push({ url, title, date, category: categoryFromUrl(url) });
-	});
+	}
 	return out;
 }
 
@@ -61,25 +87,91 @@ function parseKioxiaList(html: string, baseUrl: string): ListItem[] {
 //     カテゴリ: b.m-list-news__category (例「投資家の皆様へ」)
 //     タイトル: p.m-text__item
 //   本文は取らない (リンク先がPDF/カレンダーで一定しないため)。category はそのまま日本語で持つ。
-function parseAdvantestList(html: string, baseUrl: string): ListItem[] {
-	const $ = cheerio.load(html);
+async function parseAdvantestList(
+	html: string,
+	baseUrl: string,
+): Promise<ListItem[]> {
+	type Raw = {
+		href: string | null;
+		date: string | null;
+		title: string;
+		titleCount: number;
+		category: string;
+		categoryCount: number;
+	};
+	const raws: Raw[] = [];
+	let cur: Raw | null = null;
+	await scanHtml(html, [
+		[
+			"li.m-list-news__item",
+			{
+				element() {
+					cur = {
+						href: null,
+						date: null,
+						title: "",
+						titleCount: 0,
+						category: "",
+						categoryCount: 0,
+					};
+					raws.push(cur);
+				},
+			},
+		],
+		[
+			"li.m-list-news__item a.m-list-news__wrapper",
+			{
+				element(e) {
+					if (cur) cur.href ??= e.getAttribute("href");
+				},
+			},
+		],
+		[
+			"li.m-list-news__item time.m-list-news__date",
+			{
+				element(e) {
+					if (cur) cur.date ??= e.getAttribute("datetime");
+				},
+			},
+		],
+		[
+			"li.m-list-news__item p.m-text__item",
+			{
+				element() {
+					if (cur) cur.titleCount++;
+				},
+				text(t) {
+					if (cur?.titleCount === 1) cur.title += t.text;
+				},
+			},
+		],
+		[
+			"li.m-list-news__item b.m-list-news__category",
+			{
+				element() {
+					if (cur) cur.categoryCount++;
+				},
+				text(t) {
+					if (cur?.categoryCount === 1) cur.category += t.text;
+				},
+			},
+		],
+	]);
+
 	const out: ListItem[] = [];
 	const seenUrl = new Set<string>();
-	$("li.m-list-news__item").each((_, li) => {
-		const $li = $(li);
-		const a = $li.find("a.m-list-news__wrapper").first();
-		const href = a.attr("href");
-		if (!href) return;
-		const url = new URL(href, baseUrl).toString();
-		if (seenUrl.has(url)) return;
-		const date = $li.find("time.m-list-news__date").attr("datetime")?.trim();
-		if (!date) return;
-		const title = $li.find("p.m-text__item").first().text().trim();
-		if (!title) return;
+	for (const raw of raws) {
+		if (!raw.href) continue;
+		const url = new URL(raw.href, baseUrl).toString();
+		if (seenUrl.has(url)) continue;
+		const date = raw.date?.trim();
+		if (!date) continue;
+		const title = raw.title.trim();
+		if (!title) continue;
 		seenUrl.add(url);
-		const category = $li.find("b.m-list-news__category").first().text().trim();
+		const category = raw.category.trim();
 		out.push({ url, title, date, category: category || "advantest" });
-	});
+	}
 	return out;
 }
 
@@ -90,28 +182,107 @@ function parseAdvantestList(html: string, baseUrl: string): ListItem[] {
 //     カテゴリ: i.util-badge--news (例「ニュース」「IR」)
 //     タイトル: h3.news__title (子の <i class="news__filesize"> は除く)
 //   list_url は当年のみ表示。新着順に拾えれば足りるので当年で十分。本文は取らない。
-function parseLasertecList(html: string, baseUrl: string): ListItem[] {
-	const $ = cheerio.load(html);
+async function parseLasertecList(
+	html: string,
+	baseUrl: string,
+): Promise<ListItem[]> {
+	type Raw = {
+		href: string | null;
+		date: string | null;
+		title: string;
+		titleCount: number;
+		iTexts: string[]; // h3 内の <i> (ファイルサイズ表記) を後で title から除く
+		category: string;
+		categoryCount: number;
+	};
+	const raws: Raw[] = [];
+	let cur: Raw | null = null;
+	await scanHtml(html, [
+		[
+			"article.news__article",
+			{
+				element() {
+					cur = {
+						href: null,
+						date: null,
+						title: "",
+						titleCount: 0,
+						iTexts: [],
+						category: "",
+						categoryCount: 0,
+					};
+					raws.push(cur);
+				},
+			},
+		],
+		[
+			"article.news__article a.news__type",
+			{
+				element(e) {
+					if (cur) cur.href ??= e.getAttribute("href");
+				},
+			},
+		],
+		[
+			"article.news__article time.news__date",
+			{
+				element(e) {
+					if (cur) cur.date ??= e.getAttribute("datetime");
+				},
+			},
+		],
+		[
+			"article.news__article h3.news__title",
+			{
+				element() {
+					if (cur) cur.titleCount++;
+				},
+				text(t) {
+					if (cur?.titleCount === 1) cur.title += t.text;
+				},
+			},
+		],
+		[
+			"article.news__article h3.news__title i",
+			{
+				element() {
+					if (cur?.titleCount === 1) cur.iTexts.push("");
+				},
+				text(t) {
+					if (cur?.titleCount === 1 && cur.iTexts.length > 0)
+						cur.iTexts[cur.iTexts.length - 1] += t.text;
+				},
+			},
+		],
+		[
+			"article.news__article .news__category",
+			{
+				element() {
+					if (cur) cur.categoryCount++;
+				},
+				text(t) {
+					if (cur?.categoryCount === 1) cur.category += t.text;
+				},
+			},
+		],
+	]);
+
 	const out: ListItem[] = [];
 	const seenUrl = new Set<string>();
-	$("article.news__article").each((_, art) => {
-		const $art = $(art);
-		const a = $art.find("a.news__type").first();
-		const href = a.attr("href");
-		if (!href) return;
-		const url = new URL(href, baseUrl).toString();
-		if (seenUrl.has(url)) return;
-		const date = $art.find("time.news__date").attr("datetime")?.trim();
-		if (!date) return;
-		const $title = $art.find("h3.news__title").first().clone();
-		$title.find("i").remove();
-		const title = $title.text().trim();
-		if (!title) return;
+	for (const raw of raws) {
+		if (!raw.href) continue;
+		const url = new URL(raw.href, baseUrl).toString();
+		if (seenUrl.has(url)) continue;
+		const date = raw.date?.trim();
+		if (!date) continue;
+		// ストリーミングでは <i> の中身も h3 テキストに混ざるので、収集済みの i テキストを除く。
+		let title = raw.title;
+		for (const s of raw.iTexts) title = title.replace(s, "");
+		title = title.trim();
+		if (!title) continue;
 		seenUrl.add(url);
-		const category =
-			$art.find(".news__category").first().text().trim() || "lasertec";
-		out.push({ url, title, date, category });
-	});
+		out.push({ url, title, date, category: raw.category.trim() || "lasertec" });
+	}
 	return out;
 }
 
@@ -142,35 +313,32 @@ function rfc822ToYmd(raw: string): string {
 // 村田製作所 IRニュース RSS (rssfeed)。<item> ごとに link/title/pubDate。
 //   pubDate は RFC822 (JST 表記) → rfc822ToYmd で JST 暦日のまま YYYY-MM-DD に正規化。
 //   title 末尾の " (PDF: 241KB)" は残してよい (種別の手がかり)。カテゴリは IRニュース固定。
-//   cheerio を xmlMode で読むと item/link/pubDate を素直に取れる。本文は取らない。
+//   XML は parseXmlItems (文字列走査) で読む。本文は取らない。
 function parseMurataRss(xml: string): ListItem[] {
-	const $ = cheerio.load(xml, { xmlMode: true });
 	const out: ListItem[] = [];
 	const seenUrl = new Set<string>();
-	$("item").each((_, item) => {
-		const $item = $(item);
-		const url = $item.find("link").first().text().trim();
-		const title = $item.find("title").first().text().trim();
-		if (!url || !title) return;
-		if (seenUrl.has(url)) return;
+	for (const item of parseXmlItems(xml, ["link", "title", "pubDate"])) {
+		const url = item.link;
+		const title = item.title;
+		if (!url || !title) continue;
+		if (seenUrl.has(url)) continue;
 		// pubDate は RFC822 で JST 表記 ("Thu, 11 Jun 2026 00:00:00 +0900")。
 		// new Date() に通すと UTC に寄って暦日が1日ずれる (6/11 00:00 JST → 6/10 UTC) ため、
 		// 文字列から "DD Mon YYYY" を直接拾って JST の暦日を保つ。
-		const pub = $item.find("pubDate").first().text().trim();
-		const date = rfc822ToYmd(pub);
-		if (!date) return;
+		const date = rfc822ToYmd(item.pubDate);
+		if (!date) continue;
 		seenUrl.add(url);
 		out.push({ url, title, date, category: "irnews" });
-	});
+	}
 	return out;
 }
 
 // site → 一覧パーサ。一覧HTML(/XML) から ListItem[] を返す。
-export function parseList(
+export async function parseList(
 	site: string,
 	body: string,
 	baseUrl: string,
-): ListItem[] {
+): Promise<ListItem[]> {
 	switch (site) {
 		case "kioxia":
 			return parseKioxiaList(body, baseUrl);
@@ -185,17 +353,26 @@ export function parseList(
 	}
 }
 
-export function parseKioxiaArticle(html: string): {
+export async function parseKioxiaArticle(html: string): Promise<{
 	title: string;
 	body: string;
-} {
-	const $ = cheerio.load(html);
-	const title = $("h1").first().text().trim() || $("title").text().trim();
+}> {
+	const q = await queryAll(html, [
+		"h1",
+		"title",
+		"main",
+		"article",
+		".cmp-text",
+		"body",
+	]);
+	const title = firstText(q, "h1") || firstText(q, "title");
+	// 最終フォールバックの body は <body> タグが実在するページでのみ拾える
+	// (実ページには必ずある。ストリーミング照合は暗黙の body 補完をしない)。
 	const body =
-		$("main").text().trim() ||
-		$("article").text().trim() ||
-		$(".cmp-text").text().trim() ||
-		$("body").text().trim();
+		firstText(q, "main") ||
+		firstText(q, "article") ||
+		firstText(q, ".cmp-text") ||
+		firstText(q, "body");
 	return {
 		title,
 		body: body
@@ -248,13 +425,13 @@ if (import.meta.vitest) {
 	});
 
 	describe("parseList: kioxia", () => {
-		it("a.cmp-button から URL・タイトル・日付・カテゴリを抽出し重複URLを除く", () => {
+		it("a.cmp-button から URL・タイトル・日付・カテゴリを抽出し重複URLを除く", async () => {
 			const html = [
 				"<a class='cmp-button' href='/ja-jp/about/news/20260611-1.html'><span class='cmp-button__text'>新製品</span></a>",
 				"<a class='cmp-button' href='/ja-jp/about/news/20260611-1.html'><span class='cmp-button__text'>重複</span></a>",
 				"<a class='cmp-button' href='/ja-jp/news.html'><span class='cmp-button__text'>日付なしは除外</span></a>",
 			].join("");
-			const out = parseList("kioxia", html, "https://www.kioxia.com");
+			const out = await parseList("kioxia", html, "https://www.kioxia.com");
 			expect(out).toEqual([
 				{
 					url: "https://www.kioxia.com/ja-jp/about/news/20260611-1.html",
@@ -267,7 +444,7 @@ if (import.meta.vitest) {
 	});
 
 	describe("parseList: advantest", () => {
-		it("li.m-list-news__item から datetime・タイトル・カテゴリを取る", () => {
+		it("li.m-list-news__item から datetime・タイトル・カテゴリを取る", async () => {
 			const html = [
 				"<li class='m-list-news__item'>",
 				"<a class='m-list-news__wrapper' href='/ja/news/a.html'>",
@@ -276,21 +453,21 @@ if (import.meta.vitest) {
 				"<p class='m-text__item'>決算説明会</p>",
 				"</a></li>",
 			].join("");
-			expect(parseList("advantest", html, "https://www.advantest.com")).toEqual(
-				[
-					{
-						url: "https://www.advantest.com/ja/news/a.html",
-						title: "決算説明会",
-						date: "2026-06-10",
-						category: "投資家の皆様へ",
-					},
-				],
-			);
+			expect(
+				await parseList("advantest", html, "https://www.advantest.com"),
+			).toEqual([
+				{
+					url: "https://www.advantest.com/ja/news/a.html",
+					title: "決算説明会",
+					date: "2026-06-10",
+					category: "投資家の皆様へ",
+				},
+			]);
 		});
 	});
 
 	describe("parseList: lasertec", () => {
-		it("article.news__article からタイトル (子の i を除く) を取る", () => {
+		it("article.news__article からタイトル (子の i を除く) を取る", async () => {
 			const html = [
 				"<article class='news__article'>",
 				"<a class='news__type' href='/news/2026/a.html'></a>",
@@ -299,21 +476,21 @@ if (import.meta.vitest) {
 				"<h3 class='news__title'>決算短信<i class='news__filesize'>(PDF)</i></h3>",
 				"</article>",
 			].join("");
-			expect(parseList("lasertec", html, "https://www.lasertec.co.jp")).toEqual(
-				[
-					{
-						url: "https://www.lasertec.co.jp/news/2026/a.html",
-						title: "決算短信",
-						date: "2026-06-09",
-						category: "IR",
-					},
-				],
-			);
+			expect(
+				await parseList("lasertec", html, "https://www.lasertec.co.jp"),
+			).toEqual([
+				{
+					url: "https://www.lasertec.co.jp/news/2026/a.html",
+					title: "決算短信",
+					date: "2026-06-09",
+					category: "IR",
+				},
+			]);
 		});
 	});
 
 	describe("parseList: murata (RSS)", () => {
-		it("item の link/title/pubDate(RFC822) を JST 暦日のまま正規化する", () => {
+		it("item の link/title/pubDate(RFC822) を JST 暦日のまま正規化する", async () => {
 			const xml = [
 				"<rss><channel>",
 				"<item><link>https://corporate.murata.com/ja-jp/x</link>",
@@ -321,7 +498,7 @@ if (import.meta.vitest) {
 				"<pubDate>Thu, 11 Jun 2026 00:00:00 +0900</pubDate></item>",
 				"</channel></rss>",
 			].join("");
-			expect(parseList("murata", xml, "")).toEqual([
+			expect(await parseList("murata", xml, "")).toEqual([
 				{
 					url: "https://corporate.murata.com/ja-jp/x",
 					title: "業績予想の修正 (PDF: 241KB)",
@@ -333,15 +510,15 @@ if (import.meta.vitest) {
 	});
 
 	describe("parseList: 未知 site", () => {
-		it("空配列を返す", () => {
-			expect(parseList("unknown", "<html></html>", "")).toEqual([]);
+		it("空配列を返す", async () => {
+			expect(await parseList("unknown", "<html></html>", "")).toEqual([]);
 		});
 	});
 
 	describe("parseKioxiaArticle", () => {
-		it("h1 を title、main を body に取り空白を畳む", () => {
+		it("h1 を title、main を body に取り空白を畳む", async () => {
 			const html = "<h1>新製品リリース</h1><main>本文   行1\n\n\n\n行2</main>";
-			const r = parseKioxiaArticle(html);
+			const r = await parseKioxiaArticle(html);
 			expect(r.title).toBe("新製品リリース");
 			expect(r.body).toBe("本文 行1\n\n行2");
 		});

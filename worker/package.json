@@ -11,13 +11,13 @@
     "db:migrate:remote": "wrangler d1 migrations apply stock-signals --remote"
   },
   "dependencies": {
-    "cheerio": "^1.0.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.32"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260730.1",
     "drizzle-kit": "^0.31.10",
+    "htmlrewriter": "^0.0.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
     "wrangler": "^4.115.0"

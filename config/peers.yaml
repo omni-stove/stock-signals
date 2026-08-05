@@ -1,20 +1,22 @@
-# 海外SOX系ピア決算カレンダー定義
+# ピア決算カレンダー定義 (海外SOX系 + 国内同業)
 #
-# 監視4銘柄 (config/watchlist.yaml) はいずれも半導体で、SOX (フィラデルフィア半導体指数) 経由で
-# 海外ピアの決算に強く連動する。MU/NVDA/AMAT 等の大物が決算を出すと、結果次第で翌日の SOX が振れ、
-# 日本の半導体株がギャップで寄る。これは「いつ起きるか先に分かる」スケジュール型イベントなので、
-# FOMC/日銀と同じく事前にカレンダー化して ticker-brief / crash-scenario の prompt に
-# 「あとX日でMU決算→SOX変動リスク」を載せる。
+# 監視銘柄 (worker/src/lib/watchlist.ts) はいずれも半導体・電子部品で、SOX (フィラデルフィア
+# 半導体指数) 経由で海外ピアの決算に、同業連想で国内ピアの決算に強く連動する。
+# MU/NVDA/AMAT 等の大物が決算を出すと、結果次第で翌日の SOX が振れ、日本の半導体株がギャップで
+# 寄る。東エレ/ディスコ等の国内ピアが引け後に決算を出すと、翌営業日に同業へ連想売買が波及する。
+# いずれも「いつ起きるか先に分かる」スケジュール型イベントなので、FOMC/日銀と同じく事前に
+# カレンダー化して ticker-brief / crash-scenario の prompt に載せる。
 #
 # データの流れ:
-#   Worker (eod cron) が Nasdaq から各社の次回決算日を取得 → D1 macro_events に
-#   kind=peer_earnings:<TICKER> で保存 (worker/src/lib/peer-earnings.ts)。
-#   worker/src/lib/event-context.ts が「今日以降5日以内」の peer 決算を拾い、/judge-context の
+#   Worker (eod cron) が海外ピアは Nasdaq、国内ピアは kabutan から次回決算日を取得 →
+#   D1 macro_events に kind=peer_earnings:<TICKER> (海外) / peer_earnings_jp:<code> (国内)
+#   で保存 (worker/src/lib/peer-earnings.ts)。
+#   worker/src/lib/event-context.ts が近接窓の peer 決算を拾い、/judge-context の
 #   event_context に同梱して prompt に1行で埋め込む。
 #
 # 重要: Worker は読み取り専用FSでこの yaml を読めない。実行時の真の出所は
-#   worker/src/lib/peer-earnings.ts の SOX_PEERS 定数。この yaml は人間が編集する出所であり、
-#   ピアを増減するときは「この yaml」と「SOX_PEERS 定数」の両方を一致させて直すこと。
+#   worker/src/lib/peer-earnings.ts の SOX_PEERS / JP_PEERS 定数。この yaml は人間が編集する
+#   出所であり、ピアを増減するときは「この yaml」と「定数」の両方を一致させて直すこと。
 #
 # - ticker: Nasdaq のティッカー (US 上場 / 非US は ADR。例: TSMC=TSM, ASML=ASML)
 # - name:   prompt に出す日本語通称
@@ -42,3 +44,21 @@ peers:
   - ticker: "TSM"
     name: "TSMC"
     role: "ファウンドリ"
+
+# 国内ピア (watchlist 外の東証銘柄)。決算は引け後発表が大半で、翌営業日に同業の watchlist 銘柄へ
+# 連想で波及する (装置株→6857/6920、電子部品→6976/6981、セクター地合い全般)。
+# watchlist 銘柄自身の決算は earnings.ts が別途追うので、ここには watchlist 外だけを並べる。
+# - code: 証券コード / name: 表示名 / role: セクター内の位置づけ
+jp_peers:
+  - code: "8035"
+    name: "東京エレクトロン"
+    role: "前工程装置"
+  - code: "6146"
+    name: "ディスコ"
+    role: "後工程装置"
+  - code: "7735"
+    name: "SCREEN"
+    role: "洗浄装置"
+  - code: "6762"
+    name: "TDK"
+    role: "電子部品"

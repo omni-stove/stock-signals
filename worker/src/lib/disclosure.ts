@@ -83,10 +83,9 @@ async function collectDisclosureOne(
 	code: string,
 ): Promise<{ found: number; written: number; skipped: number }> {
 	const listHtml = await fetchHtml(URL_DISCLOSURE(code), env);
-	const items = parseKabutanNewsList(listHtml, URL_DISCLOSURE(code)).slice(
-		0,
-		DISCLOSURE_LIMIT,
-	);
+	const items = (
+		await parseKabutanNewsList(listHtml, URL_DISCLOSURE(code))
+	).slice(0, DISCLOSURE_LIMIT);
 	const seen = await seenArticleUrls(
 		env.DB,
 		items.map((it) => it.url),

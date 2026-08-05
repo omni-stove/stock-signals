@@ -7,6 +7,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
 	test: {
 		includeSource: ["src/**/*.ts"],
+		// Node に無い HTMLRewriter を WASM ビルドで注入する (html.ts が使う)。
+		setupFiles: ["./vitest.setup.ts"],
 	},
 	define: {
 		"import.meta.vitest": "undefined",

@@ -53,10 +53,10 @@ export async function fetchHtml(
 }
 
 // ── HTML 部分切り出し ────────────────────────────────────────────────────────
-// cheerio.load はページ全体 (数十KB〜1MB超) を渡すと 1 回で数十ms以上の CPU を食い、
-// Workers の CPU 上限で cron ごと殺される (exceededCpu)。parse の前に対象ブロックだけを
-// indexOf 走査で切り出して 1 桁以上安くする。マーカーが見つからないページ (DOM 変更等) では
-// null を返し、呼び出し側はフルページの parse にフォールバックする — CPU より欠測回避を優先。
+// パーサ (html.ts の HTMLRewriter) に流す前に、対象ブロックだけを indexOf 走査で
+// 切り出して流すバイト数を絞る。keyword で対象テーブル群を選ぶ用途も兼ねる。
+// マーカーが見つからないページ (DOM 変更等) では null を返し、呼び出し側はフルページの
+// parse にフォールバックする — 節約より欠測回避を優先。
 
 // startMarker から、その後最初に現れる endMarker の末尾までを返す。
 export function sliceHtml(

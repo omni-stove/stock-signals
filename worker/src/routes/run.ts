@@ -17,7 +17,10 @@ import { DEFAULT_LIMIT } from "../lib/ir-sources";
 import { collectMargin } from "../lib/margin";
 import { collectMarketNews } from "../lib/market-news";
 import { collectNews } from "../lib/news";
-import { collectPeerEarnings } from "../lib/peer-earnings";
+import {
+	collectJpPeerEarnings,
+	collectPeerEarnings,
+} from "../lib/peer-earnings";
 import { collectBackdrop } from "../lib/premarket";
 import { collectRatings } from "../lib/ratings";
 import { notifyNewsSlack } from "../lib/slack";
@@ -101,6 +104,12 @@ run.get("/", async (c) => {
 		// 海外SOX系ピア (MU/NVDA/AMAT 等) の次回決算日を Nasdaq から取得 → D1 macro_events に保存。
 		// code をティッカーフィルタとして渡せる (例: ?kind=peer-earnings&code=NVDA)。
 		const result = await collectPeerEarnings(env, code);
+		return c.json({ ok: true, kind, result });
+	}
+	if (kind === "peer-earnings-jp") {
+		// 国内ピア (東エレ/ディスコ 等) の次回決算日を kabutan から推定 → D1 macro_events に保存。
+		// code を証券コードフィルタとして渡せる (例: ?kind=peer-earnings-jp&code=8035)。
+		const result = await collectJpPeerEarnings(env, code);
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "margin") {

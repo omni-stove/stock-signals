@@ -23,12 +23,15 @@
 // earnings.ts と同様、全社0件のときだけ例外を投げて既存データを守り、部分成功は保存する。
 
 import { db } from "./db";
+import { estimateNextEarningsDate, URL_FINANCE } from "./earnings";
 import { macroEvents } from "./schema";
-import { sleep } from "./utils";
+import { fetchHtml, sleep } from "./utils";
 
 export interface PeerEarningsEnv {
 	DB: D1Database;
 	MIN_INTERVAL_MS: string;
+	// 国内ピア (kabutan スクレイプ) 用。海外ピア (Nasdaq) はブラウザ風ヘッダ固定なので使わない。
+	USER_AGENT: string;
 }
 
 // 監視対象セクター (semiconductor) を動かす海外ピア。config/peers.yaml と一致させること
@@ -42,6 +45,17 @@ const SOX_PEERS: { ticker: string; name: string; role: string }[] = [
 	{ ticker: "KLAC", name: "KLA", role: "検査装置" },
 	{ ticker: "ASML", name: "ASML", role: "露光装置" },
 	{ ticker: "TSM", name: "TSMC", role: "ファウンドリ" },
+];
+
+// 国内ピア (watchlist 外の東証銘柄)。決算は引け後発表が大半で、翌営業日に同業の watchlist 銘柄へ
+// 連想で波及する (装置株→6857/6920、電子部品→6976/6981、セクター地合い全般)。
+// watchlist 銘柄自身の決算は earnings.ts が別途追うので、ここには watchlist 外だけを並べる。
+// config/peers.yaml と一致させること (増減は両方を直す)。
+const JP_PEERS: { code: string; name: string; role: string }[] = [
+	{ code: "8035", name: "東京エレクトロン", role: "前工程装置" },
+	{ code: "6146", name: "ディスコ", role: "後工程装置" },
+	{ code: "7735", name: "SCREEN", role: "洗浄装置" },
+	{ code: "6762", name: "TDK", role: "電子部品" },
 ];
 
 const URL_EARNINGS_DATE = (t: string) =>
@@ -188,7 +202,7 @@ async function fetchPeerEarningsDate(
 
 type PeerEvent = {
 	date: string;
-	kind: string; // peer_earnings:<TICKER>
+	kind: string; // peer_earnings:<TICKER> (海外) / peer_earnings_jp:<code> (国内)
 	label: string;
 	impact: "high";
 	jst_effect_date: string;
@@ -275,6 +289,59 @@ export async function collectPeerEarnings(
 	if (saved === 0) {
 		throw new Error(
 			"peer-earnings: 取得0件 (Nasdaq 障害/構造変更の可能性)。保存をスキップ。",
+		);
+	}
+	return { saved, results };
+}
+
+// --- 国内ピア決算 -------------------------------------------------------------
+
+// 1国内ピアの (コード, 社名, ロール, 決算日) から macro_events 行を組み立てる。
+// 国内決算は引け後発表が大半 → 同業への連想波及は翌営業日 (近似で翌暦日)。
+function toJpPeerEvent(
+	code: string,
+	name: string,
+	role: string,
+	date: string,
+): PeerEvent {
+	return {
+		date,
+		kind: `peer_earnings_jp:${code}`,
+		label: `${name}(${code}) 決算`,
+		impact: "high",
+		jst_effect_date: nextDay(date),
+		note: `${role}の国内ピア。引け後発表が大半 → 翌営業日に同業の watchlist 銘柄へ連想で波及。`,
+	};
+}
+
+// JP_PEERS (codeFilter 指定時はその1社) の次回決算日を kabutan finance ページから推定し
+// macro_events に保存する。推定ロジックは watchlist の earnings.ts と同一
+// (直近実績の次四半期 = 前年同期の発表日 +1年)。全社0件のときだけ例外を投げ既存データを守る。
+export async function collectJpPeerEarnings(
+	env: PeerEarningsEnv,
+	codeFilter: string | null,
+): Promise<Record<string, unknown>> {
+	const peers = JP_PEERS.filter((p) => !codeFilter || p.code === codeFilter);
+	const interval = Number.parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
+	const results: Record<string, unknown> = {};
+	let saved = 0;
+	for (const p of peers) {
+		try {
+			const html = await fetchHtml(URL_FINANCE(p.code), env);
+			const { est, detail } = await estimateNextEarningsDate(html);
+			if (est) {
+				await savePeerEvent(env, toJpPeerEvent(p.code, p.name, p.role, est));
+				saved++;
+			}
+			results[p.code] = { date: est, detail };
+		} catch (e) {
+			results[p.code] = { error: (e as Error).message };
+		}
+		await sleep(interval);
+	}
+	if (saved === 0) {
+		throw new Error(
+			"peer-earnings-jp: 取得0件 (kabutan 障害/構造変更の可能性)。保存をスキップ。",
 		);
 	}
 	return { saved, results };
@@ -398,6 +465,25 @@ if (import.meta.vitest) {
 			expect(toPeerEvent("X", "x", "r", "2026-12-31").jst_effect_date).toBe(
 				"2027-01-01",
 			);
+		});
+	});
+
+	describe("toJpPeerEvent", () => {
+		const e = toJpPeerEvent(
+			"8035",
+			"東京エレクトロン",
+			"前工程装置",
+			"2026-08-06",
+		);
+		it("kind は peer_earnings_jp:<code> (海外ピアと区別する)", () => {
+			expect(e.kind).toBe("peer_earnings_jp:8035");
+		});
+		it("label は 社名(コード) 決算", () => {
+			expect(e.label).toBe("東京エレクトロン(8035) 決算");
+		});
+		it("波及日は翌営業日 (近似で翌暦日)・impact=high", () => {
+			expect(e.jst_effect_date).toBe("2026-08-07");
+			expect(e.impact).toBe("high");
 		});
 	});
 }

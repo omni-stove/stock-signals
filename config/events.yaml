@@ -9,6 +9,17 @@
 #
 # ※SQ は event-context.ts が日付から計算で出す (日本=第2金 / 米=第3金 / 3・6・9・12月=メジャー)
 #   ため、この yaml に SQ を並べる必要はない。
+# ※指数リバランスの実施日 (MSCI/FTSE/日経225/TOPIX) と入替「銘柄発表」の接近窓
+#   (日経225=3・9月上旬 / MSCI=実施の約2週間前) も event-context.ts が計算で出す。
+#
+# ※指数採用・除外の「個別確定イベント」(例: 監視銘柄の日経225採用が公表された) は日付計算
+#   できないので、公表を見たら D1 macro_events に kind=index_change:<code>・date=実施日 で
+#   手動投入する。event-context.ts が実施21日前からパッシブ先回りの窓として prompt に出す。
+#   投入例 (リポジトリルートから):
+#     npx wrangler --cwd worker d1 execute stock-signals --remote --command \
+#       "INSERT OR REPLACE INTO macro_events (date, kind, label, impact, jst_effect_date, note, fetched_at) \
+#        VALUES ('2026-10-01', 'index_change:285A', 'キオクシアHD(285A) 日経225採用', 'high', NULL, \
+#                '9/4公表。実施日の引けにパッシブ買い集中見込み。', datetime('now'))"
 #
 # 半導体 (285A/6857/6920) は金利感応度が高く FOMC で大きく振れる。
 # SQ (特にメジャーSQ) 前後は先物・オプションの清算で需給が歪み、

@@ -70,7 +70,7 @@ async function collectOne(
 	limit: number,
 ): Promise<{ found: number; written: number; skipped: number }> {
 	const listHtml = await fetchHtml(src.list_url, env);
-	let items = parseList(src.site, listHtml, src.list_url);
+	let items = await parseList(src.site, listHtml, src.list_url);
 	items.sort((a, b) => b.date.localeCompare(a.date));
 	const total = items.length;
 	items = items.slice(0, limit);
@@ -98,7 +98,7 @@ async function collectOne(
 			if (fetchBody) {
 				await sleep(interval); // 本文取得する site だけ記事ごとに間隔を空ける
 				const artHtml = await fetchHtml(it.url, env);
-				const parsed = parseKioxiaArticle(artHtml);
+				const parsed = await parseKioxiaArticle(artHtml);
 				title = parsed.title || it.title;
 				body = parsed.body;
 			}

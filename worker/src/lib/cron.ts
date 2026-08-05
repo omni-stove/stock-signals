@@ -14,7 +14,7 @@ import { collectMacroEvents } from "./macro-events";
 import { collectMargin } from "./margin";
 import { collectMarketNews } from "./market-news";
 import { collectNews } from "./news";
-import { collectPeerEarnings } from "./peer-earnings";
+import { collectJpPeerEarnings, collectPeerEarnings } from "./peer-earnings";
 import { listPositionUsers } from "./position-report";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
@@ -311,6 +311,11 @@ export async function runScheduled(
 			console.error("peer-earnings failed:", err);
 			return null;
 		});
+		// 国内ピア (東エレ/ディスコ 等) の次回決算日も同様に毎 eod 取得する (kabutan から推定)。
+		const pej = await collectJpPeerEarnings(env, null).catch((err) => {
+			console.error("peer-earnings-jp failed:", err);
+			return null;
+		});
 		// マクロイベント (FOMC/日銀) は月初スロットでだけ相乗り収集する。会合は年8回・先の日程が
 		// 確定公表されており月1で十分。失敗しても eod の主収集は壊さない (catch でログのみ)。
 		let macro: Record<string, unknown> | null = null;
@@ -354,6 +359,7 @@ export async function runScheduled(
 				fundamentals: f,
 				earnings: e,
 				...(pe ? { peerEarnings: pe } : {}),
+				...(pej ? { peerEarningsJp: pej } : {}),
 				...(macro ? { macroEvents: macro } : {}),
 				...(fl ? { forcedLiquidation: fl.results } : {}),
 				...(pr ? { positionReview: pr } : {}),

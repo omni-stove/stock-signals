@@ -6,8 +6,8 @@
 // 銘柄リスト (WATCHLIST / WATCHLIST_NAMES) の出所は watchlist.ts (銘柄定義の唯一の真のソース)。
 // ここで re-export し、Worker 内の各モジュールは timeseries から import する。
 
-import * as cheerio from "cheerio";
 import { db } from "./db";
+import { decodeEntities, scanHtml, scanTables, tablesWithClass } from "./html";
 import { sliceStockInfo } from "./kabutan";
 import { daily, fundamentals, prices } from "./schema";
 import { fetchHtml, sleep, sliceTables } from "./utils";
@@ -63,39 +63,115 @@ type PriceParsed = {
 };
 
 // 株探の現値ページをパースする。
-function parseKabutanPrice(html: string): PriceParsed {
-	const $ = cheerio.load(sliceStockInfo(html));
-	const block = $(".si_i1_2").first();
+// 順序依存の値 (dd ごとの先頭 span、「出来高」th の直後の td) は出現順の状態機械で追う。
+async function parseKabutanPrice(html: string): Promise<PriceParsed> {
+	const frag = sliceStockInfo(html);
 
-	const price = toNumber(block.find(".kabuka").first().text());
-
-	const dds = block.find(".si_i1_dl1 dd");
-	const change = toNumber(dds.eq(0).find("span").first().text());
-	const change_pct = toNumber(dds.eq(1).find("span").first().text());
-
-	let volume: number | null = null;
-	$("th").each((_, th) => {
-		if (volume !== null) return;
-		if ($(th).text().trim() === "出来高") {
-			volume = toNumber($(th).next("td").text());
-		}
+	let price = "";
+	let priceCount = 0; // 最初の .kabuka だけ拾う (.first() 相当)
+	let quote_time: string | null = null;
+	const dds: string[] = []; // dd ごとの先頭 span テキスト ([0]=前日比, [1]=変化率)
+	let inFirstSpan = false;
+	let sawSpanInDd = false;
+	let lastTh: string | null = null; // 直前の th テキスト (出来高 td の検出用)
+	let volume: string | null = null;
+	let inVolumeTd = false;
+	// PTS ブロック。一致した全要素のテキストを連結する。
+	const pts = { k1: "", k2: "", k3: "" };
+	const ptsText = (key: "k1" | "k2" | "k3") => ({
+		text(t: Text) {
+			pts[key] += t.text;
+		},
 	});
 
-	const quote_time = $("#stockinfo_i1 time").first().attr("datetime") || null;
+	await scanHtml(frag, [
+		[
+			".si_i1_2 .kabuka",
+			{
+				element() {
+					priceCount++;
+				},
+				text(t) {
+					if (priceCount === 1) price += t.text;
+				},
+			},
+		],
+		[
+			".si_i1_2 .si_i1_dl1 dd",
+			{
+				element() {
+					dds.push("");
+					sawSpanInDd = false;
+					inFirstSpan = false;
+				},
+			},
+		],
+		[
+			".si_i1_2 .si_i1_dl1 dd span",
+			{
+				element() {
+					inFirstSpan = !sawSpanInDd;
+					sawSpanInDd = true;
+				},
+				text(t) {
+					if (inFirstSpan) dds[dds.length - 1] += t.text;
+				},
+			},
+		],
+		[
+			"th",
+			{
+				element() {
+					lastTh = "";
+				},
+				text(t) {
+					if (lastTh !== null) lastTh += t.text;
+				},
+			},
+		],
+		[
+			"td",
+			{
+				element() {
+					inVolumeTd =
+						volume === null && decodeEntities(lastTh ?? "").trim() === "出来高";
+					if (inVolumeTd) volume = "";
+					lastTh = null;
+				},
+				text(t) {
+					if (inVolumeTd && volume !== null) volume += t.text;
+				},
+			},
+		],
+		[
+			"#stockinfo_i1 time",
+			{
+				element(e) {
+					quote_time ??= e.getAttribute("datetime");
+				},
+			},
+		],
+		[".si_i1_3 .kabuka1", ptsText("k1")],
+		[".si_i1_3 .kabuka2", ptsText("k2")],
+		[".si_i1_3 .kabuka3", ptsText("k3")],
+	]);
 
-	const ptsBlock = $(".si_i1_3").first();
 	let pts_price: number | null = null;
 	let pts_time: string | null = null;
-	if (
-		ptsBlock.length > 0 &&
-		ptsBlock.find(".kabuka1").text().trim().includes("PTS")
-	) {
-		pts_price = toNumber(ptsBlock.find(".kabuka2").text());
-		pts_time =
-			ptsBlock.find(".kabuka3").text().replace(/\s+/g, " ").trim() || null;
+	if (decodeEntities(pts.k1).trim().includes("PTS")) {
+		pts_price = toNumber(decodeEntities(pts.k2));
+		pts_time = decodeEntities(pts.k3).replace(/\s+/g, " ").trim() || null;
 	}
 
-	return { price, change, change_pct, volume, quote_time, pts_price, pts_time };
+	return {
+		price: toNumber(decodeEntities(price)),
+		change: toNumber(decodeEntities(dds[0] ?? "")),
+		change_pct: toNumber(decodeEntities(dds[1] ?? "")),
+		volume: volume === null ? null : toNumber(decodeEntities(volume)),
+		quote_time: quote_time || null,
+		pts_price,
+		pts_time,
+	};
 }
 
 async function collectPricesOne(
@@ -103,7 +179,7 @@ async function collectPricesOne(
 	code: string,
 ): Promise<{ written: number; skipped: number }> {
 	const html = await fetchHtml(URL_PRICES(code), env);
-	const p = parseKabutanPrice(html);
+	const p = await parseKabutanPrice(html);
 	const fetched_at = new Date().toISOString();
 	// 値付き時刻があればそれを、無ければ取得時刻を5分枠に丸めて冪等キーにする。
 	const slot = slot5min(p.quote_time || fetched_at);
@@ -142,32 +218,33 @@ type DailyBar = {
 };
 
 // 株探の日足 (本日表 + 過去表) をパースする。
-function parseKabutanDaily(html: string): DailyBar[] {
-	const $ = cheerio.load(sliceTables(html, "stock_kabuka") ?? html);
+async function parseKabutanDaily(html: string): Promise<DailyBar[]> {
+	const tables = await scanTables(sliceTables(html, "stock_kabuka") ?? html);
 	const rows: DailyBar[] = [];
 
-	const harvest = (selector: string) => {
-		$(`${selector} tbody tr`).each((_, tr) => {
-			const $tr = $(tr);
-			const date = $tr.find("th time").first().attr("datetime");
-			if (!date) return;
-			const tds = $tr.find("td");
-			if (tds.length < 7) return;
-			rows.push({
-				date,
-				open: toNumber(tds.eq(0).text()),
-				high: toNumber(tds.eq(1).text()),
-				low: toNumber(tds.eq(2).text()),
-				close: toNumber(tds.eq(3).text()),
-				change: toNumber(tds.eq(4).text()),
-				change_pct: toNumber(tds.eq(5).text()),
-				volume: toNumber(tds.eq(6).text()),
-			});
-		});
+	const harvest = (className: string) => {
+		for (const t of tablesWithClass(tables, className)) {
+			for (const { cells } of t.rows) {
+				const date = cells.find((c) => c.tag === "th")?.timeDatetime;
+				if (!date) continue;
+				const tds = cells.filter((c) => c.tag === "td");
+				if (tds.length < 7) continue;
+				rows.push({
+					date,
+					open: toNumber(tds[0].text),
+					high: toNumber(tds[1].text),
+					low: toNumber(tds[2].text),
+					close: toNumber(tds[3].text),
+					change: toNumber(tds[4].text),
+					change_pct: toNumber(tds[5].text),
+					volume: toNumber(tds[6].text),
+				});
+			}
+		}
 	};
 
-	harvest("table.stock_kabuka0");
-	harvest("table.stock_kabuka_dwm");
+	harvest("stock_kabuka0");
+	harvest("stock_kabuka_dwm");
 	return rows;
 }
 
@@ -176,7 +253,7 @@ async function collectDailyOne(
 	code: string,
 ): Promise<{ written: number; skipped: number }> {
 	const html = await fetchHtml(URL_DAILY(code), env);
-	const bars = parseKabutanDaily(html);
+	const bars = await parseKabutanDaily(html);
 	if (bars.length === 0) return { written: 0, skipped: 0 };
 	const fetched_at = new Date().toISOString();
 	const source = `${SITE}:${code}`;
@@ -233,56 +310,43 @@ function isForecastRow(label: string): boolean {
 
 // 株探の指標ページをパースする。対象は「PER/PBR ヘッダの表」と「決算期ヘッダの表」だけ
 // なので、それらを含むテーブル群に絞ってから読む。
-function parseKabutanFundamentals(html: string): FundParsed {
-	const $ = cheerio.load(sliceTables(html, "PER", "決算期") ?? html);
+async function parseKabutanFundamentals(html: string): Promise<FundParsed> {
+	const tables = await scanTables(sliceTables(html, "PER", "決算期") ?? html);
 
 	let per: number | null = null;
 	let pbr: number | null = null;
 	let dividend_yield: number | null = null;
 
-	$("table").each((_, table) => {
-		if (per !== null) return;
-		const $t = $(table);
-		const headers = $t
-			.find("thead th")
-			.map((_, th) => $(th).text().trim())
-			.get();
-		if (headers.includes("PER") && headers.includes("PBR")) {
-			const tds = $t.find("tbody tr").first().find("td");
-			per = toNumber(tds.eq(0).text());
-			pbr = toNumber(tds.eq(1).text());
-			dividend_yield = toNumber(tds.eq(2).text());
+	for (const t of tables) {
+		if (per !== null) break;
+		if (t.headers.includes("PER") && t.headers.includes("PBR")) {
+			const tds = t.rows[0]?.cells.filter((c) => c.tag === "td") ?? [];
+			per = toNumber(tds[0]?.text);
+			pbr = toNumber(tds[1]?.text);
+			dividend_yield = toNumber(tds[2]?.text);
 		}
-	});
+	}
 
 	let forecast_eps: number | null = null;
 	let forecast_period: string | null = null;
 	let actual_eps: number | null = null;
 	let actual_period: string | null = null;
 
-	$("table").each((_, table) => {
-		if (forecast_period !== null || actual_period !== null) return;
-		const $t = $(table);
-		const headers = $t
-			.find("thead th")
-			.map((_, th) => $(th).text().trim())
-			.get();
-		const epsCol = headers.findIndex(
+	for (const t of tables) {
+		if (forecast_period !== null || actual_period !== null) break;
+		const epsCol = t.headers.findIndex(
 			(h) => h.includes("１株益") || h.includes("1株益"),
 		);
-		if (!headers.includes("決算期") || epsCol < 0) return;
+		if (!t.headers.includes("決算期") || epsCol < 0) continue;
 
-		$t.find("tbody tr").each((_, tr) => {
-			const cells = $(tr).find("th, td");
-			const label = cells
-				.first()
-				.text()
+		for (const { cells } of t.rows) {
+			const label = (cells[0]?.text ?? "")
 				.replace(/ /g, " ")
 				.replace(/　/g, " ")
 				.trim();
 			const period = normalizePeriod(label);
-			if (!period) return;
-			const eps = toNumber(cells.eq(epsCol).text());
+			if (!period) continue;
+			const eps = toNumber(cells[epsCol]?.text);
 			if (isForecastRow(label)) {
 				if (forecast_period === null) {
 					forecast_eps = eps;
@@ -292,8 +356,8 @@ function parseKabutanFundamentals(html: string): FundParsed {
 				actual_eps = eps;
 				actual_period = period;
 			}
-		});
-	});
+		}
+	}
 
 	return {
 		per,
@@ -311,7 +375,7 @@ async function collectFundamentalsOne(
 	code: string,
 ): Promise<{ written: number; skipped: number }> {
 	const html = await fetchHtml(URL_FUNDAMENTALS(code), env);
-	const f = parseKabutanFundamentals(html);
+	const f = await parseKabutanFundamentals(html);
 	const fetched_at = new Date().toISOString();
 	const date = fetched_at.slice(0, 10);
 	// 同日複数回は最新値で上書きしたいので、PK (ticker, date) 衝突時に全カラム上書き
@@ -441,8 +505,8 @@ if (import.meta.vitest) {
 			</div>
 			<table><tr><th>出来高</th><td>1,000,000</td></tr></table>`;
 
-		it("価格・前日比・出来高・時刻を抽出する", () => {
-			const p = parseKabutanPrice(html);
+		it("価格・前日比・出来高・時刻を抽出する", async () => {
+			const p = await parseKabutanPrice(html);
 			expect(p.price).toBe(1234.5);
 			expect(p.change).toBe(12.5);
 			expect(p.change_pct).toBe(1.02);
@@ -450,14 +514,14 @@ if (import.meta.vitest) {
 			expect(p.quote_time).toBe("2026-06-18T15:00:00+09:00");
 		});
 
-		it("PTS ブロックがあれば pts_price / pts_time を抽出する", () => {
-			const p = parseKabutanPrice(html);
+		it("PTS ブロックがあれば pts_price / pts_time を抽出する", async () => {
+			const p = await parseKabutanPrice(html);
 			expect(p.pts_price).toBe(1240);
 			expect(p.pts_time).toBe("18:30");
 		});
 
-		it("空 HTML では全フィールド null", () => {
-			const p = parseKabutanPrice("<html></html>");
+		it("空 HTML では全フィールド null", async () => {
+			const p = await parseKabutanPrice("<html></html>");
 			expect(p.price).toBeNull();
 			expect(p.volume).toBeNull();
 			expect(p.pts_price).toBeNull();
@@ -481,8 +545,8 @@ if (import.meta.vitest) {
 				</tr>
 			</tbody></table>`;
 
-		it("本日表と過去表の両方から OHLCV 行を拾う", () => {
-			const bars = parseKabutanDaily(html);
+		it("本日表と過去表の両方から OHLCV 行を拾う", async () => {
+			const bars = await parseKabutanDaily(html);
 			expect(bars).toHaveLength(2);
 			expect(bars[0]).toMatchObject({
 				date: "2026-06-18",
@@ -495,15 +559,15 @@ if (import.meta.vitest) {
 			expect(bars[1].date).toBe("2026-06-17");
 		});
 
-		it("datetime や td 不足の行はスキップする", () => {
+		it("datetime や td 不足の行はスキップする", async () => {
 			const broken = `<table class="stock_kabuka0"><tbody>
 				<tr><th>日付なし</th><td>1</td></tr>
 			</tbody></table>`;
-			expect(parseKabutanDaily(broken)).toHaveLength(0);
+			expect(await parseKabutanDaily(broken)).toHaveLength(0);
 		});
 
-		it("該当テーブルが無ければ空配列", () => {
-			expect(parseKabutanDaily("<html></html>")).toHaveLength(0);
+		it("該当テーブルが無ければ空配列", async () => {
+			expect(await parseKabutanDaily("<html></html>")).toHaveLength(0);
 		});
 	});
 }

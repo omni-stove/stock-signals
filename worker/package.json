@@ -15,11 +15,11 @@
     "hono": "^4.13.13"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261012.1",
+    "@cloudflare/workers-types": "^5.20261019.1",
     "drizzle-kit": "^0.31.11",
     "htmlrewriter": "^0.0.13",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.4",
-    "wrangler": "^4.149.0"
+    "vitest": "^5.0.5",
+    "wrangler": "^4.151.2"
   }
 }

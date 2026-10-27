@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # scripts/post-brief.bats
-# post-brief.sh が組み立てる Slack ペイロード (headline + 材料/強気/弱気/注視点の section blocks +
-# 決定論の注目水準行 + 観測行) と no_update の早期终了を検証する。
+# post-brief.sh が組み立てる Slack ペイロード (headline + 材料/テクニカル/強気/弱気/注視点の section blocks +
+# 決定論の注目水準行・テクニカル指標行 + 観測行) と no_update の早期终了を検証する。
 #
 # 実行: pnpm run test:sh
 #
@@ -114,23 +114,27 @@ payload_for() {
   printf '%s\n' "$output" | grep -q "slack skipped"
 }
 
-# 材料 (🆕 + ・分析) → 強気 (🐂) → 弱気 (🐻) → 注視点 (👀) の順で 1 行 1 section になる
-@test "payload: materials, bull, bear, watch render in order with prefixes" {
+# 材料 (🆕 + ・分析) → テクニカル (📈) → 強気 (🐂) → 弱気 (🐻) → 注視点 (👀) の順で 1 行 1 section になる
+@test "payload: materials, technical, bull, bear, watch render in order with prefixes" {
   jq -n '{status:"brief",headline:"HEAD",
           materials:[{title:"2026-08-05 topic",analysis:["path one","path two"]}],
+          technical:["tape read"],
           bull:["strong point"],bear:["risk point"],watch:["next earnings"]}' \
     > "$BATS_TEST_TMPDIR/b.json"
   run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  # headline + (title + 分析2) + bull + bear + watch = 7 blocks
-  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 7 ]
+  # headline + (title + 分析2) + technical + bull + bear + watch = 8 blocks
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 8 ]
   [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "🆕 2026-08-05 topic" ]
   [ "$(printf '%s' "$p" | jq -r '.blocks[2].text.text')" = "・path one" ]
   [ "$(printf '%s' "$p" | jq -r '.blocks[3].text.text')" = "・path two" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[4].text.text')" = "🐂 strong point" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[5].text.text')" = "🐻 risk point" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[6].text.text')" = "👀 next earnings" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[4].text.text')" = "📈 tape read" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[5].text.text')" = "🐂 strong point" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[6].text.text')" = "🐻 risk point" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[7].text.text')" = "👀 next earnings" ]
+  # テクニカルの読みは LLM 由来なので brief_body に含める
+  printf '%s' "$p" | jq -e '.brief_body | test("tape read")' >/dev/null
 }
 
 # 全リストが空だと本文が組めないので落とす (headline だけの投稿は出さない)
@@ -209,6 +213,57 @@ run_pb_ctx() {
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
   [ "$(printf '%s' "$p" | jq -r '.brief_body | test("注目水準")')" = "false" ]
+}
+
+# === tech: テクニカル指標行 (numctx の daily 指標から決定論で組む) ==============
+
+# 指標が揃えば注目水準の次に 1 行で貼る。確定足の日付を明記し、乖離は符号付き
+@test "tech: full daily renders one line after levels" {
+  run_pb_ctx '{"daily":{"status":"ok","latest_date":"2026-10-26","close":9900,"ma5":9800,"ma25":9700,
+                        "ma25_dev_pct":2.3,"rsi_14":72,"range_pct":85,"vol_x_20d":1.9,
+                        "vol_x_20d_intraday":null,"atr_vs_baseline":1.31,
+                        "obv_trend":"rising","cmf_20d":0.12}}'
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  local t; t="$(printf '%s' "$p" | jq -r '.blocks[-1].text.text')"
+  printf '%s' "$(printf '%s' "$p" | jq -r '.blocks[-2].text.text')" | grep -q "📏 注目水準:"
+  printf '%s' "$t" | grep -q "📐 テクニカル (2026-10-26 確定足):"
+  printf '%s' "$t" | grep -q "MA25乖離 +2.3%"
+  printf '%s' "$t" | grep -q "RSI14 72"
+  printf '%s' "$t" | grep -q "20日レンジ位置 85%"
+  printf '%s' "$t" | grep -q "出来高 1.9倍"
+  printf '%s' "$t" | grep -q "ATR 平常比1.31倍"
+  printf '%s' "$t" | grep -q "OBV 上向き"
+  printf '%s' "$t" | grep -q "CMF20 0.12"
+}
+
+# ザラ場中は当日ペースの出来高倍率を優先し、マイナス乖離はそのまま出す
+@test "tech: intraday volume pace wins and negative deviation keeps its sign" {
+  run_pb_ctx '{"daily":{"status":"ok","latest_date":"2026-10-26","ma25_dev_pct":-3.4,
+                        "vol_x_20d":1.9,"vol_x_20d_intraday":0.8}}'
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  local t; t="$(printf '%s' "$p" | jq -r '.blocks[-1].text.text')"
+  printf '%s' "$t" | grep -q "MA25乖離 -3.4%"
+  printf '%s' "$t" | grep -q "出来高 当日ペース0.8倍"
+  ! printf '%s' "$t" | grep -q "1.9倍"
+}
+
+# daily が stale なら指標行は付かない
+@test "tech: stale daily appends no line" {
+  run_pb_ctx '{"daily":{"status":"stale","latest_date":"2026-10-20"}}'
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '[.blocks[].text.text | select(test("テクニカル"))] | length')" -eq 0 ]
+}
+
+# 指標行は brief_body (briefs 保存分) には含めない
+@test "tech: indicator line is not part of brief_body" {
+  run_pb_ctx '{"daily":{"status":"ok","latest_date":"2026-10-26","rsi_14":72}}'
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  printf '%s' "$p" | jq -e '[.blocks[].text.text | select(test("RSI14 72"))] | length == 1' >/dev/null
+  [ "$(printf '%s' "$p" | jq -r '.brief_body | test("RSI14")')" = "false" ]
 }
 
 # === forced: 強制決済スコアの観測行を本文末尾に貼る (LLM には渡さない) =======

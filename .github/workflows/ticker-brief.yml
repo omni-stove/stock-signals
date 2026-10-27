@@ -6,7 +6,7 @@
 #
 # 起動後はブリーフのルールを prompt にベタ書きした Claude Code Action が対象銘柄の数値コンテキスト
 # (context-builder が育てたコンテキスト本文 + Worker /judge-context の価格/日足/市場ブリーフ/決算日/信用残)
-# を @ で読み、新着材料の要約と背景・影響分析・強気/弱気材料を structured_output で返す。
+# を @ で読み、新着材料の要約と背景・影響分析・テクニカルの読み・強気/弱気材料を structured_output で返す。
 # 売買判断 (buy/sell・指値・損切り) は出さない — 判断は読み手 (人間) が行い、ここは判断材料を
 # 並べる係。投稿は後続ステップ (post-brief.sh)。**このワークフローはコンテキストを一切書き換えない**
 # (出力は Slack のみ)。context-builder がコンテキストを書き、ticker-brief が Slack を書く、という
@@ -127,8 +127,9 @@ jobs:
             Summarize the fresh materials on this name, explain **why each matters** (the transmission path
             into 業績/株価, precedents when you know one), and lay out the standing 強気/弱気 case. **Never
             output a trading call**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs (買い/売り/
-            利確/増し玉/様子見). Price levels belong to the posting step, which appends the real ones
-            (現値/MA/レンジ/ATR) deterministically — do not restate numeric levels in your text. You may —
+            利確/増し玉/様子見). Price levels and indicator values belong to the posting step, which appends
+            the real ones (現値/MA/レンジ/ATR, MA25乖離/RSI/出来高倍率/OBV/CMF) deterministically — do not
+            restate numeric levels or indicator values in your text. You may —
             and should — describe what the tape did (急伸/出来高急増/セクタ内で劣後 など) as fact.
 
             Report what you can see now — context, numbers, `event_context` — never hindsight framing
@@ -146,6 +147,11 @@ jobs:
               one line. `analysis` = 1–3 lines: なぜ重要か / 業績・株価への波及経路 / 過去の類似例や市場の
               初期反応. Write the path concretely (「HBM 検査需要 → 後工程テスタの受注に数四半期先行」),
               not conditional boilerplate.
+            - `technical`: 0–2 lines — the chart state read from `daily`: trend against the MAs, stretch
+              (過熱/売られすぎ), position in the 20日レンジ, volume and money-flow quality, volatility
+              expansion/contraction — and whether the tape confirms or diverges from the fresh materials.
+              Describe the current state in words; never forecast the next bar or name a level to act on.
+              Empty when `daily` is skipped.
             - `bull` / `bear`: the standing case each way, 0–4 lines each, drawn from context + fresh
               materials + numbers. State facts and their weight, not recommendations. It is fine for one
               side to be empty when the materials genuinely lean one way.
@@ -181,6 +187,12 @@ jobs:
                 `daily.vol_x_20d_intraday` (today's cumulative volume pace-projected to a full day ÷ 20日平均);
                 null near the open means too little has traded to project. After `closed`, `vol_x_20d` is the
                 confirmed value again and `vol_x_20d_intraday` is null.
+            - **`daily`** (technicals on the latest confirmed bar): `ma_position` / `ma25_dev_pct` = trend and
+              stretch; `rsi_14` = momentum heat; `range_pct` = where price sits in the 20日レンジ;
+              `atr_vs_baseline` = volatility vs its own norm; `obv_trend` / `ad_trend` / `cmf_20d` = money flow —
+              a flow reading that diverges from price leads over price alone. `volume_quality` and
+              `momentum_state` are precomputed reads — take them as given (`na` = not applicable, skip).
+              Weigh technicals as confirmation of or divergence from the materials, not as a standalone call.
             - **`premarket`** (prior NY session): `sox_change_pct` is the overnight external backdrop —
               `sector` leads over it; `nasdaq_change_pct` / `dow_change_pct` / `nikkei_futures_price` only confirm.
               `us_session: carried_over` = the US was closed overnight (休場明け) and these numbers are the prior
@@ -215,11 +227,12 @@ jobs:
             --model opus --effort high --allowedTools Read,WebSearch,WebFetch --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
-              "required":["status","headline","materials","bull","bear","watch"],
+              "required":["status","headline","materials","technical","bull","bear","watch"],
               "properties":{
                 "status":{"enum":["brief","no_update"],"description":"brief=材料ブリーフを出す / no_update=新着も特筆事項も無し (投稿しない)"},
                 "headline":{"type":["string","null"],"description":"Slack first line, exact format verbatim: 📰 <ticker> <name> 材料ブリーフ: <新着材料の一言サマリー>; null when no_update"},
                 "materials":{"type":"array","maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["title","analysis"],"properties":{"title":{"type":"string","description":"1 line: YYYY-MM-DD <何が起きたか>"},"analysis":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3,"description":"1-3 lines in Japanese: なぜ重要か / 業績・株価への波及経路 / 過去の類似例。Web で裏取りした場合は出典 (媒体名, 日付) を明記"}}},"description":"新着材料 (newest first)。no_update なら空"},
+                "technical":{"type":"array","items":{"type":"string"},"maxItems":2,"description":"テクニカルの読み (トレンド/過熱/レンジ位置/出来高・資金フローの質/ボラ、材料との整合・乖離)。数値・水準・予測は書かない"},
                 "bull":{"type":"array","items":{"type":"string"},"maxItems":4,"description":"強気材料 (事実とその重み。推奨は書かない)"},
                 "bear":{"type":"array","items":{"type":"string"},"maxItems":4,"description":"弱気材料・リスク要因 (事実とその重み。推奨は書かない)"},
                 "watch":{"type":"array","items":{"type":"string"},"maxItems":2,"description":"次に確認すべき事実 (次回決算・続報の出所・セクタ指標)"}
@@ -234,7 +247,8 @@ jobs:
       # (curl/jq/blocks 組み立て/フォールバックは script が持つ)。第2引数 = ブリーフ JSON、
       # 第3引数 = 前段で並行取得した指数リバランス窓の JSON (LLM には渡していない観測事実)。
       # 第4引数 = LLM に渡したのと同じ numctx。post-brief.sh が 📏 注目水準 (現値/MA5/MA25/20日レンジ/
-      # ATR) を numctx の実在値から決定論で組んで本文末尾に貼る (LLM は水準の数値を出さない)。
+      # ATR) と 📐 テクニカル指標 (MA25乖離/RSI/レンジ位置/出来高倍率/ATR平常比/OBV/CMF) を numctx の
+      # 実在値から決定論で組んで本文末尾に貼る (LLM は水準・指標の数値を出さない)。
       - name: Post brief to Slack
         run: |
           printf '%s' "$BRIEF_JSON" > "$RUNNER_TEMP/brief.json"

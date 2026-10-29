@@ -12,14 +12,14 @@
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",
-    "hono": "^4.13.13"
+    "hono": "^4.13.14"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261019.1",
+    "@cloudflare/workers-types": "^5.20261026.1",
     "drizzle-kit": "^0.31.11",
     "htmlrewriter": "^0.0.13",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5",
-    "wrangler": "^4.151.2"
+    "wrangler": "^4.152.0"
   }
 }

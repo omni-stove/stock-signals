@@ -85,7 +85,7 @@ jobs:
       # させる。JSON は本文込みで巨大・特殊文字を含むので prompt に直接埋めず、ファイルに書いて
       # skill にパスを渡す。skill はそのファイルを Read するだけ。status (no-update / ok) で分岐する。
       #
-      # 当該銘柄の判定メタ (name/fair_per/sector/note) は静的な watchlist.ts から
+      # 当該銘柄の判定メタ (name/sector/note) は静的な watchlist.ts から
       # scripts/watchlist-meta.sh で抜き、ticker_meta として同梱する (skill が watchlist.ts 全体を
       # 読まずに当該銘柄分だけ受け取れる)。
       - name: Build context input
@@ -128,8 +128,8 @@ jobs:
 
             ## Inputs
 
-            The input JSON is embedded inline below (`ticker_meta` with the ticker's `name` / `fair_per` /
-            `sector` / `note`; the existing context body; the two cursors; the new IR/news). Do not post to
+            The input JSON is embedded inline below (`ticker_meta` with the ticker's `name` / `sector` /
+            `note`; the existing context body; the two cursors; the new IR/news). Do not post to
             Slack; do not upsert; do not run any script; do not write any file — return structured output and stop.
 
             ## Steps
@@ -157,8 +157,10 @@ jobs:
             restatement of something already recorded.
 
             A fresh material fact enters `topics` while its near-term effect is live, then leaves once that
-            effect is spent and only its lasting consequence remains in a structural section. Securities
-            ratings (`ir_category="rating"`) route to `ratings` regardless of age, never `topics`.
+            effect is spent and only its lasting consequence remains in a structural section. A securities
+            rating (`ir_category="rating"`) enters `topics` only when the rating itself changes (格上げ/格下げ/
+            新規) at a firm not marked 信頼度: 低; a target-price revision alone is not material. Never keep a
+            standing list of ratings or target prices in any section.
 
             ### 3. Regenerate the whole set of sections
 
@@ -181,7 +183,7 @@ jobs:
                 "status":{"enum":["ok","no-update"]},
                 "title":{"type":["string","null"],"description":"Exact format, verbatim: [<ticker> <name>] 銘柄コンテキスト, with name from ticker_meta. Null on no-update."},
                 "sections":{"type":["object","null"],"additionalProperties":false,
-                  "required":["business","products","management","topics","ratings","earnings_pattern","earnings"],
+                  "required":["business","products","management","topics","earnings_pattern","earnings"],
                   "description":"The regenerated context; an empty array when nothing applies. Null on no-update. Keep the whole to ~30 lines; do not carry every existing line forward. Write in Japanese plain text with no Markdown symbols. Give each line one point in about 50 characters, in clipped note style: the fact, then its effect. Do not end a line with a full stop, use polite endings or narrating connectives, or hedge unless the uncertainty is the point. Place each fact in the one section where its lasting effect belongs.",
                   "properties":{
                     "business":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 事業の骨格. Rarely-changing structural facts: what the company is, where it sits in the value chain, production base, technology lineage. A few lines that tell a continuation from a reversal, not a company profile."},
@@ -194,7 +196,6 @@ jobs:
                           "summary":{"type":"string","maxLength":50,"description":"What happened."},
                           "effect":{"type":"string","maxLength":40,"description":"Its effect over the next few weeks."}
                         }}},
-                    "ratings":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 証券会社レーティング. Newest first; each line YYYY-MM-DD <firm>: <rating> 目標株価 <value> [信頼度: …]. Keep while within about 12 months; drop when the same firm issues a newer call."},
                     "earnings_pattern":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 決算の特色・クセ. Structural reaction pattern to earnings for this name: focus metric, how guidance vs results moves the stock, peer linkage. When empty, research it once (web / past IR) and fill; otherwise revise only when fresh ir_items carry an earnings, revision, or guidance item, else carry it forward verbatim."},
                     "earnings":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 決算・ガイダンス. Latest own results vs expectations, current guidance, known next-earnings considerations; facts only. Never a recap of topics or peer/macro news."}
                   }},

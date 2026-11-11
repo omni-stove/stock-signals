@@ -1,7 +1,7 @@
 node_modules/
 
 # 生成データ (D1/R2 が source of truth。リポには生データを置かない)
-# 確認用スクリプト (valuation/sector/events) が /latest 経由に移行するまでの当面の互換。
+# 確認用スクリプト (sector/events) が /latest 経由に移行するまでの当面の互換。
 data/prices/
 data/daily/
 data/fundamentals/

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/watchlist-meta.sh
-# worker/src/lib/watchlist.ts から 1 銘柄ぶんの判定メタ (name / fair_per / sector / note) を
+# worker/src/lib/watchlist.ts から 1 銘柄ぶんの判定メタ (name / sector / note) を
 # 抜き出して JSON 1 行で stdout に出す。
 #
 # 設計の意図:
@@ -15,8 +15,7 @@
 #   $1 = ticker (必須)。watchlist.ts に無ければ非0で終了。
 # 環境変数: WATCHLIST_FILE (任意。既定 = リポジトリ内 worker/src/lib/watchlist.ts)。
 #
-# 出力 (stdout): {"name":…, "fair_per":…|null, "sector":…|null, "note":…|null}
-#   fair_per は数値か null、それ以外は文字列か null。
+# 出力 (stdout): {"name":…, "sector":…|null, "note":…|null}。値は文字列か null。
 #
 # パース方針: TICKERS は `{ … }` の銘柄オブジェクトが code 行で始まる素直な並び。対象 code の
 #   行から次の銘柄境界 (`code:` 行) までを 1 ブロックとして切り、各フィールドを行 grep で拾う。
@@ -56,7 +55,7 @@ str_field() {
 }
 
 # 裸の値フィールド (クオート無し) を取り出す。`<field>: <value>,` の <value> 部分。
-# 値が "..." で囲まれた文字列でも null や数値でもそのまま返す。
+# 値が "..." で囲まれた文字列でも null でもそのまま返す。
 raw_field() {
   printf '%s\n' "$block" \
     | { grep -E "^[[:space:]]*$1:[[:space:]]*" || true; } \
@@ -67,15 +66,13 @@ raw_field() {
 NAME="$(str_field name)"
 NOTE="$(str_field note)"
 SECTOR_RAW="$(raw_field sector)"   # `"semiconductor"` or `null`
-FAIR_RAW="$(raw_field fair_per)"   # `20` or `null`
 
 [[ -n "$NAME" ]] || { echo "watchlist-meta.sh: name not found for $TICKER" >&2; exit 1; }
 
-# sector ("…" or null) と fair_per (数値 or null) は .ts の値表現がそのまま JSON として妥当なので
+# sector ("…" or null) は .ts の値表現がそのまま JSON として妥当なので
 # --argjson にそのまま渡す。値が無い (空) ときだけ null に倒す。note は未設定 (空) なら null。
 jq -nc \
   --arg name "$NAME" \
   --arg note "$NOTE" \
   --argjson sector "${SECTOR_RAW:-null}" \
-  --argjson fair "${FAIR_RAW:-null}" \
-  '{name:$name, fair_per:$fair, sector:$sector, note:(if $note=="" then null else $note end)}'
+  '{name:$name, sector:$sector, note:(if $note=="" then null else $note end)}'

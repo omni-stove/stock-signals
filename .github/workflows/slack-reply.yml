@@ -149,7 +149,7 @@ jobs:
               open (premarket) vs already closed — demote a stale tape, don't read a fresh move into it.
               In-session, `daily` is the prior confirmed bar (so `vol_x_20d` is yesterday's); for today's 出来高
               read `daily.vol_x_20d_intraday`.
-            - the ticker's `name`/`sector`/`fair_per` are in `worker/src/lib/watchlist.ts`.
+            - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
             ## What to do
 

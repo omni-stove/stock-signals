@@ -1,15 +1,17 @@
 // Cloudflare Worker: 寄り前の地合い収集 (premarket backdrop)
 //
-// kabutan パーサで米国指数 (SOX/Nasdaq/Dow) と CME日経225先物(ドル建て) を取得し、
-// D1 テーブル premarket_backdrop に INSERT OR REPLACE で冪等に書く。
+// kabutan パーサで米国指数 (SOX/Nasdaq/Dow/VIX)・CME日経225先物(ドル建て)・ドル円を、
+// 米財務省の日次イールド CSV で米10年債利回りを取得し、D1 テーブル premarket_backdrop に
+// INSERT OR REPLACE で冪等に書く。
 //
-// 前夜の米国市場 (とくに SOX) と日経先物が寄り付きの方向をかなり決めるため、これを
-// 寄り前 intake cron が取得し、ticker-brief の pre-open weighting の入力にする。
+// 前夜の米国市場 (とくに SOX)・日経先物・ドル円・米金利が寄り付きの方向をかなり決めるため、これを
+// 寄り前 intake cron が取得し、ticker-brief / market-brief の pre-open の入力にする。
 //
 // ※LLM は使わない。スクレイピング・正規化のみ。kabutan は全ソース UTF-8 なので iconv 不要。
 
 import { db } from "./db";
 import { stripTags } from "./html";
+import { parseKabutanIndex } from "./live-indexes";
 import { premarketBackdrop } from "./schema";
 import { fetchHtml, sleep } from "./utils";
 
@@ -34,7 +36,17 @@ const US_INDEXES: UsIndexDef[] = [
 		url: "https://us.kabutan.jp/indexes/%5EIXIC",
 	},
 	{ key: "dji", label: "NYダウ", url: "https://us.kabutan.jp/indexes/%5EDJI" },
+	{
+		key: "vix",
+		label: "VIX(恐怖指数)",
+		url: "https://us.kabutan.jp/indexes/%5EVIX",
+	},
 ];
+// 株探のドル円ページ (code=0950)。日経平均ページと同じ .si_i1_2 ブロック構造。
+const USDJPY_URL = "https://kabutan.jp/stock/?code=0950";
+// 米財務省の日次イールドカーブ CSV (当年分、新しい日付が先頭)。
+const TREASURY_CSV_URL = (year: number) =>
+	`https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/${year}/all?type=daily_treasury_yield_curve&field_tdr_date_value=${year}&_format=csv`;
 const NIKKEI_FUTURES_URL =
 	"https://s.kabutan.jp/futures/%E3%82%B7%E3%82%AB%E3%82%B4%E6%97%A5%E7%B5%8C%E5%B9%B3%E5%9D%87%E5%85%88%E7%89%A9%EF%BC%88%E3%83%89%E3%83%AB%E5%BB%BA%E3%81%A6%EF%BC%89";
 
@@ -110,7 +122,40 @@ function parseNikkeiFutures(html: string): {
 	return { price, contract: contractMatch ? contractMatch[1] : null };
 }
 
-// 米国指数3本+日経先物を取得し、premarket_backdrop に1行 INSERT する (append-only)。
+type Us10y = {
+	yield: number | null;
+	change_bp: number | null;
+	date: string | null; // 米国日付 YYYY-MM-DD
+};
+
+// 財務省 CSV から 10 Yr 列の最新値と前日差 (bp) を取る。列は見出し名で引く。
+// 当年の行が 1 行しか無い (年初) ときは change_bp を null にする。
+function parseTreasury10y(csv: string): Us10y {
+	const lines = csv.trim().split(/\r?\n/);
+	const header = (lines[0] ?? "").split(",").map((h) => h.replace(/"/g, ""));
+	const col = header.indexOf("10 Yr");
+	const rows = lines
+		.slice(1)
+		.map((l) => l.split(","))
+		.filter((r) => /^\d{2}\/\d{2}\/\d{4}$/.test(r[0] ?? ""));
+	if (col < 0 || rows.length === 0)
+		return { yield: null, change_bp: null, date: null };
+	const num = (r: string[] | undefined) => {
+		const n = Number(r?.[col]);
+		return r?.[col] && Number.isFinite(n) ? n : null;
+	};
+	const cur = num(rows[0]);
+	const prev = num(rows[1]);
+	const [mm, dd, yyyy] = rows[0][0].split("/");
+	return {
+		yield: cur,
+		change_bp:
+			cur != null && prev != null ? Math.round((cur - prev) * 100) : null,
+		date: `${yyyy}-${mm}-${dd}`,
+	};
+}
+
+// 米国指数 (SOX/Nasdaq/Dow/VIX)・日経先物・ドル円・米10年債を取得し、premarket_backdrop に1行 INSERT する (append-only)。
 // 1指数が落ちても他は続行 (price=null で残す)。PK は取得時刻 (UTC ISO8601) なので
 // 暦日変換は一切しない — 時差ズレを構造的に避けるため。同じ NY クローズを複数回取っても
 // 取得ごとに別行が積まれるだけで、最新は fetched_at DESC LIMIT 1 で取れる。
@@ -151,9 +196,39 @@ export async function collectBackdrop(
 		console.error(`premarket [fut] error: ${(e as Error).message}`);
 	}
 
-	const pick = (key: string) =>
-		us_indexes.find((q) => q.key === key)?.change_pct ?? null;
+	let usdjpy: { price: number | null; change: number | null } = {
+		price: null,
+		change: null,
+	};
+	try {
+		await sleep(interval);
+		usdjpy = await parseKabutanIndex(await fetchHtml(USDJPY_URL, env));
+	} catch (e) {
+		console.error(`premarket [usdjpy] error: ${(e as Error).message}`);
+	}
+
+	let us10y: Us10y = { yield: null, change_bp: null, date: null };
+	try {
+		await sleep(interval);
+		us10y = parseTreasury10y(
+			await fetchHtml(TREASURY_CSV_URL(new Date().getUTCFullYear()), env),
+		);
+	} catch (e) {
+		console.error(`premarket [us10y] error: ${(e as Error).message}`);
+	}
+
+	const quote = (key: string) => us_indexes.find((q) => q.key === key);
+	const pick = (key: string) => quote(key)?.change_pct ?? null;
 	const fetched_at = new Date().toISOString();
+	const macro = macroFields({
+		vix_price: quote("vix")?.price,
+		vix_change_pct: pick("vix"),
+		usdjpy_price: usdjpy.price,
+		usdjpy_change: usdjpy.change,
+		us10y_yield: us10y.yield,
+		us10y_change_bp: us10y.change_bp,
+		us10y_date: us10y.date,
+	});
 
 	const backdropRow = {
 		fetchedAt: fetched_at,
@@ -162,6 +237,13 @@ export async function collectBackdrop(
 		dowChangePct: pick("dji"),
 		nikkeiFuturesPrice: nikkei.price,
 		nikkeiContract: nikkei.contract,
+		vixPrice: macro.vix_price,
+		vixChangePct: macro.vix_change_pct,
+		usdjpyPrice: macro.usdjpy_price,
+		usdjpyChange: macro.usdjpy_change,
+		us10yYield: macro.us10y_yield,
+		us10yChangeBp: macro.us10y_change_bp,
+		us10yDate: macro.us10y_date,
 		usIndexesJson: JSON.stringify(us_indexes),
 	};
 	await db(env.DB)
@@ -169,14 +251,7 @@ export async function collectBackdrop(
 		.values(backdropRow)
 		.onConflictDoUpdate({
 			target: premarketBackdrop.fetchedAt,
-			set: {
-				soxChangePct: backdropRow.soxChangePct,
-				nasdaqChangePct: backdropRow.nasdaqChangePct,
-				dowChangePct: backdropRow.dowChangePct,
-				nikkeiFuturesPrice: backdropRow.nikkeiFuturesPrice,
-				nikkeiContract: backdropRow.nikkeiContract,
-				usIndexesJson: backdropRow.usIndexesJson,
-			},
+			set: (({ fetchedAt: _, ...rest }) => rest)(backdropRow),
 		})
 		.run();
 
@@ -187,6 +262,49 @@ export async function collectBackdrop(
 		dow_change_pct: pick("dji"),
 		nikkei_futures_price: nikkei.price,
 		nikkei_contract: nikkei.contract,
+		...macro,
+	};
+}
+
+// ── 読み出し (routes が D1 から最新 1 行を引くときの列と、マクロ指標の整形) ─────
+// judge-context と market-context が同じ列を同じ名前で引く。
+export const PREMARKET_COLUMNS = {
+	fetched_at: premarketBackdrop.fetchedAt,
+	sox_change_pct: premarketBackdrop.soxChangePct,
+	nasdaq_change_pct: premarketBackdrop.nasdaqChangePct,
+	dow_change_pct: premarketBackdrop.dowChangePct,
+	nikkei_futures_price: premarketBackdrop.nikkeiFuturesPrice,
+	nikkei_contract: premarketBackdrop.nikkeiContract,
+	vix_price: premarketBackdrop.vixPrice,
+	vix_change_pct: premarketBackdrop.vixChangePct,
+	usdjpy_price: premarketBackdrop.usdjpyPrice,
+	usdjpy_change: premarketBackdrop.usdjpyChange,
+	us10y_yield: premarketBackdrop.us10yYield,
+	us10y_change_bp: premarketBackdrop.us10yChangeBp,
+	us10y_date: premarketBackdrop.us10yDate,
+	us_indexes_json: premarketBackdrop.usIndexesJson,
+};
+
+export type MacroRow = {
+	vix_price?: number | null;
+	vix_change_pct?: number | null;
+	usdjpy_price?: number | null;
+	usdjpy_change?: number | null;
+	us10y_yield?: number | null;
+	us10y_change_bp?: number | null;
+	us10y_date?: string | null;
+};
+
+// VIX・ドル円・米10年債を premarket ブロックに載せる形に揃える (欠損は null)。
+export function macroFields(row: MacroRow): Required<MacroRow> {
+	return {
+		vix_price: row.vix_price ?? null,
+		vix_change_pct: row.vix_change_pct ?? null,
+		usdjpy_price: row.usdjpy_price ?? null,
+		usdjpy_change: row.usdjpy_change ?? null,
+		us10y_yield: row.us10y_yield ?? null,
+		us10y_change_bp: row.us10y_change_bp ?? null,
+		us10y_date: row.us10y_date ?? null,
 	};
 }
 
@@ -280,15 +398,17 @@ export function classifyUsSession(
 //   行なし → { status: "unavailable" }
 //   行あり → status (ok/stale) + age_hours + 各指数 + us_indexes
 export function buildPremarketBlock(
-	row: {
-		fetched_at?: string | null;
-		sox_change_pct?: number | null;
-		nasdaq_change_pct?: number | null;
-		dow_change_pct?: number | null;
-		nikkei_futures_price?: number | null;
-		nikkei_contract?: string | null;
-		us_indexes_json?: string | null;
-	} | null,
+	row:
+		| (MacroRow & {
+				fetched_at?: string | null;
+				sox_change_pct?: number | null;
+				nasdaq_change_pct?: number | null;
+				dow_change_pct?: number | null;
+				nikkei_futures_price?: number | null;
+				nikkei_contract?: string | null;
+				us_indexes_json?: string | null;
+		  })
+		| null,
 	epochNow: number,
 	today: string,
 ): Record<string, unknown> {
@@ -308,6 +428,7 @@ export function buildPremarketBlock(
 		dow_change_pct: row.dow_change_pct ?? null,
 		nikkei_futures_price: row.nikkei_futures_price ?? null,
 		nikkei_contract: row.nikkei_contract ?? null,
+		...macroFields(row),
 		us_indexes: usIndexes,
 	};
 }
@@ -473,6 +594,34 @@ if (import.meta.vitest) {
 		});
 	});
 
+	describe("parseTreasury10y", () => {
+		const CSV = [
+			'Date,"1 Mo","2 Yr","10 Yr","30 Yr"',
+			"11/10/2026,4.05,4.73,4.98,5.35",
+			"11/09/2026,4.04,4.56,4.88,5.26",
+		].join("\r\n");
+		it("10 Yr 列の最新値と前日差 (bp)、米国日付を返す", () => {
+			expect(parseTreasury10y(CSV)).toEqual({
+				yield: 4.98,
+				change_bp: 10,
+				date: "2026-11-10",
+			});
+		});
+		it("当年 1 行だけなら change_bp は null", () => {
+			const one = CSV.split("\r\n").slice(0, 2).join("\n");
+			expect(parseTreasury10y(one)).toEqual({
+				yield: 4.98,
+				change_bp: null,
+				date: "2026-11-10",
+			});
+		});
+		it("10 Yr 列が無い・データ行が無いなら全て null", () => {
+			const empty = { yield: null, change_bp: null, date: null };
+			expect(parseTreasury10y('Date,"1 Mo"\n11/10/2026,4.05')).toEqual(empty);
+			expect(parseTreasury10y("<html>error</html>")).toEqual(empty);
+		});
+	});
+
 	describe("buildPremarketBlock", () => {
 		const NOW = new Date("2026-06-24T00:00:00Z").getTime();
 		const TODAY = "2026-06-24";
@@ -490,6 +639,8 @@ if (import.meta.vitest) {
 				fetched_at: new Date(NOW - 5 * 3600_000).toISOString(),
 				sox_change_pct: 1.5,
 				nikkei_futures_price: 38000,
+				usdjpy_price: 152.3,
+				us10y_change_bp: -4,
 				us_indexes_json: '[{"key":"sox"}]',
 			};
 			const b = buildPremarketBlock(row, NOW, TODAY);
@@ -499,6 +650,8 @@ if (import.meta.vitest) {
 			expect(b.us_session).toBe("unknown");
 			expect(b.sox_change_pct).toBe(1.5);
 			expect(b.us_indexes).toEqual([{ key: "sox" }]);
+			expect(b.usdjpy_price).toBe(152.3);
+			expect(b.us10y_change_bp).toBe(-4);
 		});
 		it("jst_time があれば date を解決し fresh/carried_over を分類する", () => {
 			// NOW = 水曜 6/24 09:00 JST。前夜クローズ (JST 24日早朝) は fresh。
@@ -533,6 +686,8 @@ if (import.meta.vitest) {
 			const b = buildPremarketBlock(row, NOW, TODAY);
 			expect(b.sox_change_pct).toBeNull();
 			expect(b.nikkei_contract).toBeNull();
+			expect(b.vix_price).toBeNull();
+			expect(b.us10y_date).toBeNull();
 			expect(b.us_indexes).toEqual([]);
 		});
 	});

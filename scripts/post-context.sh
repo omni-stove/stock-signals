@@ -20,7 +20,7 @@
 #   $2 = signal-file     (必須。context-builder の structured_output JSON のパス。
 #                         {status, title, sections, ir_cursor, news_cursor}。status="no-update" なら
 #                         本文を書かず即終了する (upsert も投稿もしない)。status="ok" なら title + sections
-#                         (business / products / management / topics / ratings / earnings_pattern / earnings
+#                         (business / products / management / topics / earnings_pattern / earnings
 #                         のキーを持つオブジェクト) を再生成コンテキスト、ir_cursor/news_cursor を
 #                         進めたカーソル (null 可) として使う。skill は curl を叩かず判定するだけで、
 #                         upsert と Slack 投稿はこのスクリプト = workflow の後続が行う)
@@ -56,7 +56,7 @@ TITLE="$(jq -r '.title // ""' "$SIGNAL_FILE")"
 [[ -n "$TITLE" ]] || { echo "post-context.sh: empty title in $SIGNAL_FILE" >&2; exit 1; }
 jq -e '.sections as $s
   | ($s | type) == "object"
-    and (["business","products","management","topics","ratings","earnings_pattern","earnings"]
+    and (["business","products","management","topics","earnings_pattern","earnings"]
          | all(($s[.] | type) == "array"))' "$SIGNAL_FILE" >/dev/null 2>&1 \
   || { echo "post-context.sh: missing/empty sections in $SIGNAL_FILE" >&2; exit 1; }
 # セクションのキーを保存順の見出し+行の配列に組む。topics は "日付: 事実 — 効き" の 1 行に連結する。
@@ -65,7 +65,6 @@ SECTIONS="$(jq -c '.sections as $s | [
   {heading:"商品ラインナップ / 技術ロードマップ", lines:$s.products},
   {heading:"経営判断・資本政策", lines:$s.management},
   {heading:"直近の重大トピック", lines:($s.topics | map("\(.date): \(.summary) — \(.effect)"))},
-  {heading:"証券会社レーティング", lines:$s.ratings},
   {heading:"決算の特色・クセ", lines:$s.earnings_pattern},
   {heading:"決算・ガイダンス", lines:$s.earnings}
 ]' "$SIGNAL_FILE")"

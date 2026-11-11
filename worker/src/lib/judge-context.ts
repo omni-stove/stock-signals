@@ -14,6 +14,8 @@ import {
 } from "./indicators";
 import {
 	classifyUsSession,
+	type MacroRow,
+	macroFields,
 	parseUsIndexes,
 	resolveUsCloseJstDate,
 } from "./premarket";
@@ -183,51 +185,10 @@ export function buildEarningsResult(
 	};
 }
 
-// --- valuation: 現値 × 予想EPS の実績PER を fair_per と突き合わせる -----------
-// fair_per は watchlist の静的値 (妥当と判断する予想PER)。現値と forecast_eps から実績PER を
-// 出し、fair_per の上/下/同等を判定する。読み (割高/割安をどう扱うか) は
-// ticker-brief に委ね、ここは per_now と vs_fair の事実だけ出す。
-export interface ValuationBlock {
-	status: "ok" | "unavailable";
-	per_now: number | null; // 現値 / forecast_eps、floor1
-	fair_per: number | null; // watchlist の妥当予想PER
-	vs_fair: "above" | "inline" | "below" | null;
-}
-
-// per が fair_per からこの割合 (±%) 内なら inline。丸め/予想ブレを誤差として吸収する。
-const FAIR_PER_BAND_PCT = 5;
-
-export function buildValuation(
-	priceNow: number | null | undefined,
-	forecastEps: number | null | undefined,
-	fairPer: number | null | undefined,
-): ValuationBlock {
-	if (priceNow == null || forecastEps == null || forecastEps <= 0) {
-		return {
-			status: "unavailable",
-			per_now: null,
-			fair_per: fairPer ?? null,
-			vs_fair: null,
-		};
-	}
-	const perNow = floor1(priceNow / forecastEps);
-	if (fairPer == null || fairPer <= 0) {
-		return { status: "ok", per_now: perNow, fair_per: null, vs_fair: null };
-	}
-	const devPct = ((perNow - fairPer) / fairPer) * 100;
-	const vsFair =
-		devPct >= FAIR_PER_BAND_PCT
-			? "above"
-			: devPct <= -FAIR_PER_BAND_PCT
-				? "below"
-				: "inline";
-	return { status: "ok", per_now: perNow, fair_per: fairPer, vs_fair: vsFair };
-}
-
 // --- premarket: 鮮度判定 (age>20h で stale) ---------------------------------
 // us_session は休場またぎ判定 (premarket.ts): fresh = 前夜の新しい NY /
 // carried_over = 米国休場などで前営業日の東京セッションが既に消化した数字の持ち越し。
-export interface PremarketRow {
+export interface PremarketRow extends MacroRow {
 	fetched_at?: string | null;
 	sox_change_pct?: number | null;
 	nasdaq_change_pct?: number | null;
@@ -261,6 +222,7 @@ export function buildPremarket(
 		dow_change_pct: row.dow_change_pct ?? null,
 		nikkei_futures_price: row.nikkei_futures_price ?? null,
 		nikkei_contract: row.nikkei_contract ?? null,
+		...macroFields(row),
 	};
 }
 
@@ -627,48 +589,6 @@ if (import.meta.vitest) {
 		});
 	});
 
-	describe("buildValuation", () => {
-		it("現値/予想EPS で実績PER、fair_per 超えは above", () => {
-			// 3000/100=30、fair_per=20 → +50% → above
-			expect(buildValuation(3000, 100, 20)).toEqual({
-				status: "ok",
-				per_now: 30,
-				fair_per: 20,
-				vs_fair: "above",
-			});
-		});
-		it("fair_per 下回りは below", () => {
-			// 1500/100=15、fair_per=20 → -25% → below
-			expect(buildValuation(1500, 100, 20)).toEqual({
-				status: "ok",
-				per_now: 15,
-				fair_per: 20,
-				vs_fair: "below",
-			});
-		});
-		it("±5%以内は inline", () => {
-			// 2040/100=20.4、fair_per=20 → +2% → inline
-			expect(buildValuation(2040, 100, 20).vs_fair).toBe("inline");
-		});
-		it("予想EPS が 0/null なら unavailable (fair_per は保持)", () => {
-			expect(buildValuation(3000, 0, 20)).toEqual({
-				status: "unavailable",
-				per_now: null,
-				fair_per: 20,
-				vs_fair: null,
-			});
-			expect(buildValuation(3000, null, 20).status).toBe("unavailable");
-		});
-		it("fair_per が null なら per_now だけ出し vs_fair は null", () => {
-			expect(buildValuation(3000, 100, null)).toEqual({
-				status: "ok",
-				per_now: 30,
-				fair_per: null,
-				vs_fair: null,
-			});
-		});
-	});
-
 	describe("buildPremarket", () => {
 		// 2026-06-20 は土曜だが、鮮度計算は epoch 差のみなので曜日は無関係。
 		const now = Date.parse("2026-06-20T00:00:00Z");
@@ -678,12 +598,17 @@ if (import.meta.vitest) {
 				{
 					fetched_at: new Date(now - 3600_000).toISOString(),
 					sox_change_pct: 1.2,
+					vix_price: 18.6,
+					usdjpy_change: 0.38,
 				},
 				now,
 				today,
 			);
 			expect(out.status).toBe("ok");
 			expect(out.sox_change_pct).toBe(1.2);
+			expect(out.vix_price).toBe(18.6);
+			expect(out.usdjpy_change).toBe(0.38);
+			expect(out.us10y_yield).toBeNull();
 			expect(out.us_close_jst_date).toBeNull();
 			expect(out.us_session).toBe("unknown");
 		});

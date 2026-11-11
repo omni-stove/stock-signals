@@ -94,7 +94,9 @@ jobs:
 
             - **`premarket`** is last night's NY session — the primary pre-open input. `sox_change_pct` matters
               most for this semis-heavy watchlist; `nasdaq_change_pct` / `dow_change_pct` give breadth,
-              `nikkei_futures_price` the home tape's own gap. `status: stale` → demote it; `unavailable`
+              `nikkei_futures_price` the home tape's own gap. The macro backdrop: `usdjpy_price` / `usdjpy_change`
+              (円, 前日比; 円安 lifts exporters), `us10y_yield` / `us10y_change_bp` (米10年債, bp; a rise weighs on
+              high-multiple semis), `vix_price` / `vix_change_pct` (risk appetite). `status: stale` → demote it; `unavailable`
               → report from `sectors` + event alone. `us_session: carried_over` = 米国休場明け — the numbers are
               the prior close (`date`) that the last JP session already traded on; say so and don't report them
               as fresh overnight news.
@@ -136,7 +138,7 @@ jobs:
               "required":["headline","body"],
               "properties":{
                 "headline":{"type":"string","description":"Slack first line: 🌅 マーケットブリーフ: <前夜と今日の一言サマリー> (自由文。ラベルや売買可否は書かない)"},
-                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":6,"description":"Slack 本文 3〜6 行 (日本語、事実のみ): 前夜米市場の実数 (SOX/NASDAQ/Dow/日経先物)、場中なら live 日経225/KOSPI、セクター・監視銘柄の動きと breadth、当日イベント、今日効く数字 1 行"}
+                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":6,"description":"Slack 本文 3〜6 行 (日本語、事実のみ): 前夜米市場の実数 (SOX/NASDAQ/Dow/日経先物)、ドル円・米10年債利回り・VIX、場中なら live 日経225/KOSPI、セクター・監視銘柄の動きと breadth、当日イベント、今日効く数字 1 行"}
               }
             }'
         env:

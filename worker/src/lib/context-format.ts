@@ -36,7 +36,6 @@ const HEADING_EMOJI: Record<string, string> = {
 	"商品ラインナップ / 技術ロードマップ": "🧪",
 	"経営判断・資本政策": "🏛️",
 	[LATEST_TOPIC_HEADING]: "🆕",
-	証券会社レーティング: "🎯",
 	"決算の特色・クセ": "🔍",
 	"決算・ガイダンス": "📊",
 };
@@ -111,7 +110,7 @@ if (import.meta.vitest) {
 			heading: "直近の重大トピック",
 			lines: ["2026-06-28: 増産発表 — 数週間は需給逼迫"],
 		},
-		{ heading: "証券会社レーティング", lines: [] },
+		{ heading: "決算・ガイダンス", lines: [] },
 	];
 
 	describe("sectionsToText", () => {
@@ -125,7 +124,7 @@ if (import.meta.vitest) {
 					"",
 					"直近の重大トピック\n2026-06-28: 増産発表 — 数週間は需給逼迫",
 					"",
-					"証券会社レーティング",
+					"決算・ガイダンス",
 				].join("\n"),
 			);
 			expect(text).not.toContain("#");
@@ -158,7 +157,7 @@ if (import.meta.vitest) {
 
 		it("details は行のあるセクションを emoji 見出し + 箇条書きで組む", () => {
 			const { details } = sectionsToBlocks(title, sections);
-			// 行が空の証券会社レーティングは出さない。
+			// 行が空の決算・ガイダンスは出さない。
 			expect(details.blocks.map(textOf)).toEqual([
 				"🏭 *事業の骨格*\n・NAND 専業。\n・後工程の比重が高い。",
 				"🆕 *直近の重大トピック*\n・2026-06-28: 増産発表\n　→ 数週間は需給逼迫",

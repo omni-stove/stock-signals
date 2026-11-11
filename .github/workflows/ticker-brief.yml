@@ -132,6 +132,10 @@ jobs:
             restate numeric levels or indicator values in your text. You may —
             and should — describe what the tape did (急伸/出来高急増/セクタ内で劣後 など) as fact.
 
+            The reader holds swing positions of several days to about three weeks. Weigh each material by how
+            it plays out over that horizon: lead on what moves earnings or supply-demand within it, and demote
+            what only matters for a session or only beyond it.
+
             Report what you can see now — context, numbers, `event_context` — never hindsight framing
             ("priced in", "unexplained" volume, a top being "in"). Ground every claim in a material,
             a number, or a sourced find; write nothing you cannot attribute.
@@ -152,7 +156,7 @@ jobs:
               price, and a precedent or first market reaction when known.
             - `technical`: whether trend and money flow confirm or diverge from the fresh materials. Do not
               restate indicators one by one, forecast, or name a level to act on. Empty when `daily` is skipped.
-            - `bull` / `bear`: the strongest standing points on earnings, supply-demand, and valuation, as
+            - `bull` / `bear`: the strongest standing points on earnings and supply-demand, as
               facts and their weight. Either side may be empty when the materials lean one way.
             - `watch`: the next verifiable fact that would change the picture, leading with its date when known.
 
@@ -168,9 +172,8 @@ jobs:
 
             How to read the fields (what to lead on, what to ignore):
 
-            - **`context_body`** carries three layers: 直近の重大トピック (freshest), older structural context,
-              証券会社レーティング (6–12mo, weight by 発行日 / アップサイド% / 信頼度). Null → brief on
-              price/tape facts alone.
+            - **`context_body`** carries two layers: 直近の重大トピック (freshest) and older structural context.
+              Null → brief on price/tape facts alone.
             - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary (前夜米市場・
               先物・セクター・当日イベント). Use it to frame today's backdrop; null → no fresh morning
               summary, skip.
@@ -193,11 +196,13 @@ jobs:
               Weigh technicals as confirmation of or divergence from the materials, not as a standalone call.
             - **`premarket`** (prior NY session): `sox_change_pct` is the overnight external backdrop —
               `sector` leads over it; `nasdaq_change_pct` / `dow_change_pct` / `nikkei_futures_price` only confirm.
+              The macro channels: `usdjpy_price` / `usdjpy_change` (円, 前日比) moves exporters' earnings through the
+              為替前提; `us10y_yield` / `us10y_change_bp` (bp, US date `us10y_date`) weighs on high-multiple semis
+              when it rises; `vix_price` / `vix_change_pct` is market-wide risk appetite. Report one as a fact only
+              when its move bears on this name through a channel the context or `ticker_note` shows it is exposed to.
               `us_session: carried_over` = the US was closed overnight (休場明け) and these numbers are the prior
               close (printed `us_close_jst_date`) that the previous JP session already traded on — treat as no new
               overnight information, don't report it as fresh.
-            - **`valuation`** (`{ per_now, fair_per, vs_fair }`): `vs_fair` is the 実績PER vs 妥当PER read —
-              `above`/`inline`/`below`. Report it as a fact in bull/bear when it matters.
             - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`; a `特になし` tail
               means no event fired — ignore it.
             - **`sector`** (`{ backdrop, avg_ret_5d_pct, rows }`, null → skip): peer tape, `rows` sorted 相対強弱の強い順.

@@ -106,7 +106,7 @@ daily:
     note: "株探 日々株価ページ。table.stock_kabuka0(本日) と table.stock_kabuka_dwm(過去)"
 
 # ファンダ指標: 今期予想PER・予想EPS・直近実績EPS。Worker が引け後 (eod cron) に叩き
-# D1 fundamentals に保存する。scripts/valuation.ts が /latest 経由で逆算に使う。
+# D1 fundamentals に保存する。judge-context が決算の上振れ・下振れ判定に使う。
 # 予想EPS/PER が未開示の銘柄(例: キオクシア)では値は null になる。
 fundamentals:
   - site: "kabutan"

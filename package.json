@@ -6,7 +6,6 @@
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "preinstall": "npx only-allow pnpm",
-    "valuation": "node scripts/valuation.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "format": "biome check --write",
     "lint": "biome check --error-on-warnings",

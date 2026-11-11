@@ -70,7 +70,7 @@ function slot5min(iso: string): string {
 
 // 株探の指数ページ (日経平均/TOPIX 等)。個別銘柄の現値ページと同じ .si_i1_2 ブロック構造。
 // dd ごとの先頭 span ([0]=前日比, [1]=変化率) は出現順の状態機械で追う。
-async function parseKabutanIndex(html: string): Promise<IndexQuote> {
+export async function parseKabutanIndex(html: string): Promise<IndexQuote> {
 	const frag = sliceStockInfo(html);
 	const dds: string[] = [];
 	let inFirstSpan = false;

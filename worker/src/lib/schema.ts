@@ -155,6 +155,13 @@ export const premarketBackdrop = sqliteTable("premarket_backdrop", {
 	dowChangePct: real("dow_change_pct"),
 	nikkeiFuturesPrice: real("nikkei_futures_price"),
 	nikkeiContract: text("nikkei_contract"),
+	vixPrice: real("vix_price"),
+	vixChangePct: real("vix_change_pct"),
+	usdjpyPrice: real("usdjpy_price"),
+	usdjpyChange: real("usdjpy_change"),
+	us10yYield: real("us10y_yield"),
+	us10yChangeBp: real("us10y_change_bp"),
+	us10yDate: text("us10y_date"),
 	usIndexesJson: text("us_indexes_json"),
 });
 

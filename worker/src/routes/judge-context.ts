@@ -8,7 +8,7 @@
 // 出力 (event_context は需給イベント1行、market_brief は当日朝のマーケットブリーフ / 無ければ null、
 // forced は強制決済フローのスコア / stance==none なら {status:"none"}):
 //   { ticker, today, market_phase, market_brief, event_context, ticker_note,
-//     context_body, earnings, earnings_result, valuation, premarket, sector, daily, prices, margin, forced }
+//     context_body, earnings, earnings_result, premarket, sector, daily, prices, margin, forced }
 // sector は対象銘柄が属する同一セクタのピアの相対強弱 (無ければ null)。
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
@@ -27,7 +27,6 @@ import {
 	buildMargin,
 	buildPremarket,
 	buildPrices,
-	buildValuation,
 	type ForcedRow,
 	type FundamentalsSnapshot,
 	type MarginRow,
@@ -35,6 +34,7 @@ import {
 	type PriceRow,
 } from "../lib/judge-context";
 import { resolveMarketPhase, sessionElapsedFrac } from "../lib/market-phase";
+import { PREMARKET_COLUMNS } from "../lib/premarket";
 import {
 	briefs,
 	contexts,
@@ -128,15 +128,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.all()) as PriceRow[];
 
 	const premarketRow = (await db(env.DB)
-		.select({
-			fetched_at: premarketBackdrop.fetchedAt,
-			sox_change_pct: premarketBackdrop.soxChangePct,
-			nasdaq_change_pct: premarketBackdrop.nasdaqChangePct,
-			dow_change_pct: premarketBackdrop.dowChangePct,
-			nikkei_futures_price: premarketBackdrop.nikkeiFuturesPrice,
-			nikkei_contract: premarketBackdrop.nikkeiContract,
-			us_indexes_json: premarketBackdrop.usIndexesJson,
-		})
+		.select(PREMARKET_COLUMNS)
 		.from(premarketBackdrop)
 		.orderBy(desc(premarketBackdrop.fetchedAt))
 		.limit(1)
@@ -284,12 +276,6 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		context_body: contextRow?.body ?? null,
 		earnings: buildEarnings(earningsRow?.next_date ?? null, today),
 		earnings_result: buildEarningsResult(fundamentalsRows, today),
-		// 現値 × 予想EPS の実績PER を watchlist の fair_per と突き合わせる (above/inline/below)。
-		valuation: buildValuation(
-			(priceRows[0]?.price as number | null) ?? null,
-			fundamentalsRows[0]?.forecast_eps ?? null,
-			TICKERS.find((t) => t.code === code)?.fair_per ?? null,
-		),
 		premarket: premarketBlock,
 		// 対象銘柄が属する sector の1件だけ (rows は相対強弱の強い順)。sector 未設定なら null。
 		sector: sectorReports[0] ?? null,

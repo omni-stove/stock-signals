@@ -15,7 +15,11 @@ import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
 import { buildLiveIndexesBlock, type LiveIndexRow } from "../lib/live-indexes";
 import { resolveMarketPhase } from "../lib/market-phase";
-import { buildPremarketBlock, parseUsIndexes } from "../lib/premarket";
+import {
+	buildPremarketBlock,
+	PREMARKET_COLUMNS,
+	parseUsIndexes,
+} from "../lib/premarket";
 import {
 	daily,
 	liveIndexes,
@@ -40,15 +44,7 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 
 	// premarket 最新 1 行 (us_indexes_json はパースして展開する)。
 	const pmRow = await db(env.DB)
-		.select({
-			fetched_at: premarketBackdrop.fetchedAt,
-			sox_change_pct: premarketBackdrop.soxChangePct,
-			nasdaq_change_pct: premarketBackdrop.nasdaqChangePct,
-			dow_change_pct: premarketBackdrop.dowChangePct,
-			nikkei_futures_price: premarketBackdrop.nikkeiFuturesPrice,
-			nikkei_contract: premarketBackdrop.nikkeiContract,
-			us_indexes_json: premarketBackdrop.usIndexesJson,
-		})
+		.select(PREMARKET_COLUMNS)
 		.from(premarketBackdrop)
 		.orderBy(desc(premarketBackdrop.fetchedAt))
 		.limit(1)

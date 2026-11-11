@@ -17,7 +17,7 @@
 setup() {
   ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   SCRIPT="$ROOT/scripts/post-context.sh"
-  EMPTY_SECTIONS='{business:[],products:[],management:[],topics:[],ratings:[],earnings_pattern:[],earnings:[]}'
+  EMPTY_SECTIONS='{business:[],products:[],management:[],topics:[],earnings_pattern:[],earnings:[]}'
 }
 
 # dryrun で post-context.sh を実行。stderr も取り込む。
@@ -94,7 +94,7 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.ir_cursor')" = "2026-06-09T00:00:00Z" ]
   [ "$(printf '%s' "$p" | jq -r '.news_cursor')" = "2026-06-07T00:00:00Z" ]
   [ "$(printf '%s' "$p" | jq -r '.title')" = "285A context" ]
-  [ "$(printf '%s' "$p" | jq -r '.sections | length')" = "7" ]
+  [ "$(printf '%s' "$p" | jq -r '.sections | length')" = "6" ]
   [ "$(printf '%s' "$p" | jq -r '.sections[0].heading')" = "事業の骨格" ]
   [ "$(printf '%s' "$p" | jq -r '.sections[0].lines[0]')" = "285A context" ]
   # body 文字列は送らない (Worker が sections から組む)
@@ -130,7 +130,7 @@ payload_for() {
   run env WORKER_URL="http://test.invalid" POST_CONTEXT_DRYRUN=1 bash "$SCRIPT" 285A "$sf" 2>&1
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/context")"
-  [ "$(printf '%s' "$p" | jq -r '[.sections[].heading] | join(",")')" = "事業の骨格,商品ラインナップ / 技術ロードマップ,経営判断・資本政策,直近の重大トピック,証券会社レーティング,決算の特色・クセ,決算・ガイダンス" ]
+  [ "$(printf '%s' "$p" | jq -r '[.sections[].heading] | join(",")')" = "事業の骨格,商品ラインナップ / 技術ロードマップ,経営判断・資本政策,直近の重大トピック,決算の特色・クセ,決算・ガイダンス" ]
   [ "$(printf '%s' "$p" | jq -r '.sections[3].lines[0]')" = "2026-06-28: fact — impact" ]
 }
 

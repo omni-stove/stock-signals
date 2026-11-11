@@ -88,11 +88,6 @@ SQLite が直接サポートしない変更は drizzle-kit が「新テーブル
 watchlist (4銘柄) と URL テンプレートは各 src (`timeseries.ts` / `news.ts` / `earnings.ts` の
 `WATCHLIST` / `URL_*`) に写している (Worker は読み取り専用FSで yaml を持てないため)。
 
-## 確認用スクリプト (ローカル、読み取り専用)
-
-`scripts/valuation.ts` は Worker の `/latest` を叩いて fair_per からの必要修正率を表示する
-(要 `WORKER_URL` 環境変数)。常駐ではなく手動実行。
-
 需給イベント (SQ/指数リバランス/FOMC/日銀/ピア決算)・セクター相対強弱・数値正規化といった
 決定論的な前処理はすべて Worker 側 (バンドルエンドポイントと `src/lib/`) に寄せてある。
 判定はワークフローが `@` で正規化済み JSON を受け取り、解釈だけを行う。

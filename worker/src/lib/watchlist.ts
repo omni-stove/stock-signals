@@ -22,8 +22,6 @@
 //  - next_earnings_date : 次回決算発表予定日 (YYYY-MM-DD、未確定なら null)。
 //      公式日程が未開示の時期は前年同期日付ベースの推定値。実行時の値は eod cron が D1 earnings に
 //      自動更新するので手動更新は原則不要 (ここの値は人間向けの記録)。過去日が残ると制約なし扱いになる。
-//  - fair_per    : 「妥当」と判断する予想PER (倍)。null は逆算スキップ。
-//      業種水準や許容PERを踏まえて更新する主観値。
 //  - note        : 判定に毎回効かせたい固定注記 (任意)。living context は IR/news で再生成され
 //      密度基準で削られるが、これは人手で据える不変の判断材料 (例「決算先行ピアは MU、時間外が
 //      翌朝の寄りを規定」)。judge-context が当該銘柄分だけ JSON に同梱し ticker-brief 等が読む。
@@ -45,7 +43,6 @@ export interface Ticker {
 	ir?: IrSource;
 	news_url: string;
 	next_earnings_date: string | null;
-	fair_per: number | null;
 	note?: string;
 }
 
@@ -63,7 +60,6 @@ export const TICKERS: Ticker[] = [
 		// 1Q (2027/3期): 公式未公表、前年Q1=2025-08-08 ベースの推定。公式日程が出たら上書き。
 		next_earnings_date: "2026-08-08",
 		// 半導体メモリ。予想EPS未開示時期は逆算スキップ。市況依存が大きく仮に20倍。
-		fair_per: 20,
 		// メモリ市況の先行ピアは MU。MU 決算「直後」の時間外反応だけ寄りに効く材料 (通過後は sector /
 		// premarket に織り込み済み)。平時はセクタ内相対強弱と自社トピックが主。
 		note: "メモリ市況の先行ピアは MU だが、効くのは MU 決算直後の時間外反応のみ。通過後や次回予定は sector/premarket に織り込み済みとして扱い、平時はセクタ内相対強弱と自社トピックで判断する。",
@@ -81,7 +77,6 @@ export const TICKERS: Ticker[] = [
 		// 1Q (2027/3期): 公式は「7月」表示のみ、過去3年Q1=7/29,7/31,7/26 から推定。
 		next_earnings_date: "2026-07-29",
 		// 半導体テスター。現在予想PER ~40倍。高成長テスターとして仮に30倍。
-		fair_per: 30,
 	},
 	{
 		code: "6920",
@@ -96,7 +91,6 @@ export const TICKERS: Ticker[] = [
 		// 通期 (2026/6期 本決算): 公式は「8月」表示のみ、過去3年通期=8/7 から推定。
 		next_earnings_date: "2026-08-07",
 		// EUVマスク検査。現在予想PER ~52倍。独占的地位を加味し仮に35倍。
-		fair_per: 35,
 	},
 	{
 		code: "6976",
@@ -118,7 +112,6 @@ export const TICKERS: Ticker[] = [
 		// 1Q (2027/3期): 公式未公表、過去数年Q1=8月上旬 (前年Q1=2025-08-05) ベースの推定。公式日程が出たら上書き。
 		next_earnings_date: "2026-08-05",
 		// 電子部品(MLCC)大手。利益回復途上で現在予想PER ~130倍と高いが、ピア村田と揃え仮に30倍。
-		fair_per: 30,
 	},
 	{
 		code: "6981",
@@ -145,7 +138,6 @@ export const TICKERS: Ticker[] = [
 		// 1Q (2027/3期): 公式未公表、前年Q1(25.04-06)=2025-07-30 ベースの推定。公式日程が出たら上書き。
 		next_earnings_date: "2026-07-30",
 		// 電子部品(MLCC)大手。現在予想PER ~67倍。高収益部品株として仮に30倍。
-		fair_per: 30,
 	},
 ];
 

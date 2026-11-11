@@ -22,7 +22,6 @@ Copy field shapes from a neighbor; these need a call, not a lookup:
 - `ir` — set `{ site, list_url }` only when `parseList` in `worker/src/lib/ir-sources.ts` already handles that
   site; otherwise omit it (the name skips IR scraping). Never invent a `site` with no parser.
 - `next_earnings_date` — with no official date, estimate from the prior-year same quarter.
-- `fair_per` — the forward PER you judge fair here; `null` for none.
 
 Can't confirm a value? Enter your estimate and mark it in a line comment. Flag any estimated
-`next_earnings_date` / `fair_per` and any omitted `ir` in the final report.
+`next_earnings_date` and any omitted `ir` in the final report.

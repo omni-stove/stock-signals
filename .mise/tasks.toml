@@ -1,0 +1,21 @@
+[install]
+description = "依存をインストール"
+run = "pnpm install"
+
+[setup]
+description = "依存・worker/.dev.vars・skill-kit のセットアップ（make setup から呼ばれる）"
+depends = ["install"]
+run = [
+  'if [ -f worker/.dev.vars ]; then echo "⏭  worker/.dev.vars は既に存在"; else cp worker/.dev.vars.example worker/.dev.vars; echo "📝 worker/.dev.vars を作成。実値を埋める"; fi',
+  "gh api repos/omni-stove/skill-kit/contents/install.sh -q .content | base64 -d | sh",
+  "skill-kit code sync",
+  "bash scripts/sync-skill-links.sh",
+]
+
+# skill-kit の同期は kit 外の symlink を消すので、続けて agents/skills のリンクを貼り直す
+[update]
+description = "skill-kit を最新にする"
+run = [
+  "skill-kit code update",
+  "bash scripts/sync-skill-links.sh",
+]

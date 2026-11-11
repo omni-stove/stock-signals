@@ -5,7 +5,8 @@
 # .claude/skills/ はそのミラー。スキルを増やしたら or 手元の symlink が抜け/壊れていたら流す。
 #
 # 冪等: 既に正しい相対 symlink が張られている項目はスキップ、抜け・壊れ・別実体は貼り直す。
-# .claude/skills/ 側にしか無い項目 (ソースから消えたスキル) は削除する。
+# agents/skills/ を指す symlink のうちソースから消えたスキルのものは削除する。skill-kit が張った
+# symlink は残し、同名のスキルは agents/skills/ 側を優先する。
 # SKILL.md を持たないディレクトリ (_LLM_INSTRUCTION_RULES.md 等) はスキルではないので対象外。
 
 set -euo pipefail
@@ -38,10 +39,11 @@ for skill in "$SRC_DIR"/*/; do
   echo "linked  $name -> $target"
 done
 
-# ソースから消えたスキルの残骸 symlink を掃除する (symlink だけ。実ファイルは触らない)。
+# ソースから消えたスキルの残骸 symlink を掃除する (agents/skills/ を指す symlink だけが対象)。
 # ソース側に SKILL.md がもう無い項目だけを削除対象にする。
 for link in "$DST_DIR"/*; do
   [[ -L "$link" ]] || continue
+  [[ "$(readlink "$link")" == ../../agents/skills/* ]] || continue
   name="$(basename "$link")"
   [[ -f "$SRC_DIR/$name/SKILL.md" ]] && continue
   rm -f "$link"

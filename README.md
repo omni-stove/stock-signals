@@ -11,7 +11,7 @@
 make setup
 ```
 
-その後 `worker/.dev.vars` に実値を埋める。
+その後 `worker/.dev.vars` に実値を埋める。skill-kit を最新にするときは `make update` を叩く。
 
 ## 全体構成
 
@@ -126,7 +126,7 @@ GitHub Actions の position-report、ユーザーは直列)。
 | ---- | ---- |
 | `worker/`            | Cloudflare Worker (収集) |
 | `.github/workflows/` | LLMリサーチの Actions(market-brief / context-builder / ticker-brief / crash-scenario / slack-reply / position-report)・CI・デプロイ。リサーチのルールは各ワークフローの prompt にベタ書きし、数値コンテキストは `@` でファイルから取り込む |
-| `agents/skills/`     | 手動運用の Claude Code skill(`update-tickers` ほか。`.claude/skills/` は symlink) |
+| `agents/skills/`     | 手動運用の Claude Code skill(`update-tickers`。`.claude/skills/` は symlink) |
 | `scripts/`           | Slack 投稿整形・ブリーフ dispatch・手動ツール・品質ゲート(`verify.sh` 等) |
 | `config/`            | sources / events / peers の人間向け設定。銘柄一覧の真ソースは `worker/src/lib/watchlist.ts` の `TICKERS` |
 

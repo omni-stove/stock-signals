@@ -9,8 +9,8 @@
 #   - 「保存したら → Slack に区切り投稿する」という決定論的フロー。各経路 (Bearer 認証、
 #     空カーソルは null、channel 明示、SLACK_CONTEXT_CHANNEL 空ならスキップ) を 1 か所に閉じ込める。
 #   - 整形 (sections → 保存テキスト / Slack blocks) は Worker (lib/context-format.ts) に集約する。
-#     skill は Markdown 記号を持たない sections (見出し+行) を返し、このスクリプトは title+sections を
-#     /context (保存) と /slack/post (context_sections で blocks 投稿) にそのまま渡すだけ。
+#     skill はセクションのキーごとの構造化出力を返し、このスクリプトが見出し+行の配列に組んで、title と共に
+#     /context (保存) と /slack/post (context_sections で blocks 投稿) に渡す。
 #   - ticker-brief の発火はここでは行わない。発火は context-builder ワークフローの独立ステップ
 #     (scripts/dispatch-brief.sh、status=ok のときだけ) に一本化した。post-context.sh は
 #     「新規があったときのコンテキスト確定」だけに責務を絞る。
@@ -20,11 +20,12 @@
 #   $2 = signal-file     (必須。context-builder の structured_output JSON のパス。
 #                         {status, title, sections, ir_cursor, news_cursor}。status="no-update" なら
 #                         本文を書かず即終了する (upsert も投稿もしない)。status="ok" なら title + sections
-#                         (見出し+行。Markdown 記号なし) を再生成コンテキスト、ir_cursor/news_cursor を
+#                         (business / products / management / topics / ratings / earnings_pattern / earnings
+#                         のキーを持つオブジェクト) を再生成コンテキスト、ir_cursor/news_cursor を
 #                         進めたカーソル (null 可) として使う。skill は curl を叩かず判定するだけで、
 #                         upsert と Slack 投稿はこのスクリプト = workflow の後続が行う)
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意), SLACK_CONTEXT_CHANNEL (任意),
-#           POST_CONTEXT_MAX_LINES / POST_CONTEXT_MAX_CHARS (任意。本文総量の上限。既定 35 行 / 2600 字)。
+#           POST_CONTEXT_MAX_LINES / POST_CONTEXT_MAX_CHARS (任意。本文総量の上限。既定 40 行 / 2600 字)。
 #
 # 出力 (stdout): 各ステップの状態を 1 行ずつ (context posted / slack ok|skipped)。
 #   status="no-update" のときは "no update — skip upsert/post" の 1 行だけ。
@@ -50,21 +51,33 @@ if [[ "$STATUS" == "no-update" ]]; then
 fi
 
 # status="ok": title + sections を読み、進めたカーソルを読む (null/欠落は空文字 → 後段で null)。
-# title (見出しタイトル) と sections (見出し+行の配列) が両方そろっていることを要求する。
+# title (見出しタイトル) と sections の全キーがそろっていることを要求する。
 TITLE="$(jq -r '.title // ""' "$SIGNAL_FILE")"
 [[ -n "$TITLE" ]] || { echo "post-context.sh: empty title in $SIGNAL_FILE" >&2; exit 1; }
-jq -e '(.sections | type) == "array" and (.sections | length) > 0' "$SIGNAL_FILE" >/dev/null 2>&1 \
+jq -e '.sections as $s
+  | ($s | type) == "object"
+    and (["business","products","management","topics","ratings","earnings_pattern","earnings"]
+         | all(($s[.] | type) == "array"))' "$SIGNAL_FILE" >/dev/null 2>&1 \
   || { echo "post-context.sh: missing/empty sections in $SIGNAL_FILE" >&2; exit 1; }
-SECTIONS="$(jq -c '.sections' "$SIGNAL_FILE")"
+# セクションのキーを保存順の見出し+行の配列に組む。topics は "日付: 事実 — 効き" の 1 行に連結する。
+SECTIONS="$(jq -c '.sections as $s | [
+  {heading:"事業の骨格", lines:$s.business},
+  {heading:"商品ラインナップ / 技術ロードマップ", lines:$s.products},
+  {heading:"経営判断・資本政策", lines:$s.management},
+  {heading:"直近の重大トピック", lines:($s.topics | map("\(.date): \(.summary) — \(.effect)"))},
+  {heading:"証券会社レーティング", lines:$s.ratings},
+  {heading:"決算の特色・クセ", lines:$s.earnings_pattern},
+  {heading:"決算・ガイダンス", lines:$s.earnings}
+]' "$SIGNAL_FILE")"
 IR_CURSOR="$(jq -r '.ir_cursor // ""' "$SIGNAL_FILE")"
 NEWS_CURSOR="$(jq -r '.news_cursor // ""' "$SIGNAL_FILE")"
 
-# 本文の総量バックストップ。1 行 100 字・1 セクション 10 行は workflow の --json-schema が縛るが、
+# 本文の総量バックストップ。1 行の長さと 1 セクションの行数は workflow の --json-schema が縛るが、
 # 合計は schema で縛れないのでここで検証する。超過は fail させて膨張した本文を D1 に入れない
 # (カーソルも進まないので次回 dispatch で同じ材料から再生成される)。上限は env で差し替え可 (テスト用)。
-TOTAL_LINES="$(jq '[.sections[].lines[]] | length' "$SIGNAL_FILE")"
-TOTAL_CHARS="$(jq '[.sections[].lines[]] | join("") | length' "$SIGNAL_FILE")"
-MAX_LINES="${POST_CONTEXT_MAX_LINES:-35}"
+TOTAL_LINES="$(jq '[.[].lines[]] | length' <<<"$SECTIONS")"
+TOTAL_CHARS="$(jq '[.[].lines[]] | join("") | length' <<<"$SECTIONS")"
+MAX_LINES="${POST_CONTEXT_MAX_LINES:-40}"
 MAX_CHARS="${POST_CONTEXT_MAX_CHARS:-2600}"
 if (( TOTAL_LINES > MAX_LINES || TOTAL_CHARS > MAX_CHARS )); then
   echo "post-context.sh: context too large: ${TOTAL_LINES} lines / ${TOTAL_CHARS} chars (max ${MAX_LINES} lines / ${MAX_CHARS} chars)" >&2

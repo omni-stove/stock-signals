@@ -126,13 +126,6 @@ jobs:
             detail (model numbers, spec figures, release dates, entity/person names, trademark symbols) and
             collapse variant lists into the one line that carries the call. When in doubt, cut.
 
-            The whole body fits in ~30 lines and a line stays within 100 characters (the schema rejects
-            longer). Shrinking the body on a regeneration is normal; carrying every existing line forward
-            is not — the post step rejects a body over 35 lines / 2600 characters.
-
-            One fact lives in one section. Place it where its lasting effect belongs and do not restate it
-            elsewhere — never carry the same material in both 直近の重大トピック and 決算・ガイダンス.
-
             ## Inputs
 
             The input JSON is embedded inline below (`ticker_meta` with the ticker's `name` / `fair_per` /
@@ -143,7 +136,7 @@ jobs:
 
             ### 1. Read the input JSON and branch on `status`
 
-            Take `ticker_meta` for the heading `name`; let its `note` qualify what a fact means for this name, never override an item.
+            Let `ticker_meta.note` qualify what a fact means for this name, never override an item.
 
             - input `status: "no-update"`, or any status you can't read, or unreadable input → return
               `{status:"no-update"}` (no body, no cursors) and stop.
@@ -163,70 +156,50 @@ jobs:
             later outcome. Reduce each to its judgment-bearing fact. Never a buy/sell view, the day's tape, or a
             restatement of something already recorded.
 
-            A fresh material fact enters the 直近の重大トピック section while its near-term effect is live, then
-            leaves once that effect is spent and only its lasting consequence remains in a structural section.
-            Securities ratings (`ir_category="rating"`) route to the 証券会社レーティング section regardless of age,
-            never the topics section.
+            A fresh material fact enters `topics` while its near-term effect is live, then leaves once that
+            effect is spent and only its lasting consequence remains in a structural section. Securities
+            ratings (`ir_category="rating"`) route to `ratings` regardless of age, never `topics`.
 
             ### 3. Regenerate the whole set of sections
 
-            Rebuild every section, not incremental edits. Emit these sections in this order (the schema fixes
-            the title, headings, and plain-text shape):
+            Rebuild every section, not incremental edits, as each output field defines it.
 
-            - 事業の骨格 — rarely-changing structural facts: what the company is, where it sits in the value
-              chain, production base, technology lineage. A few lines that tell a continuation from a reversal,
-              not a company profile.
-            - 商品ラインナップ / 技術ロードマップ — current generation and where the next one stands; one line
-              per product line, named by generation and market position only.
-            - 経営判断・資本政策 — capex / capacity / M&A / alliances / capital policy; accumulate and revise on
-              material events.
-            - 直近の重大トピック — newest first by date; each line `YYYY-MM-DD: <one-line summary> — <その先数
-              週間への効き>`, tight enough to stay one line. Merge lines telling one running story into the
-              newest line. Drop a line once its date is ~14 days old or its effect is absorbed into a
-              structural section — keeping it requires the effect to still be live, not merely plausible.
-              ~6 lines is the norm, 10 the hard cap.
-            - 証券会社レーティング — newest first; each line `YYYY-MM-DD <機関>: <格付> 目標株価 <値> [信頼度: …]`.
-              Keep while in ~12-month horizon; drop when the same 機関 issues a newer call.
-            - 決算の特色・クセ — structural reaction pattern of this name's earnings: focus metric, ガイダンス vs
-              実績 の効き方, ピア連動. When empty, research it once (web / past IR) and fill; otherwise revise only
-              when fresh `ir_items` carry a 決算/業績修正/ガイダンス item, else carry it forward verbatim.
-            - 決算・ガイダンス — this name's own latest results vs expectations, current guidance, known
-              next-earnings considerations — facts only; never a recap of topic lines or peer/macro news.
-
-            ### 4. Return the advanced cursors
-
-            Return `ir_cursor` = `cursors.ir.next` verbatim and `news_cursor` = `cursors.news.next` verbatim
-            (null if a cursor is null).
-
-            ## Output
-
-            Return structured output (the workflow constrains the shape): `status` (`ok` / `no-update`), and
-            when `ok` the regenerated `title` + `sections` plus the two advanced cursors.
-
-            ## 入力コンテキスト
+            ## Input context
 
             @${{ runner.temp }}/ctxin.json
           # LLM に curl/sh を叩かせない: upsert/投稿は次ステップが行うので Bash/Write は渡さず Read のみ許可。
           # --json-schema で出力の形を縛る。status=no-update は本文を書かず終了する信号。
-          # ok のとき title+sections=再生成コンテキスト (Markdown 記号なし)、ir_cursor/news_cursor=進めたカーソル (null 可)。
-          # 膨張防止はここで機械的に縛る: セクション数=7 固定、1 セクション 10 行まで、1 行 100 字まで。
-          # 合計量 (35 行 / 2600 字) は schema で縛れないので post-context.sh が検証する。
+          # 出力の定義は schema の description に置く。claude_args はシェルとして解釈されるので description に ' を書かない。
+          # sections のキーと見出しの対応、topics の行への連結は post-context.sh が持つ。
+          # 合計量は LLM には目安 (~30 行) だけを渡し、上限 (40 行 / 2600 字) は post-context.sh が検証する。
           claude_args: >-
             --allowedTools Read --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
               "required":["status"],
               "properties":{
-                "status":{"enum":["ok","no-update"],"description":"新規があり再生成したら ok、新規 0 なら no-update"},
-                "title":{"type":["string","null"],"description":"見出しタイトル。verbatim shape: [<ticker> <name>] 銘柄コンテキスト。no-update なら null"},
-                "sections":{"type":["array","null"],"minItems":7,"maxItems":7,"description":"見出し+行のセクション配列。prompt の順序と exact heading 文字列で全 7 セクションを出す (行が無くても残す)。no-update なら null",
-                  "items":{"type":"object","additionalProperties":false,"required":["heading","lines"],
-                    "properties":{
-                      "heading":{"type":"string","description":"セクション見出し。Markdown 記号 (#/*/-/backtick) なしのプレーンテキスト"},
-                      "lines":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":100},"description":"本文行。1 行 1 要素・100 字以内、Markdown 記号なし。該当なしは空配列"}
-                    }}},
-                "ir_cursor":{"type":["string","null"],"description":"進めた IR カーソル (cursors.ir.next)。無ければ null"},
-                "news_cursor":{"type":["string","null"],"description":"進めた news カーソル (cursors.news.next)。無ければ null"}
+                "status":{"enum":["ok","no-update"]},
+                "title":{"type":["string","null"],"description":"Exact format, verbatim: [<ticker> <name>] 銘柄コンテキスト, with name from ticker_meta. Null on no-update."},
+                "sections":{"type":["object","null"],"additionalProperties":false,
+                  "required":["business","products","management","topics","ratings","earnings_pattern","earnings"],
+                  "description":"The regenerated context; an empty array when nothing applies. Null on no-update. Keep the whole to ~30 lines; do not carry every existing line forward. Write in Japanese plain text with no Markdown symbols. Give each line one point in about 50 characters, in clipped note style: the fact, then its effect. Do not end a line with a full stop, use polite endings or narrating connectives, or hedge unless the uncertainty is the point. Place each fact in the one section where its lasting effect belongs.",
+                  "properties":{
+                    "business":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 事業の骨格. Rarely-changing structural facts: what the company is, where it sits in the value chain, production base, technology lineage. A few lines that tell a continuation from a reversal, not a company profile."},
+                    "products":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 商品ラインナップ / 技術ロードマップ. Current generation and where the next one stands; one line per product line, named by generation and market position only."},
+                    "management":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 経営判断・資本政策. Capex, capacity, M&A, alliances, capital policy; accumulate and revise on material events."},
+                    "topics":{"type":"array","maxItems":10,"description":"Existing heading 直近の重大トピック. Newest first by date, about 6 items. Merge items telling one running story into the newest. Drop an item once its date is about 14 days old or its effect is absorbed into a structural section; keeping it requires the effect to still be live, not merely plausible.",
+                      "items":{"type":"object","additionalProperties":false,"required":["date","summary","effect"],
+                        "properties":{
+                          "date":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+                          "summary":{"type":"string","maxLength":50,"description":"What happened."},
+                          "effect":{"type":"string","maxLength":40,"description":"Its effect over the next few weeks."}
+                        }}},
+                    "ratings":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 証券会社レーティング. Newest first; each line YYYY-MM-DD <firm>: <rating> 目標株価 <value> [信頼度: …]. Keep while within about 12 months; drop when the same firm issues a newer call."},
+                    "earnings_pattern":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 決算の特色・クセ. Structural reaction pattern to earnings for this name: focus metric, how guidance vs results moves the stock, peer linkage. When empty, research it once (web / past IR) and fill; otherwise revise only when fresh ir_items carry an earnings, revision, or guidance item, else carry it forward verbatim."},
+                    "earnings":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 決算・ガイダンス. Latest own results vs expectations, current guidance, known next-earnings considerations; facts only. Never a recap of topics or peer/macro news."}
+                  }},
+                "ir_cursor":{"type":["string","null"],"description":"cursors.ir.next verbatim."},
+                "news_cursor":{"type":["string","null"],"description":"cursors.news.next verbatim."}
               }
             }'
         env:

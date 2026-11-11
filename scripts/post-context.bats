@@ -17,22 +17,23 @@
 setup() {
   ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   SCRIPT="$ROOT/scripts/post-context.sh"
+  EMPTY_SECTIONS='{business:[],products:[],management:[],topics:[],ratings:[],earnings_pattern:[],earnings:[]}'
 }
 
 # dryrun で post-context.sh を実行。stderr も取り込む。
 # 引数: $1=ticker $2=見出し本文の目印 $3=ir-cursor $4=news-cursor。structured_output JSON
 # ({status:"ok", title, sections, ir_cursor, news_cursor}) を signal-file に書いて <ticker> <signal-file> を渡す。
-# title に $2 を入れ、sections は 1 セクション 1 行の最小形で $2 を本文に持たせる
+# title に $2 を入れ、sections は business に 1 行だけ持つ最小形で $2 を本文に持たせる
 # (payload の title / sections に $2 が載ることを後段で検証する)。
 # 空カーソルは JSON で null として書く (script 側で null→null のまま送られる)。
 run_pc() {
   local ticker="$1" mark="$2" ir="$3" news="$4"
   local sf="$BATS_TEST_TMPDIR/context.json"
   jq -n --arg m "$mark" --arg ir "$ir" --arg news "$news" \
-    '{status:"ok", title:$m,
-      sections:[{heading:"事業の骨格", lines:[$m]}],
-      ir_cursor:(if $ir=="" then null else $ir end),
-      news_cursor:(if $news=="" then null else $news end)}' >"$sf"
+    "{status:\"ok\", title:\$m,
+      sections:($EMPTY_SECTIONS + {business:[\$m]}),
+      ir_cursor:(if \$ir==\"\" then null else \$ir end),
+      news_cursor:(if \$news==\"\" then null else \$news end)}" >"$sf"
   run env \
     WORKER_URL="http://test.invalid" \
     SYNC_TOKEN="${SYNC_TOKEN:-}" \
@@ -93,7 +94,8 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.ir_cursor')" = "2026-06-09T00:00:00Z" ]
   [ "$(printf '%s' "$p" | jq -r '.news_cursor')" = "2026-06-07T00:00:00Z" ]
   [ "$(printf '%s' "$p" | jq -r '.title')" = "285A context" ]
-  [ "$(printf '%s' "$p" | jq -r '.sections | length')" = "1" ]
+  [ "$(printf '%s' "$p" | jq -r '.sections | length')" = "7" ]
+  [ "$(printf '%s' "$p" | jq -r '.sections[0].heading')" = "事業の骨格" ]
   [ "$(printf '%s' "$p" | jq -r '.sections[0].lines[0]')" = "285A context" ]
   # body 文字列は送らない (Worker が sections から組む)
   [ "$(printf '%s' "$p" | jq -r 'has("body")')" = "false" ]
@@ -117,14 +119,41 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.news_cursor')" = "null" ]
 }
 
+# === sections の組み立て =====================================================
+
+# キーを保存順の見出しに並べ、topics は "日付: 事実 — 効き" の 1 行に連結する
+@test "sections: keys map to ordered headings and topics join into one line" {
+  local sf="$BATS_TEST_TMPDIR/context.json"
+  jq -n "{status:\"ok\", title:\"t\",
+    sections:($EMPTY_SECTIONS + {topics:[{date:\"2026-06-28\", summary:\"fact\", effect:\"impact\"}]}),
+    ir_cursor:null, news_cursor:null}" >"$sf"
+  run env WORKER_URL="http://test.invalid" POST_CONTEXT_DRYRUN=1 bash "$SCRIPT" 285A "$sf" 2>&1
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/context")"
+  [ "$(printf '%s' "$p" | jq -r '[.sections[].heading] | join(",")')" = "事業の骨格,商品ラインナップ / 技術ロードマップ,経営判断・資本政策,直近の重大トピック,証券会社レーティング,決算の特色・クセ,決算・ガイダンス" ]
+  [ "$(printf '%s' "$p" | jq -r '.sections[3].lines[0]')" = "2026-06-28: fact — impact" ]
+}
+
+# キーが欠けていたら fail し、upsert/投稿は走らない
+@test "sections: fails when a key is missing" {
+  local sf="$BATS_TEST_TMPDIR/context.json"
+  jq -n "{status:\"ok\", title:\"t\",
+    sections:($EMPTY_SECTIONS | del(.earnings)),
+    ir_cursor:null, news_cursor:null}" >"$sf"
+  run env WORKER_URL="http://test.invalid" POST_CONTEXT_DRYRUN=1 bash "$SCRIPT" 285A "$sf" 2>&1
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -q "missing/empty sections"
+  [ -z "$(printf '%s\n' "$output" | awk '$1=="POST"')" ]
+}
+
 # === 総量バックストップ (行数/文字数の上限) ==================================
 
 # 上限内なら通る (境界値: ちょうど上限)
 @test "size: passes at exactly the caps" {
   local sf="$BATS_TEST_TMPDIR/context.json"
-  jq -n '{status:"ok", title:"t",
-    sections:[{heading:"h", lines:["1234567890","1234567890"]}],
-    ir_cursor:null, news_cursor:null}' >"$sf"
+  jq -n "{status:\"ok\", title:\"t\",
+    sections:($EMPTY_SECTIONS + {business:[\"1234567890\",\"1234567890\"]}),
+    ir_cursor:null, news_cursor:null}" >"$sf"
   run env WORKER_URL="http://test.invalid" POST_CONTEXT_DRYRUN=1 \
     POST_CONTEXT_MAX_LINES=2 POST_CONTEXT_MAX_CHARS=20 \
     bash "$SCRIPT" 285A "$sf" 2>&1
@@ -135,9 +164,9 @@ payload_for() {
 # 総行数が上限を超えると fail し、upsert/投稿は走らない
 @test "size: fails when total lines exceed cap" {
   local sf="$BATS_TEST_TMPDIR/context.json"
-  jq -n '{status:"ok", title:"t",
-    sections:[{heading:"h1", lines:["a","b"]},{heading:"h2", lines:["c"]}],
-    ir_cursor:null, news_cursor:null}' >"$sf"
+  jq -n "{status:\"ok\", title:\"t\",
+    sections:($EMPTY_SECTIONS + {business:[\"a\",\"b\"], products:[\"c\"]}),
+    ir_cursor:null, news_cursor:null}" >"$sf"
   run env WORKER_URL="http://test.invalid" POST_CONTEXT_DRYRUN=1 \
     POST_CONTEXT_MAX_LINES=2 \
     bash "$SCRIPT" 285A "$sf" 2>&1
@@ -149,9 +178,9 @@ payload_for() {
 # 総文字数が上限を超えると fail する (文字数 = 全行の連結長)
 @test "size: fails when total chars exceed cap" {
   local sf="$BATS_TEST_TMPDIR/context.json"
-  jq -n '{status:"ok", title:"t",
-    sections:[{heading:"h", lines:["12345678901"]}],
-    ir_cursor:null, news_cursor:null}' >"$sf"
+  jq -n "{status:\"ok\", title:\"t\",
+    sections:($EMPTY_SECTIONS + {business:[\"12345678901\"]}),
+    ir_cursor:null, news_cursor:null}" >"$sf"
   run env WORKER_URL="http://test.invalid" POST_CONTEXT_DRYRUN=1 \
     POST_CONTEXT_MAX_CHARS=10 \
     bash "$SCRIPT" 285A "$sf" 2>&1

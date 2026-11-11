@@ -1,5 +1,5 @@
 // Cloudflare Worker: 手動起動 (dev検証/オンデマンド) ルート。
-//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|margin|premarket&code=285A[&limit=N]
+//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|margin|short-interest|investor-flows|premarket&code=285A[&limit=N]
 //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
 //   premarket は地合い (米国指数+日経先物) を1回取得して D1 premarket_backdrop に書く。
 //   通常は寄り前 intake cron が自動取得するが、手動/dev 検証用に残す。
@@ -12,6 +12,7 @@ import { collectDisclosures } from "../lib/disclosure";
 import { collectEarnings } from "../lib/earnings";
 import type { Env } from "../lib/env";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
+import { collectInvestorFlows } from "../lib/investor-flows";
 import { collectAll } from "../lib/ir-collect";
 import { DEFAULT_LIMIT } from "../lib/ir-sources";
 import { collectMargin } from "../lib/margin";
@@ -23,6 +24,7 @@ import {
 } from "../lib/peer-earnings";
 import { collectBackdrop } from "../lib/premarket";
 import { collectRatings } from "../lib/ratings";
+import { collectShortInterest } from "../lib/short-interest";
 import { notifyNewsSlack } from "../lib/slack";
 import { collectTimeseries } from "../lib/timeseries";
 
@@ -117,6 +119,16 @@ run.get("/", async (c) => {
 		const { results, freshTickers } = await collectMargin(env, code);
 		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
 		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
+	}
+	if (kind === "short-interest") {
+		// 逆日歩 / 機関の空売り残高 / 東証全体の空売り比率 (code 指定時は銘柄別の 2 つだけ)。
+		const result = await collectShortInterest(env, code);
+		return c.json({ ok: true, kind, result });
+	}
+	if (kind === "investor-flows") {
+		// 投資部門別売買状況 (JPX 週次、東証プライム) の未取得週を取る。
+		const result = await collectInvestorFlows(env);
+		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "prices" || kind === "daily" || kind === "fundamentals") {
 		const result = await collectTimeseries(env, kind, code);

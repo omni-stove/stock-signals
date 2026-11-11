@@ -6,6 +6,7 @@
 // 銘柄リスト (WATCHLIST / WATCHLIST_NAMES) の出所は watchlist.ts (銘柄定義の唯一の真のソース)。
 // ここで re-export し、Worker 内の各モジュールは timeseries から import する。
 
+import { eq, sql } from "drizzle-orm";
 import { db } from "./db";
 import { decodeEntities, scanHtml, scanTables, tablesWithClass } from "./html";
 import { sliceStockInfo } from "./kabutan";
@@ -23,10 +24,22 @@ export interface TimeseriesEnv {
 // 同一モジュール内でも使うので import した上で re-export する。
 export { WATCHLIST, WATCHLIST_NAMES };
 
+// 相対強弱・超過リターンの基準にする TOPIX の kabutan コード。日足だけ watchlist と並べて daily に貯める。
+export const BENCHMARK_CODE = "0010";
+
+// 52週高値・安値と MA75 に約1年分の日足が要る。kabutan の日足ページは 1 ページ約 30 本で page=2.. と
+// 遡れるので、保存済みが DAILY_HISTORY_TARGET 本に満たない銘柄は 1 回の収集で最大
+// BACKFILL_PAGES_PER_RUN ページだけ過去分を足す。
+const DAILY_HISTORY_TARGET = 260;
+const DAILY_ROWS_PER_PAGE = 30;
+const BACKFILL_PAGES_PER_RUN = 3;
+
 // 取得対象の URL テンプレート (prices / daily / fundamentals)。
 const URL_PRICES = (code: string) => `https://kabutan.jp/stock/?code=${code}`;
-const URL_DAILY = (code: string) =>
-	`https://kabutan.jp/stock/kabuka?code=${code}`;
+const URL_DAILY = (code: string, page = 1) =>
+	page > 1
+		? `https://kabutan.jp/stock/kabuka?code=${code}&ashi=day&page=${page}`
+		: `https://kabutan.jp/stock/kabuka?code=${code}`;
 const URL_FUNDAMENTALS = (code: string) =>
 	`https://kabutan.jp/stock/?code=${code}`;
 const SITE = "kabutan";
@@ -252,7 +265,34 @@ async function collectDailyOne(
 	env: TimeseriesEnv,
 	code: string,
 ): Promise<{ written: number; skipped: number }> {
-	const html = await fetchHtml(URL_DAILY(code), env);
+	const latest = await writeDailyPage(env, code, 1);
+	const stored = await db(env.DB)
+		.select({ n: sql<number>`count(*)` })
+		.from(daily)
+		.where(eq(daily.ticker, code))
+		.get();
+	const n = stored?.n ?? 0;
+	let { written, skipped } = latest;
+	if (n < DAILY_HISTORY_TARGET) {
+		const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
+		const from = Math.floor(n / DAILY_ROWS_PER_PAGE) + 1;
+		for (let p = Math.max(from, 2); p < from + BACKFILL_PAGES_PER_RUN; p++) {
+			await sleep(interval);
+			const r = await writeDailyPage(env, code, p);
+			if (r.written + r.skipped === 0) break; // 上場来の最古ページを越えた
+			written += r.written;
+			skipped += r.skipped;
+		}
+	}
+	return { written, skipped };
+}
+
+async function writeDailyPage(
+	env: TimeseriesEnv,
+	code: string,
+	page: number,
+): Promise<{ written: number; skipped: number }> {
+	const html = await fetchHtml(URL_DAILY(code, page), env);
 	const bars = await parseKabutanDaily(html);
 	if (bars.length === 0) return { written: 0, skipped: 0 };
 	const fetched_at = new Date().toISOString();
@@ -298,7 +338,18 @@ type FundParsed = {
 	forecast_period: string | null;
 	actual_eps: number | null;
 	actual_period: string | null;
+	forecast_sales: number | null;
+	forecast_ordinary: number | null;
+	forecast_net: number | null;
+	forecast_dividend: number | null;
+	forecast_announced_at: string | null;
 };
+
+// 決算期テーブルの発表日 "26/10/28" → "2026-10-28"。
+function normalizeAnnouncedAt(raw: string | undefined): string | null {
+	const m = (raw ?? "").match(/(\d{2})\/(\d{2})\/(\d{2})/);
+	return m ? `20${m[1]}-${m[2]}-${m[3]}` : null;
+}
 
 function normalizePeriod(label: string): string | null {
 	const m = label.match(/(\d{4}\.\d{2})/);
@@ -331,6 +382,11 @@ async function parseKabutanFundamentals(html: string): Promise<FundParsed> {
 	let forecast_period: string | null = null;
 	let actual_eps: number | null = null;
 	let actual_period: string | null = null;
+	let forecast_sales: number | null = null;
+	let forecast_ordinary: number | null = null;
+	let forecast_net: number | null = null;
+	let forecast_dividend: number | null = null;
+	let forecast_announced_at: string | null = null;
 
 	for (const t of tables) {
 		if (forecast_period !== null || actual_period !== null) break;
@@ -338,6 +394,16 @@ async function parseKabutanFundamentals(html: string): Promise<FundParsed> {
 			(h) => h.includes("１株益") || h.includes("1株益"),
 		);
 		if (!t.headers.includes("決算期") || epsCol < 0) continue;
+		const col = (name: string) => t.headers.findIndex((h) => h.includes(name));
+		const salesCol = col("売上高");
+		const ordinaryCol = col("経常益");
+		const netCol = col("最終益");
+		const divCol = t.headers.findIndex(
+			(h) => h.includes("１株配") || h.includes("1株配"),
+		);
+		const announcedCol = col("発表日");
+		const at = (cells: { text: string }[], i: number) =>
+			i >= 0 ? toNumber(cells[i]?.text) : null;
 
 		for (const { cells } of t.rows) {
 			const label = (cells[0]?.text ?? "")
@@ -351,6 +417,14 @@ async function parseKabutanFundamentals(html: string): Promise<FundParsed> {
 				if (forecast_period === null) {
 					forecast_eps = eps;
 					forecast_period = period;
+					forecast_sales = at(cells, salesCol);
+					forecast_ordinary = at(cells, ordinaryCol);
+					forecast_net = at(cells, netCol);
+					forecast_dividend = at(cells, divCol);
+					forecast_announced_at =
+						announcedCol >= 0
+							? normalizeAnnouncedAt(cells[announcedCol]?.text)
+							: null;
 				}
 			} else {
 				actual_eps = eps;
@@ -367,6 +441,11 @@ async function parseKabutanFundamentals(html: string): Promise<FundParsed> {
 		forecast_period,
 		actual_eps,
 		actual_period,
+		forecast_sales,
+		forecast_ordinary,
+		forecast_net,
+		forecast_dividend,
+		forecast_announced_at,
 	};
 }
 
@@ -391,6 +470,11 @@ async function collectFundamentalsOne(
 		forecastPeriod: f.forecast_period,
 		actualEps: f.actual_eps,
 		actualPeriod: f.actual_period,
+		forecastSales: f.forecast_sales,
+		forecastOrdinary: f.forecast_ordinary,
+		forecastNet: f.forecast_net,
+		forecastDividend: f.forecast_dividend,
+		forecastAnnouncedAt: f.forecast_announced_at,
 		fetchedAt: fetched_at,
 	};
 	await db(env.DB)
@@ -407,6 +491,11 @@ async function collectFundamentalsOne(
 				forecastPeriod: row.forecastPeriod,
 				actualEps: row.actualEps,
 				actualPeriod: row.actualPeriod,
+				forecastSales: row.forecastSales,
+				forecastOrdinary: row.forecastOrdinary,
+				forecastNet: row.forecastNet,
+				forecastDividend: row.forecastDividend,
+				forecastAnnouncedAt: row.forecastAnnouncedAt,
 				fetchedAt: row.fetchedAt,
 			},
 		})
@@ -435,7 +524,9 @@ export async function collectTimeseries(
 	kind: Kind,
 	codeFilter: string | null,
 ): Promise<Record<string, unknown>> {
-	const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
+	const universe =
+		kind === "daily" ? [...WATCHLIST, BENCHMARK_CODE] : WATCHLIST;
+	const codes = universe.filter((c) => !codeFilter || c === codeFilter);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	const collect = COLLECTORS[kind];
 	const results: Record<string, unknown> = {};
@@ -525,6 +616,36 @@ if (import.meta.vitest) {
 			expect(p.price).toBeNull();
 			expect(p.volume).toBeNull();
 			expect(p.pts_price).toBeNull();
+		});
+	});
+
+	describe("parseKabutanFundamentals", () => {
+		const html = `
+			<table><tr><th>PER</th><th>PBR</th><th>利回り</th></tr>
+			<tr><td>30.6倍</td><td>12.1倍</td><td>0.25％</td></tr></table>
+			<table><thead><tr><th>決算期</th><th>売上高</th><th>経常益</th><th>最終益</th><th>１株益</th><th>１株配</th><th>発表日</th></tr></thead>
+			<tbody>
+			<tr><th>I 2026.03</th><td>11,286</td><td>5,167</td><td>3,753</td><td>515.2</td><td>59.0</td><td>26/04/27</td></tr>
+			<tr><th>I 予 2027.03</th><td>18,630</td><td>10,215</td><td>7,415</td><td>1,027</td><td>－</td><td>26/10/28</td></tr>
+			<tr><th>前期比(%)</th><td>+65.1</td><td>+97.7</td><td>+97.5</td><td>+99.4</td><td colspan="2"></td></tr>
+			</tbody></table>`;
+
+		it("PER と今期予想 (売上・経常・最終・EPS・配当・発表日) を拾う", async () => {
+			const f = await parseKabutanFundamentals(html);
+			expect(f).toEqual({
+				per: 30.6,
+				pbr: 12.1,
+				dividend_yield: 0.25,
+				forecast_eps: 1027,
+				forecast_period: "2027.03",
+				actual_eps: 515.2,
+				actual_period: "2026.03",
+				forecast_sales: 18630,
+				forecast_ordinary: 10215,
+				forecast_net: 7415,
+				forecast_dividend: null,
+				forecast_announced_at: "2026-10-28",
+			});
 		});
 	});
 

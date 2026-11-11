@@ -4,7 +4,8 @@
 (権限/スリープ/電源) 問題を回避するため、収集を Cloudflare Worker + Cron Triggers に、
 LLM 判定を GitHub Actions に移した。**ローカル常駐プロセスもローカル cron も持たない。**
 
-- 収集: kabutan / kioxia をスクレイプ (IR / per_ticker ニュース / prices / daily / fundamentals / premarket / earnings)
+- 収集: kabutan / kioxia をスクレイプ (IR / per_ticker ニュース / prices / daily (+TOPIX) / fundamentals / premarket / earnings)。
+  空売りまわりは日証金 (逆日歩 CSV)・karauri.net (機関の空売り残高)・JPX (空売り比率 PDF / 投資部門別 xlsx) から引け後に取る
 - 保存: 記事本文JSON → **R2** (`ARTICLES`)、メタ・時系列・重複排除キー → **D1** (`DB`)
 - 発火: Cron Triggers (下記) + 手動 `/run`
 - 判定: 新規 IR/ニュースがあれば `repository_dispatch(signal-update)` で **GitHub Actions の context-builder** を起動する。判定ルールはワークフローの `prompt` にベタ書きされ、`/context-input` の正規化済み JSON を `@` で読んで銘柄ごとの **D1 コンテキスト** (`POST /context`、`contexts` テーブル) を再生成、`post-context.sh` が更新後の全文をセクション区切りの blocks で Slack のコンテキスト更新チャンネルへ投稿、続けて `repository_dispatch(signal-judge)` で signal-judge を起動。signal-judge が `/judge-context` を引いて buy/sell を構造化判定し、`post-signal.sh` が Slack へ通知しつつ `/slack/post` 経由でその判定を `signals` テーブルへ保存する (コンテキストは触らない)。

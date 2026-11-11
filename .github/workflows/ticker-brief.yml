@@ -128,8 +128,8 @@ jobs:
             into 業績/株価, precedents when you know one), and lay out the standing 強気/弱気 case. **Never
             output a trading call**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs (買い/売り/
             利確/増し玉/様子見). Price levels and indicator values belong to the posting step, which appends
-            the real ones (現値/MA/レンジ/ATR, MA25乖離/RSI/出来高倍率/OBV/CMF) deterministically — do not
-            restate numeric levels or indicator values in your text. You may —
+            the real ones (現値/MA/レンジ/ATR, MA25乖離/RSI/出来高倍率/OBV/CMF, MA75/52週高値・安値/TOPIX比/予想PER)
+            deterministically — do not restate numeric levels or indicator values in your text. You may —
             and should — describe what the tape did (急伸/出来高急増/セクタ内で劣後 など) as fact.
 
             The reader holds swing positions of several days to about three weeks. Weigh each material by how
@@ -212,6 +212,36 @@ jobs:
               given and report it as a 需給 fact (投げ pending is usually a `bear` line, 踏み上げ a `bull`
               line, or a `watch` line).
             - **Margin** (信用残): report a buildup contradicting the context as a 需給 fact.
+            - **`trend`** (MA75 and 52週高値・安値 from about a year of bars): `ma75_dev_pct` = the medium-term
+              stretch; `from_high_52w_pct` / `from_low_52w_pct` = how far price sits from the year's extremes —
+              report a 52週高値・安値 within reach or just broken as a 需給 fact. `full_year: false` → the window
+              starts at `window_start`, not a full year.
+            - **`relative`** (`returns[]` per 5/20/60 days: `ret_pct` − `topix_ret_pct` = `excess_pct`): strength
+              against the whole market. Use it with `sector` to separate a name-specific move from the market.
+            - **`event_reactions`** (`items[]`, status `none` → skip): for each recent disclosure/IR date, the
+              excess return over TOPIX across the 2 sessions from the prior close (`excess_2d_pct`) and since then
+              to now (`excess_to_date_pct`). Report how the market took a material — a good-news item that sold off
+              or faded is itself a fact. `partial: true` = the second session is not in yet.
+            - **`revisions`**: the current company forecast (`forecast`: 売上・経常・最終 in 億円, eps/dividend in 円,
+              announced `announced_at`) and `revisions[]` within a year (`kind` `up`/`down`/`mixed` = 修正の向き,
+              `unchanged` = 据え置き, `initial` = 期初予想; `*_chg_pct` = 修正幅). History before `history_since`
+              is not stored. No analyst consensus is collected — do not claim a gap to consensus unless a cited
+              source states it.
+            - **`valuation`**: 予想PER/PBR/利回り, the PER range over stored snapshots (`per_range` since its
+              date), and same-sector `peers` PER. Report the multiple as context for how much good news a price
+              already carries; never call it 割安/割高 on the number alone.
+            - **`short_interest`**: `lending` = 日証金の逆日歩 (`fee` 円/株 on 申込日 `date`, `fee_streak_days`
+              consecutive days charged; `listed: false` = not on the list, no 逆日歩) — a running 逆日歩 is
+              short-squeeze fuel. `positions` = institutional short reports of 0.5% or more (`total_ratio_pct`,
+              change `total_ratio_chg_pct` since `chg_since`; weigh each holder by its `calc_date`, an old report is
+              weak evidence). `market_short_ratio` = 東証全体の空売り比率 (`ratio_pct`, `avg_5d_pct`), market-wide
+              sentiment only.
+            - **`investor_flows`** (market-wide, weekly 東証プライム, 億円, `net` 買い越し=正): who is buying the
+              market — `foreigners_streak_weeks` (正 = 連続買い越し, 負 = 連続売り越し). Backdrop, not a name fact.
+            - **`supply`** (`items[]`, status `none` → skip): disclosures that add supply — 売出し/公募/第三者割当/
+              CB/分売/自己株処分/大株主の異動. `lockup_90d` / `lockup_180d` are rough dates counted from the
+              announcement; the actual lock-up term and start are in the filing — state them only when confirmed.
+              A lock-up end or a pending offering inside the holding horizon is a `bear`/`watch` fact.
             - **Earnings near** (`earnings`) is binary-event risk — report the date as a `watch`/`bear` fact.
               **Just out** (`earnings_result.status: fresh`): report `verdict` (beat/miss/inline) as a
               material, and read the price reaction through **## 決算の特色・クセ** in `context_body` (the

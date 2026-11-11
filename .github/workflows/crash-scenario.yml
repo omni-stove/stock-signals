@@ -124,6 +124,15 @@ jobs:
               traded on — not a fresh overnight sign.
               `market_phase=premarket` makes a tonight→open gap-down its own scenario; in-session, `daily` is
               the prior bar, so read `daily.vol_x_20d_intraday` for today's 出来高.
+              Medium-term fragility: `trend.ma75_dev_pct` and `trend.from_low_52w_pct` (how much gain holders
+              could give back), `relative.returns[].excess_pct` (vs TOPIX), `event_reactions.items[]` (a good-news
+              disclosure that sold off on `excess_2d_pct` shows exhausted buyers), `valuation.per` against
+              `per_range`/`peers` (how much good news the price carries), `revisions.revisions[]` (a `down`
+              revision or a forecast left unchanged into a strong cycle). Supply shocks: `supply.items[]`
+              (売出し/公募/CB/大株主の異動, `lockup_90d`/`lockup_180d` are rough dates from the announcement) and
+              `short_interest` (`positions.total_ratio_pct` rising = institutions building shorts; a running
+              `lending.fee` = squeeze fuel, not a crash path). `investor_flows` and
+              `short_interest.market_short_ratio` are market-wide backdrop.
 
             ## Building the scenarios
 

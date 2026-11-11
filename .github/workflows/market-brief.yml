@@ -113,6 +113,11 @@ jobs:
             - **`market_news`**: recent market-wide theme headlines not tied to a watchlist name, each with
               `title` / `topic` (`semi`/`ai`/`rates`/`us`/`market`) / `published_at`. Pick the 1-2 that bear on
               today's tape; ignore the rest. Empty array → ignore.
+            - **`investor_flows`** (weekly 投資部門別, 東証プライム, 億円, `net` 買い越し=正, covering
+              `week_start`–`week_end`): who drove the market last week. `foreigners_streak_weeks` (正 = 連続買い越し,
+              負 = 連続売り越し). Report it on the morning it is new or when the streak flips; otherwise skip.
+            - **`market_short_ratio`** (東証全体の空売り比率, `ratio_pct` on `date`, `avg_5d_pct`): a level well
+              above its 5-day average marks heavy hedging/bearish positioning (and squeeze fuel). `unavailable` → skip.
             - **`market_phase`** (JST trading-day position) frames what the numbers mean: `premarket` (the gap
               isn't in yet), 場中 (`sectors` is live, read breadth directly), `closed` (report today's close
               plus tonight's NY setup).

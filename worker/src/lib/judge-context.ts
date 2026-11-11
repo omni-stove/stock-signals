@@ -415,6 +415,142 @@ export function buildPrices(
 	};
 }
 
+// --- valuation: 予想 PER / PBR / 利回り と、同一セクタのピアの予想 PER --------------
+// fundamentals は日次スナップショット (date 降順)。per_range は保存済みスナップショットの範囲。
+export interface ValuationSnapshot {
+	date: string;
+	per?: number | null;
+	pbr?: number | null;
+	dividend_yield?: number | null;
+}
+
+export function buildValuation(
+	snapshots: ValuationSnapshot[],
+	peers: { code: string; name: string; per: number | null }[],
+): Record<string, unknown> {
+	const withPer = snapshots.filter((s) => s.per != null);
+	if (withPer.length === 0) return { status: "unavailable" };
+	const cur = withPer[0];
+	const pers = withPer.map((s) => s.per as number);
+	return {
+		status: "ok",
+		date: cur.date,
+		per: cur.per,
+		pbr: cur.pbr ?? null,
+		dividend_yield: cur.dividend_yield ?? null,
+		per_range: {
+			min: Math.min(...pers),
+			max: Math.max(...pers),
+			since: withPer[withPer.length - 1].date,
+		},
+		peers: peers.filter((p) => p.per != null),
+	};
+}
+
+// --- revisions: 会社予想と業績予想の修正 --------------------------------------
+// fundamentals の日次スナップショットを古い順に並べ、同じ予想期で「予想の発表日」か予想値が
+// 変わった日を修正とみなす (EPS は 1% 未満の差を丸め誤差として無視する)。予想期が切り替わった日は
+// 期初予想 (initial)、発表日だけが変わって値が同じなら据え置き (unchanged)。
+export interface ForecastSnapshot {
+	date: string;
+	forecast_period?: string | null;
+	forecast_eps?: number | null;
+	forecast_sales?: number | null;
+	forecast_ordinary?: number | null;
+	forecast_net?: number | null;
+	forecast_dividend?: number | null;
+	forecast_announced_at?: string | null;
+}
+
+const EPS_NOISE_PCT = 1;
+const REVISION_LOOKBACK_DAYS = 365;
+
+function chgPct(
+	from: number | null | undefined,
+	to: number | null | undefined,
+) {
+	if (from == null || to == null || from === 0) return null;
+	return floor1(((to - from) / Math.abs(from)) * 100);
+}
+
+export function buildRevisions(
+	snapshotsDesc: ForecastSnapshot[],
+	today: string,
+): Record<string, unknown> {
+	const asc = snapshotsDesc
+		.filter((s) => s.forecast_period)
+		.slice()
+		.reverse();
+	if (asc.length === 0) return { status: "unavailable" };
+	const revisions: Record<string, unknown>[] = [];
+	for (let i = 1; i < asc.length; i++) {
+		const prev = asc[i - 1];
+		const cur = asc[i];
+		const date = cur.forecast_announced_at ?? cur.date;
+		if (cur.forecast_period !== prev.forecast_period) {
+			revisions.push({
+				date,
+				period: cur.forecast_period,
+				kind: "initial",
+				eps: cur.forecast_eps ?? null,
+				ordinary: cur.forecast_ordinary ?? null,
+			});
+			continue;
+		}
+		const epsChg = chgPct(prev.forecast_eps, cur.forecast_eps);
+		const ordChg = chgPct(prev.forecast_ordinary, cur.forecast_ordinary);
+		const netChg = chgPct(prev.forecast_net, cur.forecast_net);
+		const valueChanged =
+			(epsChg != null && Math.abs(epsChg) >= EPS_NOISE_PCT) ||
+			(ordChg != null && ordChg !== 0) ||
+			(netChg != null && netChg !== 0);
+		const announcedChanged =
+			cur.forecast_announced_at != null &&
+			prev.forecast_announced_at != null &&
+			cur.forecast_announced_at !== prev.forecast_announced_at;
+		if (!valueChanged && !announcedChanged) continue;
+		const lead = ordChg ?? epsChg ?? netChg;
+		revisions.push({
+			date,
+			period: cur.forecast_period,
+			kind: !valueChanged
+				? "unchanged"
+				: lead != null && lead > 0
+					? "up"
+					: lead != null && lead < 0
+						? "down"
+						: "mixed",
+			eps_from: prev.forecast_eps ?? null,
+			eps_to: cur.forecast_eps ?? null,
+			eps_chg_pct: epsChg,
+			ordinary_chg_pct: ordChg,
+			net_chg_pct: netChg,
+		});
+	}
+	const since = new Date(`${today}T00:00:00Z`);
+	since.setUTCDate(since.getUTCDate() - REVISION_LOOKBACK_DAYS);
+	const sinceStr = since.toISOString().slice(0, 10);
+	const latest = asc[asc.length - 1];
+	return {
+		status: "ok",
+		period: latest.forecast_period,
+		announced_at: latest.forecast_announced_at ?? null,
+		// 売上高・経常益・最終益は億円、eps と dividend は円。
+		forecast: {
+			sales: latest.forecast_sales ?? null,
+			ordinary: latest.forecast_ordinary ?? null,
+			net: latest.forecast_net ?? null,
+			eps: latest.forecast_eps ?? null,
+			dividend: latest.forecast_dividend ?? null,
+		},
+		history_since: asc[0].date,
+		revisions: revisions
+			.filter((r) => (r.date as string) >= sinceStr)
+			.reverse()
+			.slice(0, 4),
+	};
+}
+
 // in-source tests。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
@@ -586,6 +722,120 @@ if (import.meta.vitest) {
 					"2026-06-20",
 				).status,
 			).toBe("none");
+		});
+	});
+
+	describe("buildValuation", () => {
+		it("最新の PER と保存範囲・ピア", () => {
+			const out = buildValuation(
+				[
+					{ date: "2026-11-11", per: 30.6, pbr: 12.1, dividend_yield: 0.2 },
+					{ date: "2026-10-09", per: 45.5 },
+					{ date: "2026-06-01", per: null },
+				],
+				[
+					{ code: "6920", name: "レーザーテック", per: 25 },
+					{ code: "6976", name: "太陽誘電", per: null },
+				],
+			);
+			expect(out).toEqual({
+				status: "ok",
+				date: "2026-11-11",
+				per: 30.6,
+				pbr: 12.1,
+				dividend_yield: 0.2,
+				per_range: { min: 30.6, max: 45.5, since: "2026-10-09" },
+				peers: [{ code: "6920", name: "レーザーテック", per: 25 }],
+			});
+		});
+		it("PER が無ければ unavailable", () => {
+			expect(buildValuation([], [])).toEqual({ status: "unavailable" });
+		});
+	});
+
+	describe("buildRevisions", () => {
+		// date 降順で渡す。
+		const snaps: ForecastSnapshot[] = [
+			{
+				date: "2026-10-29",
+				forecast_period: "2027.03",
+				forecast_eps: 1026,
+				forecast_ordinary: 10215,
+				forecast_announced_at: "2026-10-28",
+			},
+			{
+				date: "2026-10-28",
+				forecast_period: "2027.03",
+				forecast_eps: 1027,
+				forecast_ordinary: 10215,
+				forecast_announced_at: "2026-10-28",
+			},
+			{
+				date: "2026-10-26",
+				forecast_period: "2027.03",
+				forecast_eps: 914.2,
+				forecast_ordinary: 9100,
+				forecast_announced_at: "2026-07-28",
+			},
+			{
+				date: "2026-07-29",
+				forecast_period: "2027.03",
+				forecast_eps: 914.2,
+				forecast_ordinary: 9100,
+				forecast_announced_at: "2026-07-28",
+			},
+			{
+				date: "2026-07-27",
+				forecast_period: "2027.03",
+				forecast_eps: 914.2,
+				forecast_ordinary: 9100,
+				forecast_announced_at: "2026-04-27",
+			},
+			{
+				date: "2026-04-24",
+				forecast_period: "2026.03",
+				forecast_eps: 500,
+				forecast_announced_at: "2026-01-28",
+			},
+		];
+		it("上方修正・据え置き・期初予想を拾い、EPS の丸め差は無視する", () => {
+			const out = buildRevisions(snaps, "2026-11-11");
+			expect(out.period).toBe("2027.03");
+			expect(out.announced_at).toBe("2026-10-28");
+			expect(out.revisions).toEqual([
+				{
+					date: "2026-10-28",
+					period: "2027.03",
+					kind: "up",
+					eps_from: 914.2,
+					eps_to: 1027,
+					eps_chg_pct: 12.3,
+					ordinary_chg_pct: 12.2,
+					net_chg_pct: null,
+				},
+				{
+					date: "2026-07-28",
+					period: "2027.03",
+					kind: "unchanged",
+					eps_from: 914.2,
+					eps_to: 914.2,
+					eps_chg_pct: 0,
+					ordinary_chg_pct: 0,
+					net_chg_pct: null,
+				},
+				{
+					date: "2026-04-27",
+					period: "2027.03",
+					kind: "initial",
+					eps: 914.2,
+					ordinary: 9100,
+				},
+			]);
+		});
+		it("予想期が無ければ unavailable", () => {
+			expect(buildRevisions([{ date: "2026-11-11" }], "2026-11-11")).toEqual({
+				status: "unavailable",
+			});
 		});
 	});
 

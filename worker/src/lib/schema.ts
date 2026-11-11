@@ -118,6 +118,13 @@ export const fundamentals = sqliteTable(
 		forecastPeriod: text("forecast_period"),
 		actualEps: real("actual_eps"),
 		actualPeriod: text("actual_period"),
+		// 今期会社予想 (forecast_period 行) の売上高・経常益・最終益 (億円)、1株配 (円)、予想の発表日。
+		// 日次スナップショットを並べると、発表日か値が変わった日 = 業績予想の修正日になる。
+		forecastSales: real("forecast_sales"),
+		forecastOrdinary: real("forecast_ordinary"),
+		forecastNet: real("forecast_net"),
+		forecastDividend: real("forecast_dividend"),
+		forecastAnnouncedAt: text("forecast_announced_at"),
 		fetchedAt: text("fetched_at").notNull(),
 	},
 	(t) => [
@@ -203,6 +210,80 @@ export const margin = sqliteTable(
 	(t) => [
 		primaryKey({ columns: [t.ticker, t.date] }),
 		index("idx_margin_ticker_date").on(t.ticker, sql`${t.date} DESC`),
+	],
+);
+
+// ── stock_lending (日証金の品貸料 = 逆日歩。冪等キー = (ticker, date)) ─────────
+// 日証金の品貸料率一覧 CSV を引け後に取り、watchlist 全銘柄について貸借申込日ごとに 1 行書く。
+// 一覧に無い銘柄も listed=0 で書き、「確認済みで逆日歩なし」を残す。
+// fee は当日品貸料率 (円/株、当日品貸日数を乗じた値)。逆日歩が付かない日は null。
+export const stockLending = sqliteTable(
+	"stock_lending",
+	{
+		ticker: text("ticker").notNull(),
+		date: text("date").notNull(), // 貸借申込日 YYYY-MM-DD
+		listed: integer("listed").notNull(), // 1 = 品貸料率一覧に載った
+		excessShares: integer("excess_shares"), // 貸株超過株数
+		maxFee: real("max_fee"), // 最高料率 (円/株・日)
+		fee: real("fee"), // 当日品貸料率 (円/株)
+		feeDays: integer("fee_days"), // 当日品貸日数
+		restriction: text("restriction"), // 制限措置 (注意喚起/申込停止 等)
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.ticker, t.date] }),
+		index("idx_stock_lending_ticker_date").on(t.ticker, sql`${t.date} DESC`),
+	],
+);
+
+// ── short_positions (機関の空売り残高報告。冪等キー = (ticker, calc_date, holder)) ──
+// 残高割合 0.5% 以上の空売り者が出す報告 (JPX 公表分を karauri.net が銘柄別に並べたもの)。
+// 報告義務消失 (0.5% 割れ) の行は lapsed=1。
+export const shortPositions = sqliteTable(
+	"short_positions",
+	{
+		ticker: text("ticker").notNull(),
+		calcDate: text("calc_date").notNull(), // 計算日 YYYY-MM-DD
+		holder: text("holder").notNull(), // 空売り者
+		ratio: real("ratio"), // 残高割合 (%)
+		qty: integer("qty"), // 残高数量 (株)
+		lapsed: integer("lapsed").notNull(), // 1 = 報告義務消失
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.ticker, t.calcDate, t.holder] }),
+		index("idx_short_positions_ticker_date").on(
+			t.ticker,
+			sql`${t.calcDate} DESC`,
+		),
+	],
+);
+
+// ── market_short_ratio (東証全体の空売り比率。PK = date) ──────────────────────
+// JPX の日次「空売り集計」から、売買代金に占める空売りの比率 (価格規制あり + なし) を持つ。
+export const marketShortRatio = sqliteTable("market_short_ratio", {
+	date: text("date").primaryKey(), // 売買日 YYYY-MM-DD
+	ratio: real("ratio").notNull(), // 空売り比率 (%) = 価格規制あり + なし
+	restrictedRatio: real("restricted_ratio"), // うち価格規制あり (%)
+	unrestrictedRatio: real("unrestricted_ratio"), // うち価格規制なし (%)
+	fetchedAt: text("fetched_at").notNull(),
+});
+
+// ── investor_flows (投資部門別売買の差引き。冪等キー = (week_start, investor)) ──
+// JPX の週次「投資部門別 株式売買状況」(東証プライム・金額) から部門ごとの差引き (買い−売り) を持つ。
+// investor は foreigners / individuals / trust_banks / investment_trusts / business_cos / proprietary。
+export const investorFlows = sqliteTable(
+	"investor_flows",
+	{
+		weekStart: text("week_start").notNull(), // 集計週の初日 YYYY-MM-DD
+		weekEnd: text("week_end").notNull(), // 集計週の最終日 YYYY-MM-DD
+		investor: text("investor").notNull(),
+		netValue: real("net_value").notNull(), // 差引き (億円、買い越し=正)
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.weekStart, t.investor] }),
+		index("idx_investor_flows_week").on(sql`${t.weekStart} DESC`),
 	],
 );
 

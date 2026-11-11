@@ -8,7 +8,8 @@
 #     skill は「材料・分析・強気/弱気」を構造化出力で渡すだけ。
 #   - 太字の headline と数値行をサマリーとして親に投稿し、本文・観測行は details として親のスレッドに
 #     1 通でぶら下げる (チャンネルにはサマリーだけが流れる)。
-#   - 数値行 (現在の現値・出来高ペース / 確定足の MA・レンジ・RSI・ATR・出来高倍率・OBV・CMF) は LLM に
+#   - 数値行 (現在の現値・出来高ペース / 確定足の MA・レンジ・RSI・ATR・出来高倍率・OBV・CMF /
+#     中期の MA75・52週高値安値・TOPIX比・予想PER) は LLM に
 #     出させず、numctx の実在値からここで決定論で組んで親の context block に貼る。LLM が水準・指標の
 #     数値を創作する余地を残さない (LLM はテクニカルの読みだけを返す)。
 #   - 強制決済スコア (追証売り/踏み上げ) は eod cron が D1 に算出済み。ここで D1 から最新行を引き、
@@ -78,8 +79,9 @@ BODY="$(printf '%s' "$SECTIONS_JSON" | jq -r 'join("\n")')"
 BRIEF_BODY="$BODY"
 
 # --- 数値行 (決定論): numctx の実在値から組み、親の context block に貼る ----
-# 📐 数値 の見出しの下に 2 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
+# 📐 数値 の見出しの下に 3 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
 # 確定足 = daily の最新確定足の指標。ザラ場中は前営業日の足なので、当日の値とは行を分ける。
+# 中期 = MA75 と乖離 / 52週高値・安値と現値からの距離 / TOPIX 比 20 日超過リターン / 予想 PER。
 # どちらも値があるものだけを " / " 連結し、値が 1 つも無ければ行ごとスキップする。
 # daily が insufficient/stale なら確定足の行は出さない。
 NUMBERS=""
@@ -111,7 +113,20 @@ if [[ -n "$NUMCTX_FILE" && -s "$NUMCTX_FILE" ]] && jq -e . "$NUMCTX_FILE" >/dev/
         else "\($d.latest_date // "最新") 確定足: " + join(" / ") end
       end' "$NUMCTX_FILE")"
 
-  NUMBERS="$(printf '%s\n%s\n' "$CURRENT_LINE" "$CONFIRMED_LINE" | sed '/^$/d')"
+  MEDIUM_LINE="$(jq -r '
+    def signed: "\(if . > 0 then "+" else "" end)\(.)";
+    (if (.trend.status // "") == "ok" then .trend else {} end) as $t
+    | ((.relative.returns // []) | map(select(.days == 20)) | .[0]) as $r20
+    | [ (if $t.ma75 != null
+         then "MA75 \($t.ma75)" + (if $t.ma75_dev_pct != null then "（乖離 \($t.ma75_dev_pct | signed)%）" else "" end)
+         else empty end),
+        (if $t.high_52w != null then "52週高値 \($t.high_52w)（\($t.from_high_52w_pct | signed)%）" else empty end),
+        (if $t.low_52w != null then "52週安値 \($t.low_52w)（\($t.from_low_52w_pct | signed)%）" else empty end),
+        (if $r20 != null then "TOPIX比 20日 \($r20.excess_pct | signed)%" else empty end),
+        (if (.valuation.status // "") == "ok" and .valuation.per != null then "予想PER \(.valuation.per)倍" else empty end) ]
+    | if length == 0 then "" else "中期: " + join(" / ") end' "$NUMCTX_FILE")"
+
+  NUMBERS="$(printf '%s\n%s\n%s\n' "$CURRENT_LINE" "$CONFIRMED_LINE" "$MEDIUM_LINE" | sed '/^$/d')"
   NUMBERS="${NUMBERS:+📐 *数値*
 ${NUMBERS}}"
 fi

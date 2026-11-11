@@ -149,6 +149,13 @@ jobs:
               open (premarket) vs already closed — demote a stale tape, don't read a fresh move into it.
               In-session, `daily` is the prior confirmed bar (so `vol_x_20d` is yesterday's); for today's 出来高
               read `daily.vol_x_20d_intraday`.
+            - **Medium-term and supply-demand blocks** answer questions about position and flows: `trend` (MA75,
+              52週高値・安値), `relative` (excess return vs TOPIX over 5/20/60 days), `event_reactions` (how each
+              recent disclosure traded vs TOPIX), `revisions` (company forecast and its 修正; no analyst consensus is
+              collected), `valuation` (予想PER/PBR, own range, sector peers), `short_interest` (逆日歩, institutional
+              short reports by `calc_date`, 東証全体の空売り比率), `investor_flows` (weekly market-wide 投資部門別),
+              `supply` (売出し/公募/CB/大株主の異動; `lockup_*` are rough dates from the announcement). Skip any
+              with `status` `none`/`insufficient`/`unavailable`.
             - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
             ## What to do

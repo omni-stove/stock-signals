@@ -3,7 +3,8 @@
 //   GET /market-context?now=<ISO8601 任意>
 //
 // 取得は D1 直読み。出力構造:
-//   { asof, market_phase, event_context, premarket, live_indexes, sectors, market_news }
+//   { asof, market_phase, event_context, premarket, live_indexes, sectors, market_news,
+//     investor_flows, market_short_ratio }
 //
 // premarket は judge-context と違い us_indexes / date も載せる (市場全体のマーケットブリーフに使うため)。
 // live_indexes は場中に同時進行で動く指数 (日経225/KOSPI) の最新現値 (premarket=前夜確定 と対)。
@@ -13,6 +14,7 @@ import { type Context, Hono } from "hono";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
+import { buildInvestorFlows, readInvestorFlows } from "../lib/investor-flows";
 import { buildLiveIndexesBlock, type LiveIndexRow } from "../lib/live-indexes";
 import { resolveMarketPhase } from "../lib/market-phase";
 import {
@@ -32,6 +34,10 @@ import {
 	type DailyBar,
 	type PremarketLine,
 } from "../lib/sectors";
+import {
+	buildMarketShortRatio,
+	readMarketShortRatio,
+} from "../lib/short-interest";
 import { WATCHLIST_META } from "../lib/watchlist";
 
 export const marketContext = new Hono<{ Bindings: Env }>();
@@ -144,5 +150,9 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 				? { status: "ok", sectors: sectorReports }
 				: { status: "unavailable", sectors: [] },
 		market_news: newsRows,
+		investor_flows: buildInvestorFlows(await readInvestorFlows(env.DB)),
+		market_short_ratio: buildMarketShortRatio(
+			await readMarketShortRatio(env.DB),
+		),
 	});
 });

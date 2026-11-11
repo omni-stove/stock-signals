@@ -7,6 +7,7 @@ import type { Env } from "./env";
 import { remindUpcomingEvents } from "./event-reminder";
 import { collectForcedLiquidation } from "./forced-liquidation";
 import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
+import { collectInvestorFlows } from "./investor-flows";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
 import { collectLiveIndexes } from "./live-indexes";
@@ -18,6 +19,7 @@ import { collectJpPeerEarnings, collectPeerEarnings } from "./peer-earnings";
 import { listPositionUsers } from "./position-report";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
+import { collectShortInterest } from "./short-interest";
 import { notifyNewsSlack, notifyParseFailure } from "./slack";
 import { collectTimeseries, WATCHLIST } from "./timeseries";
 
@@ -65,7 +67,7 @@ async function notifyFreshNews(
 //                           立てず4個に収めるため。下の isNoonIntakeSlot 参照)。
 //                           JST 15:00 相当の最終スロット (isPreCloseSlot) では大引け前にその時点の材料
 //                           だけで翌日寄り越えの玉を判断するため、intake 同様に全銘柄を無条件判定する。
-//   - eod    (16:00 引け後): daily + fundamentals + 決算予定日推定 をまとめて実行
+//   - eod    (16:00 引け後): daily (+TOPIX) + fundamentals + 決算予定日推定 + 空売り需給 + 投資部門別
 const CRON_KIND: Record<string, "intake" | "prices" | "eod"> = {
 	"30 23 * * *": "intake",
 	"0 11 * * *": "intake",
@@ -300,10 +302,21 @@ export async function runScheduled(
 		return;
 	}
 	if (kind === "eod") {
-		// 引け後の1日1回。daily + fundamentals + 次回決算予定日の推定をまとめて実行。
+		// 引け後の1日1回。daily (watchlist + TOPIX、足りない過去分の補完込み) + fundamentals +
+		// 次回決算予定日の推定をまとめて実行。
 		const d = await collectTimeseries(env, "daily", null);
 		const f = await collectTimeseries(env, "fundamentals", null);
 		const e = await collectEarnings(env, null);
+		// 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率) と投資部門別売買 (週次)。
+		// 公表が夕方〜翌日のものは前営業日分を拾う。失敗しても eod の主収集は壊さない。
+		const si = await collectShortInterest(env, null).catch((err) => {
+			console.error("short-interest failed:", err);
+			return null;
+		});
+		const inv = await collectInvestorFlows(env).catch((err) => {
+			console.error("investor-flows failed:", err);
+			return null;
+		});
 		// 海外SOX系ピア (MU/NVDA 等) の次回決算日も毎 eod 取得する。次回日は決算ごとに繰り上がる
 		// ため月初1回では最大1ヶ月古くなる。watchlist の earnings と同頻度・同思想 (毎日上書き)。
 		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
@@ -358,6 +371,8 @@ export async function runScheduled(
 				daily: d,
 				fundamentals: f,
 				earnings: e,
+				...(si ? { shortInterest: si } : {}),
+				...(inv ? { investorFlows: inv } : {}),
 				...(pe ? { peerEarnings: pe } : {}),
 				...(pej ? { peerEarningsJp: pej } : {}),
 				...(macro ? { macroEvents: macro } : {}),

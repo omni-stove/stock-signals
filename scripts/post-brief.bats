@@ -207,6 +207,26 @@ numbers_text() {
   [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 9900\n最新 確定足: MA25 9700')" ]
 }
 
+# 中期の行 (MA75 / 52週高値・安値 / TOPIX比 20日 / 予想PER) は確定足の行の下に載る
+@test "numbers: medium-term line from trend, relative and valuation" {
+  run_pb_ctx '{"prices":{"latest":{"price":31440}},
+               "trend":{"status":"ok","ma75":33727.47,"ma75_dev_pct":-6.8,"high_52w":41990,"from_high_52w_pct":-25.1,
+                        "low_52w":18270,"from_low_52w_pct":72.1},
+               "relative":{"status":"ok","returns":[{"days":5,"excess_pct":-10},{"days":20,"excess_pct":-17.8}]},
+               "valuation":{"status":"ok","per":30.6}}'
+  [ "$status" -eq 0 ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 31440\n中期: MA75 33727.47（乖離 -6.8%%） / 52週高値 41990（-25.1%%） / 52週安値 18270（+72.1%%） / TOPIX比 20日 -17.8%% / 予想PER 30.6倍')" ]
+}
+
+# trend が insufficient なら中期の行には TOPIX比と PER だけ残る
+@test "numbers: insufficient trend keeps only relative and PER" {
+  run_pb_ctx '{"trend":{"status":"insufficient"},
+               "relative":{"status":"ok","returns":[{"days":20,"excess_pct":3.2}]},
+               "valuation":{"status":"unavailable"}}'
+  [ "$status" -eq 0 ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n中期: TOPIX比 20日 +3.2%%')" ]
+}
+
 # 値が 1 つも無ければ context block ごと付かない
 @test "numbers: all-null numctx appends no block" {
   run_pb_ctx '{"daily":{"close":null,"ma5":null,"ma25":null,

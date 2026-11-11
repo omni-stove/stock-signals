@@ -8,17 +8,20 @@
 // 出力 (event_context は需給イベント1行、market_brief は当日朝のマーケットブリーフ / 無ければ null、
 // forced は強制決済フローのスコア / stance==none なら {status:"none"}):
 //   { ticker, today, market_phase, market_brief, event_context, ticker_note,
-//     context_body, earnings, earnings_result, premarket, sector, daily, prices, margin, forced }
-// sector は対象銘柄が属する同一セクタのピアの相対強弱 (無ければ null)。
+//     context_body, earnings, earnings_result, revisions, valuation, premarket, sector, daily, trend,
+//     relative, event_reactions, prices, margin, short_interest, investor_flows, supply, forced }
+// sector は対象銘柄が属する同一セクタのピアの相対強弱 (無ければ null)。trend / relative /
+// event_reactions は約1年分の日足と TOPIX から、supply は適時開示・公式 IR の見出しから組む。
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, like, or } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
 import type { DailyRow } from "../lib/indicators";
 import { avgVolume20d } from "../lib/indicators";
+import { buildInvestorFlows, readInvestorFlows } from "../lib/investor-flows";
 import {
 	buildDaily,
 	buildEarnings,
@@ -27,7 +30,10 @@ import {
 	buildMargin,
 	buildPremarket,
 	buildPrices,
+	buildRevisions,
+	buildValuation,
 	type ForcedRow,
+	type ForecastSnapshot,
 	type FundamentalsSnapshot,
 	type MarginRow,
 	type PremarketRow,
@@ -36,6 +42,12 @@ import {
 import { resolveMarketPhase, sessionElapsedFrac } from "../lib/market-phase";
 import { PREMARKET_COLUMNS } from "../lib/premarket";
 import {
+	buildEventReactions,
+	buildRelative,
+	buildTrend,
+} from "../lib/price-history";
+import {
+	articles,
 	briefs,
 	contexts,
 	daily,
@@ -52,7 +64,22 @@ import {
 	type DailyBar,
 	type PremarketLine,
 } from "../lib/sectors";
+import {
+	buildLending,
+	buildMarketShortRatio,
+	buildShortPositions,
+	readMarketShortRatio,
+	readShortInterest,
+} from "../lib/short-interest";
+import { buildSupply } from "../lib/supply-events";
+import { BENCHMARK_CODE } from "../lib/timeseries";
 import { TICKERS, WATCHLIST_META } from "../lib/watchlist";
+
+// 52週高値・安値と MA75 に使う日足の本数 (約1年 + 余裕)。短期指標 (buildDaily) は直近 DAILY_SHORT 本で組む。
+const DAILY_LONG = 260;
+const DAILY_SHORT = 70;
+// 材料の超過リターンと供給イベントを拾う見出しの遡り日数。
+const ARTICLE_LOOKBACK_DAYS = 400;
 
 export const judgeContext = new Hono<{ Bindings: Env }>();
 
@@ -77,22 +104,47 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.where(eq(earnings.ticker, code))
 		.get();
 
-	// fundamentals の日次スナップショット (date 降順)。actual_period の四半期切替で
-	// 「決算が出た日」を割り出すため、四半期 (約90日) を跨ぐ余裕を持って遡る。
+	// fundamentals の日次スナップショット (date 降順)。actual_period の四半期切替で「決算が出た日」を、
+	// 予想の発表日・予想値の変化で業績予想の修正を割り出すため、約1年遡る。
 	const fundamentalsRows = (await db(env.DB)
 		.select({
 			date: fundamentals.date,
+			per: fundamentals.per,
+			pbr: fundamentals.pbr,
+			dividend_yield: fundamentals.dividendYield,
 			actual_eps: fundamentals.actualEps,
 			actual_period: fundamentals.actualPeriod,
 			forecast_eps: fundamentals.forecastEps,
+			forecast_period: fundamentals.forecastPeriod,
+			forecast_sales: fundamentals.forecastSales,
+			forecast_ordinary: fundamentals.forecastOrdinary,
+			forecast_net: fundamentals.forecastNet,
+			forecast_dividend: fundamentals.forecastDividend,
+			forecast_announced_at: fundamentals.forecastAnnouncedAt,
 		})
 		.from(fundamentals)
 		.where(eq(fundamentals.ticker, code))
 		.orderBy(desc(fundamentals.date))
-		.limit(120)
-		.all()) as FundamentalsSnapshot[];
+		.limit(DAILY_LONG)
+		.all()) as (FundamentalsSnapshot & ForecastSnapshot)[];
 
-	const dailyRows = (await db(env.DB)
+	// 同一セクタのピアの最新予想 PER (valuation の比較用)。
+	const selfMeta = WATCHLIST_META.find((t) => t.code === code);
+	const peerPers: { code: string; name: string; per: number | null }[] = [];
+	for (const t of WATCHLIST_META) {
+		if (t.code === code || !selfMeta?.sector || t.sector !== selfMeta.sector)
+			continue;
+		const row = await db(env.DB)
+			.select({ per: fundamentals.per })
+			.from(fundamentals)
+			.where(eq(fundamentals.ticker, t.code))
+			.orderBy(desc(fundamentals.date))
+			.limit(1)
+			.get();
+		peerPers.push({ code: t.code, name: t.name, per: row?.per ?? null });
+	}
+
+	const dailyLong = (await db(env.DB)
 		.select({
 			date: daily.date,
 			open: daily.open,
@@ -105,8 +157,41 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.from(daily)
 		.where(eq(daily.ticker, code))
 		.orderBy(desc(daily.date))
-		.limit(70)
+		.limit(DAILY_LONG)
 		.all()) as DailyRow[];
+	const dailyRows = dailyLong.slice(0, DAILY_SHORT);
+	const topixRows = await db(env.DB)
+		.select({ date: daily.date, close: daily.close })
+		.from(daily)
+		.where(eq(daily.ticker, BENCHMARK_CODE))
+		.orderBy(desc(daily.date))
+		.limit(DAILY_LONG)
+		.all();
+
+	// 適時開示・公式 IR の見出し (材料の超過リターンと供給イベント用)。
+	const articleSince = new Date(`${today}T00:00:00Z`);
+	articleSince.setUTCDate(articleSince.getUTCDate() - ARTICLE_LOOKBACK_DAYS);
+	const officialArticles = (
+		await db(env.DB)
+			.select({ date: articles.publishedAt, title: articles.title })
+			.from(articles)
+			.where(
+				and(
+					eq(articles.ticker, code),
+					or(like(articles.source, "tdnet:%"), like(articles.source, "ir:%")),
+					gte(articles.publishedAt, articleSince.toISOString().slice(0, 10)),
+				),
+			)
+			.all()
+	).flatMap((a) =>
+		a.date && /^\d{4}-\d{2}-\d{2}$/.test(a.date)
+			? [{ date: a.date, title: a.title }]
+			: [],
+	);
+
+	const shortInterest = await readShortInterest(env.DB, code);
+	const marketShortRows = await readMarketShortRatio(env.DB);
+	const investorFlowRows = await readInvestorFlows(env.DB);
 
 	// latest.ts の prices select と完全に揃える (row 全体)。
 	const priceRows = (await db(env.DB)
@@ -198,8 +283,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 	// SOX/海外ピア決算という間接材料でなくセクタ内の実データで足場を持てるようにする。
 	// 対象に sector が無ければ null。同一 sector メンバーの daily を 20 本ずつ引く (対象銘柄分は
 	// 上の dailyRows を流用)。
-	const selfSector =
-		WATCHLIST_META.find((t) => t.code === code)?.sector ?? null;
+	const selfSector = selfMeta?.sector ?? null;
 	const sectorMeta = selfSector
 		? WATCHLIST_META.filter((t) => t.sector === selfSector)
 		: [];
@@ -276,12 +360,29 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		context_body: contextRow?.body ?? null,
 		earnings: buildEarnings(earningsRow?.next_date ?? null, today),
 		earnings_result: buildEarningsResult(fundamentalsRows, today),
+		revisions: buildRevisions(fundamentalsRows, today),
+		valuation: buildValuation(fundamentalsRows, peerPers),
 		premarket: premarketBlock,
 		// 対象銘柄が属する sector の1件だけ (rows は相対強弱の強い順)。sector 未設定なら null。
 		sector: sectorReports[0] ?? null,
 		daily: buildDaily(dailyRows, intradayVol, today),
+		trend: buildTrend(dailyLong),
+		relative: buildRelative(dailyLong, topixRows),
+		event_reactions: buildEventReactions(
+			officialArticles,
+			dailyLong,
+			topixRows,
+			today,
+		),
 		prices: buildPrices(priceRows, epochNow),
 		margin: buildMargin(marginRows),
+		short_interest: {
+			lending: buildLending(shortInterest.lending),
+			positions: buildShortPositions(shortInterest.positions, today),
+			market_short_ratio: buildMarketShortRatio(marketShortRows),
+		},
+		investor_flows: buildInvestorFlows(investorFlowRows),
+		supply: buildSupply(officialArticles, today),
 		forced: buildForced(forcedRow ?? null),
 	});
 });

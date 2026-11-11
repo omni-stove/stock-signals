@@ -138,25 +138,23 @@ jobs:
 
             ## Output shape
 
+            Write in Japanese for a reader who sees only this post. Put each fact in one place only. Give each
+            line one point in about 40 characters, in clipped note style: the fact, then its effect. Do not
+            use polite endings, narrating connectives, or hedges unless the uncertainty is the point. Do not
+            name an input or describe your research; state an unresolved point as unconfirmed.
+
             - `status`: default `brief`. Return `no_update` only when the freshest entry in 直近の重大トピック
-              is stale (>14日) AND nothing else fired (no fresh earnings/guidance, no forced-flow reading,
-              no notable tape move worth reporting). When in doubt, brief. On `no_update` leave `headline`
-              null and every array empty.
-            - `headline`: verbatim format `📰 <ticker> <name> 材料ブリーフ: <新着材料の一言サマリー>`.
-            - `materials`: the fresh items (newest first, up to 4). `title` = `YYYY-MM-DD <何が起きたか>` in
-              one line. `analysis` = 1–3 lines: なぜ重要か / 業績・株価への波及経路 / 過去の類似例や市場の
-              初期反応. Write the path concretely (「HBM 検査需要 → 後工程テスタの受注に数四半期先行」),
-              not conditional boilerplate.
-            - `technical`: 0–2 lines — the chart state read from `daily`: trend against the MAs, stretch
-              (過熱/売られすぎ), position in the 20日レンジ, volume and money-flow quality, volatility
-              expansion/contraction — and whether the tape confirms or diverges from the fresh materials.
-              Describe the current state in words; never forecast the next bar or name a level to act on.
-              Empty when `daily` is skipped.
-            - `bull` / `bear`: the standing case each way, 0–4 lines each, drawn from context + fresh
-              materials + numbers. State facts and their weight, not recommendations. It is fine for one
-              side to be empty when the materials genuinely lean one way.
-            - `watch`: 0–2 lines — the next verifiable fact that would change the picture (次回決算日,
-              続報の出所, セクタ指標). Not advice.
+              is older than 14 days and there is no fresh earnings or guidance, forced-flow reading, or notable
+              tape move. When in doubt, brief. On `no_update`, leave `headline` null and every array empty.
+            - `headline`: exact format, verbatim: `📰 <ticker> <name>: <one-phrase summary of the fresh materials>`.
+            - `materials`: the fresh items, newest first; merge items on one theme. `title`:
+              `YYYY-MM-DD <what happened>`. `analysis`: why it matters, the concrete path into earnings or
+              price, and a precedent or first market reaction when known.
+            - `technical`: whether trend and money flow confirm or diverge from the fresh materials. Do not
+              restate indicators one by one, forecast, or name a level to act on. Empty when `daily` is skipped.
+            - `bull` / `bear`: the strongest standing points on earnings, supply-demand, and valuation, as
+              facts and their weight. Either side may be empty when the materials lean one way.
+            - `watch`: the next verifiable fact that would change the picture, leading with its date when known.
 
             ## Web research (supplementary)
 
@@ -171,8 +169,8 @@ jobs:
             How to read the fields (what to lead on, what to ignore):
 
             - **`context_body`** carries three layers: 直近の重大トピック (freshest), older structural context,
-              証券会社レーティング (6–12mo, weight by 発行日 / アップサイド% / 信頼度). Null → note
-              `context: unavailable` and brief on price/tape facts alone.
+              証券会社レーティング (6–12mo, weight by 発行日 / アップサイド% / 信頼度). Null → brief on
+              price/tape facts alone.
             - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary (前夜米市場・
               先物・セクター・当日イベント). Use it to frame today's backdrop; null → no fresh morning
               summary, skip.
@@ -229,13 +227,13 @@ jobs:
               "type":"object","additionalProperties":false,
               "required":["status","headline","materials","technical","bull","bear","watch"],
               "properties":{
-                "status":{"enum":["brief","no_update"],"description":"brief=材料ブリーフを出す / no_update=新着も特筆事項も無し (投稿しない)"},
-                "headline":{"type":["string","null"],"description":"Slack first line, exact format verbatim: 📰 <ticker> <name> 材料ブリーフ: <新着材料の一言サマリー>; null when no_update"},
-                "materials":{"type":"array","maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["title","analysis"],"properties":{"title":{"type":"string","description":"1 line: YYYY-MM-DD <何が起きたか>"},"analysis":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3,"description":"1-3 lines in Japanese: なぜ重要か / 業績・株価への波及経路 / 過去の類似例。Web で裏取りした場合は出典 (媒体名, 日付) を明記"}}},"description":"新着材料 (newest first)。no_update なら空"},
-                "technical":{"type":"array","items":{"type":"string"},"maxItems":2,"description":"テクニカルの読み (トレンド/過熱/レンジ位置/出来高・資金フローの質/ボラ、材料との整合・乖離)。数値・水準・予測は書かない"},
-                "bull":{"type":"array","items":{"type":"string"},"maxItems":4,"description":"強気材料 (事実とその重み。推奨は書かない)"},
-                "bear":{"type":"array","items":{"type":"string"},"maxItems":4,"description":"弱気材料・リスク要因 (事実とその重み。推奨は書かない)"},
-                "watch":{"type":"array","items":{"type":"string"},"maxItems":2,"description":"次に確認すべき事実 (次回決算・続報の出所・セクタ指標)"}
+                "status":{"enum":["brief","no_update"]},
+                "headline":{"type":["string","null"],"maxLength":70},
+                "materials":{"type":"array","maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["title","analysis"],"properties":{"title":{"type":"string","maxLength":50},"analysis":{"type":"array","items":{"type":"string","maxLength":80},"minItems":1,"maxItems":3}}}},
+                "technical":{"type":"array","items":{"type":"string","maxLength":80},"maxItems":2},
+                "bull":{"type":"array","items":{"type":"string","maxLength":60},"maxItems":4},
+                "bear":{"type":"array","items":{"type":"string","maxLength":60},"maxItems":4},
+                "watch":{"type":"array","items":{"type":"string","maxLength":50},"maxItems":2}
               }
             }'
         env:
@@ -246,9 +244,8 @@ jobs:
       # skill の構造化出力 (structured_output) を Slack に投稿し、ブリーフを Worker に保存する
       # (curl/jq/blocks 組み立て/フォールバックは script が持つ)。第2引数 = ブリーフ JSON、
       # 第3引数 = 前段で並行取得した指数リバランス窓の JSON (LLM には渡していない観測事実)。
-      # 第4引数 = LLM に渡したのと同じ numctx。post-brief.sh が 📏 注目水準 (現値/MA5/MA25/20日レンジ/
-      # ATR) と 📐 テクニカル指標 (MA25乖離/RSI/レンジ位置/出来高倍率/ATR平常比/OBV/CMF) を numctx の
-      # 実在値から決定論で組んで本文末尾に貼る (LLM は水準・指標の数値を出さない)。
+      # 第4引数 = LLM に渡したのと同じ numctx。post-brief.sh が 📐 数値 (現在の値と確定足の指標) を numctx の
+      # 実在値から決定論で組んで投稿末尾に貼る (LLM は水準・指標の数値を出さない)。
       - name: Post brief to Slack
         run: |
           printf '%s' "$BRIEF_JSON" > "$RUNNER_TEMP/brief.json"

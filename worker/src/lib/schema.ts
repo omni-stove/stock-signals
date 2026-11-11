@@ -249,8 +249,8 @@ export const macroEvents = sqliteTable(
 // ── contexts (銘柄 living document。PK = ticker) ─────────────────────────────
 // 銘柄の living document。本文と IR/news の2カーソルを同じ行に持ち、本文の全面上書きと
 // カーソル前進を1 upsert で原子的に行う。
-//   body     … 見出し+本文を素テキスト連結したもの。judge-context が LLM へ、context-builder が
-//              再生入力としてそのまま読む (人間向け装飾を混ぜない)。
+//   body     … 見出し+本文を素テキスト連結したもの。judge-context と position-report が LLM へ、
+//              context-builder が再生入力としてそのまま読む (人間向け装飾を混ぜない)。
 //   sections … 同じ内容を [{heading, lines[]}] で持つ JSON。Slack 通知の blocks 化に使う
 //              (body からは見出し境界を機械復元できないため別に持つ)。lib/context-format.ts で両者を生成。
 export const contexts = sqliteTable("contexts", {

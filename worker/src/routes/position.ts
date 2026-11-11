@@ -1,6 +1,6 @@
 // Cloudflare Worker: ポジション事実レポート (position-report ワークフロー) 用バンドル (要 SYNC_TOKEN 認証)。
 //   GET /position-users            … 建玉を持つユーザーの userId 配列。fan-out が matrix に展開する。
-//   GET /position-context?userId=  … そのユーザーの全建玉 × 最新材料ブリーフ × 当日 close × 含み損益 (決定論)。
+//   GET /position-context?userId=  … そのユーザーの全建玉 × 最新材料ブリーフ × 銘柄コンテキスト × 当日 close × 含み損益 (決定論)。
 //                                    LLM がこれを読んで建玉に関係する材料・リスクを事実として並べる。
 //
 // 取得は D1 直読み (サブリクエストなし)。正規化は lib/position-report.ts に集約。judge-context と

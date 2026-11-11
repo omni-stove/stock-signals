@@ -6,9 +6,9 @@
 #   - skill 本体に curl を叩かせない。投稿経路 (Worker /slack/post, Bearer 認証, kind 付与,
 #     channel 省略, 503=Bot未設定→stdout フォールバック) は決定論的なのでこのスクリプトが持つ。
 #     skill は「材料・分析・強気/弱気」を構造化出力で渡すだけ。
-#   - 注目水準 (現値/MA5/MA25/20日レンジ/ATR) とテクニカル指標 (MA25乖離/RSI/レンジ位置/出来高倍率/
-#     ATR平常比/OBV/CMF) は LLM に出させず、numctx の実在値からここで決定論で 1 行ずつ組んで本文末尾に
-#     貼る。LLM が水準・指標の数値を創作する余地を残さない (LLM はテクニカルの読みだけを返す)。
+#   - 数値行 (現在の現値・出来高ペース / 確定足の MA・レンジ・RSI・ATR・出来高倍率・OBV・CMF) は LLM に
+#     出させず、numctx の実在値からここで決定論で組んで投稿末尾の context block に貼る。LLM が水準・指標の
+#     数値を創作する余地を残さない (LLM はテクニカルの読みだけを返す)。
 #   - 強制決済スコア (追証売り/踏み上げ) は eod cron が D1 に算出済み。ここで D1 から最新行を引き、
 #     stance!=none のときだけ「観測事実」として本文末尾に 1 行貼る。fetch 失敗/該当なしは何も足さない。
 #
@@ -20,8 +20,8 @@
 #   $3 = rebalance-file  (任意。前段ステップが /index-rebalance を並行取得して書いた JSON のパス。
 #                         LLM には渡さない観測事実なので numctx とは別ファイルで運ぶ。
 #                         未指定/不在/空/窓外 (note 空) なら何も貼らない)
-#   $4 = numctx-file     (任意。LLM に渡したのと同じ /judge-context JSON のパス。注目水準行・
-#                         テクニカル指標行に使う。未指定/不在ならどちらもスキップ)
+#   $4 = numctx-file     (任意。LLM に渡したのと同じ /judge-context JSON のパス。数値行に
+#                         使う。未指定/不在ならスキップ)
 # 環境変数: WORKER_URL (必須), SYNC_TOKEN (任意)。
 #
 # 出力 (stdout): "slack ok" / "slack skipped" / "no update — skip" の 1 行。
@@ -58,59 +58,60 @@ HEADLINE="$(printf '%s' "$BRIEF_JSON" | jq -r '.headline // ""')"
 [[ -n "$HEADLINE" && "$HEADLINE" != "null" ]] || {
   echo "post-brief.sh: empty headline in $BRIEF_FILE" >&2; exit 1; }
 
-# 本文行を組む: 材料 (🆕 タイトル + ・分析行) → テクニカルの読み (📈) → 強気 (🐂) → 弱気 (🐻) → 注視点 (👀)。
-# 1 行 1 section に split するので、ここでは改行区切りの 1 文字列にする。
-BODY="$(printf '%s' "$BRIEF_JSON" | jq -r '
-  ([ (.materials // [])[] | (["🆕 " + .title] + ((.analysis // []) | map("・" + .))) ] | flatten)
-  + ((.technical // []) | map("📈 " + .))
-  + ((.bull // []) | map("🐂 " + .))
-  + ((.bear // []) | map("🐻 " + .))
-  + ((.watch // []) | map("👀 " + .))
-  | join("\n")')"
+# 本文を emoji 見出しのセクションごとの文字列に組む: 🆕 新着 (・タイトル + →分析行) / 📈 テクニカル /
+# 🐂 強気 / 🐻 弱気 / 👀 注視。項目が無いセクションは出さず、1 セクション 1 section block になる。
+SECTIONS_JSON="$(printf '%s' "$BRIEF_JSON" | jq -c '
+  def group($heading): if length == 0 then empty else ([$heading] + .) | join("\n") end;
+  def bullets: map("・" + .);
+  [ ([ (.materials // [])[] | (["・" + .title] + ((.analysis // []) | map("　→ " + .))) ] | flatten | group("🆕 *新着*")),
+    ((.technical // []) | bullets | group("📈 *テクニカル*")),
+    ((.bull // []) | bullets | group("🐂 *強気*")),
+    ((.bear // []) | bullets | group("🐻 *弱気*")),
+    ((.watch // []) | bullets | group("👀 *注視*")) ]')"
+BODY="$(printf '%s' "$SECTIONS_JSON" | jq -r 'join("\n")')"
 [[ -n "$BODY" ]] || { echo "post-brief.sh: empty body in $BRIEF_FILE" >&2; exit 1; }
 
-# briefs テーブルに保存する本文 = LLM 由来の内容のみ (観測行・注目水準・指標はここから導出可能なので
-# 含めない)。position-report が建玉銘柄の最新材料としてこれを読む。
+# briefs テーブルに保存する本文 = LLM 由来の内容のみ (数値行・観測行はここから導出可能なので含めない)。
+# position-report が建玉銘柄の最新材料としてこれを読む。
 BRIEF_BODY="$BODY"
 
-# --- 注目水準・テクニカル指標 (決定論): numctx の実在値から組んで本文末尾に貼る ----
-# 現値 (prices.latest.price、closed なら daily.close) / MA5 / MA25 / 20日レンジ / ATR% のうち
-# 値があるものだけを " / " 連結。全部 null なら行ごとスキップ。
+# --- 数値行 (決定論): numctx の実在値から組み、投稿末尾の context block に貼る ----
+# 📐 数値 の見出しの下に 2 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
+# 確定足 = daily の最新確定足の指標。ザラ場中は前営業日の足なので、当日の値とは行を分ける。
+# どちらも値があるものだけを " / " 連結し、値が 1 つも無ければ行ごとスキップする。
+# daily が insufficient/stale なら確定足の行は出さない。
+NUMBERS=""
 if [[ -n "$NUMCTX_FILE" && -s "$NUMCTX_FILE" ]] && jq -e . "$NUMCTX_FILE" >/dev/null 2>&1; then
-  LEVEL_LINE="$(jq -r '
+  CURRENT_LINE="$(jq -r '
     [ ((.prices.latest.price // .daily.close) as $v | if $v != null then "現値 \($v)" else empty end),
-      (.daily.ma5  as $v | if $v != null then "MA5 \($v)" else empty end),
-      (.daily.ma25 as $v | if $v != null then "MA25 \($v)" else empty end),
-      (if (.daily.range_low_20d != null and .daily.range_high_20d != null)
-       then "20日レンジ \(.daily.range_low_20d)〜\(.daily.range_high_20d)" else empty end),
-      (.daily.atr_pct as $v | if $v != null then "ATR \($v)%" else empty end) ]
-    | if length == 0 then "" else "📏 注目水準: " + join(" / ") end' "$NUMCTX_FILE")"
-  if [[ -n "$LEVEL_LINE" ]]; then
-    BODY="${BODY}
-${LEVEL_LINE}"
-  fi
+      (.daily.vol_x_20d_intraday as $v | if $v != null then "出来高 当日ペース\($v)倍" else empty end) ]
+    | if length == 0 then "" else "現在: " + join(" / ") end' "$NUMCTX_FILE")"
 
-  # テクニカル指標 (決定論): daily の最新確定足の指標を 1 行。値があるものだけを " / " 連結。
-  # daily が insufficient/stale、または値が 1 つも無ければ行ごとスキップ。出来高はザラ場中なら
-  # 当日ペース換算 (vol_x_20d_intraday) を優先する。
-  TECH_LINE="$(jq -r '
+  CONFIRMED_LINE="$(jq -r '
+    def signed: "\(if . > 0 then "+" else "" end)\(.)";
     (.daily // {}) as $d
     | if ($d.status // "ok") != "ok" then "" else
-      [ ($d.ma25_dev_pct as $v | if $v != null then "MA25乖離 \(if $v > 0 then "+" else "" end)\($v)%" else empty end),
+      [ ($d.ma5 as $v | if $v != null then "MA5 \($v)" else empty end),
+        (if $d.ma25 != null
+         then "MA25 \($d.ma25)" + (if $d.ma25_dev_pct != null then "（乖離 \($d.ma25_dev_pct | signed)%）" else "" end)
+         elif $d.ma25_dev_pct != null then "MA25乖離 \($d.ma25_dev_pct | signed)%" else empty end),
+        (if ($d.range_low_20d != null and $d.range_high_20d != null)
+         then "20日レンジ \($d.range_low_20d)〜\($d.range_high_20d)" + (if $d.range_pct != null then "（位置 \($d.range_pct)%）" else "" end)
+         elif $d.range_pct != null then "20日レンジ位置 \($d.range_pct)%" else empty end),
         ($d.rsi_14 as $v | if $v != null then "RSI14 \($v)" else empty end),
-        ($d.range_pct as $v | if $v != null then "20日レンジ位置 \($v)%" else empty end),
-        (if $d.vol_x_20d_intraday != null then "出来高 当日ペース\($d.vol_x_20d_intraday)倍"
-         elif $d.vol_x_20d != null then "出来高 \($d.vol_x_20d)倍" else empty end),
-        ($d.atr_vs_baseline as $v | if $v != null then "ATR 平常比\($v)倍" else empty end),
+        (if $d.atr_pct != null
+         then "ATR \($d.atr_pct)%" + (if $d.atr_vs_baseline != null then "（平常比 \($d.atr_vs_baseline)倍）" else "" end)
+         elif $d.atr_vs_baseline != null then "ATR 平常比\($d.atr_vs_baseline)倍" else empty end),
+        (if $d.vol_x_20d_intraday == null and $d.vol_x_20d != null then "出来高 \($d.vol_x_20d)倍" else empty end),
         ($d.obv_trend as $v | if $v != null then "OBV \({rising:"上向き",flat:"横ばい",falling:"下向き"}[$v])" else empty end),
         ($d.cmf_20d as $v | if $v != null then "CMF20 \($v)" else empty end) ]
       | if length == 0 then ""
-        else "📐 テクニカル (\($d.latest_date // "最新") 確定足): " + join(" / ") end
+        else "\($d.latest_date // "最新") 確定足: " + join(" / ") end
       end' "$NUMCTX_FILE")"
-  if [[ -n "$TECH_LINE" ]]; then
-    BODY="${BODY}
-${TECH_LINE}"
-  fi
+
+  NUMBERS="$(printf '%s\n%s\n' "$CURRENT_LINE" "$CONFIRMED_LINE" | sed '/^$/d')"
+  NUMBERS="${NUMBERS:+📐 *数値*
+${NUMBERS}}"
 fi
 
 # --- 強制決済スコアの観測行を D1 から引く (LLM には渡さない。投稿末尾に貼るだけ) -----
@@ -132,10 +133,10 @@ if printf '%s' "$FORCED_RAW" | jq -e . >/dev/null 2>&1; then
     (.rows[0] // {}) as $r |
     if ($r.stance // "none") != "none" then ($r.summary // "") else "" end')"
 fi
-# body 末尾に観測行を足す (空なら何もしない)。ブリーフ本文と視覚的に分けるため接頭辞を付ける。
+# 観測行を足す (空なら何もしない)。ブリーフ本文と視覚的に分けるため接頭辞を付ける。
+OBSERVATIONS=""
 if [[ -n "$FORCED_LINE" ]]; then
-  BODY="${BODY}
-🧱 強制フロー観測: ${FORCED_LINE}"
+  OBSERVATIONS="🧱 強制フロー観測: ${FORCED_LINE}"
 fi
 
 # --- 指数リバランス窓の観測行 (LLM には渡さない。投稿末尾に貼るだけ) ----------
@@ -156,27 +157,30 @@ if printf '%s' "$REBAL_RAW" | jq -e . >/dev/null 2>&1; then
   REBAL_LINE="$(printf '%s' "$REBAL_RAW" | jq -r '.note // ""')"
 fi
 if [[ -n "$REBAL_LINE" ]]; then
-  BODY="${BODY}
-📅 リバランス窓: ${REBAL_LINE}"
+  OBSERVATIONS="${OBSERVATIONS:+${OBSERVATIONS}
+}📅 リバランス窓: ${REBAL_LINE}"
 fi
 
-# headline + 本文行を section blocks に組み立てる。本文は改行区切りで 1 行 1 section。
-# body は配列を改行で繋いだ後に観測行 (注目水準/テクニカル/forced/rebalance) を足したものなので、split の前に
-# gsub でリテラル "\n" を本物の改行へ正規化する (どちらで来ても同じ結果になる)。
+# headline → 本文グループ → 観測行 (1 行 1 section) → 数値行 (context block) の順に blocks を組む。
+# LLM 由来の文字列はリテラル "\n" を本物の改行へ正規化する (どちらで来ても同じ結果になる)。
 # brief_body は LLM 由来の本文素テキスト。Worker /slack/post が briefs テーブルに upsert する。
 PAYLOAD="$(jq -n \
   --arg ticker "$TICKER" \
   --arg headline "$HEADLINE" \
-  --arg body "$BODY" \
+  --argjson sections "$SECTIONS_JSON" \
+  --arg observations "$OBSERVATIONS" \
+  --arg numbers "$NUMBERS" \
   --arg brief_body "$BRIEF_BODY" \
-  '{
+  'def section: {type:"section", text:{type:"mrkdwn", text:.}};
+  {
     ticker: $ticker,
     kind: "ticker-brief",
     text: $headline,
     brief_body: $brief_body,
-    blocks: ([{type:"section", text:{type:"mrkdwn", text:$headline}}]
-      + ([$body | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0)
-          | {type:"section", text:{type:"mrkdwn", text:.}}]))
+    blocks: ([$headline | section]
+      + ($sections | map(gsub("\\\\n"; "\n") | section))
+      + [$observations | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0) | section]
+      + (if $numbers == "" then [] else [{type:"context", elements:[{type:"mrkdwn", text:$numbers}]}] end))
   }')"
 
 # テスト/オフライン用の注入口: POST_BRIEF_DRYRUN=1 で curl を叩かず、組み立てた payload を
@@ -197,6 +201,6 @@ HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
 if [[ "$HTTP_CODE" == "200" ]]; then
   echo "slack ok"
 else
-  printf '%s\n%s\n' "$HEADLINE" "$BODY"
+  printf '%s\n' "$HEADLINE" "$BODY" "$OBSERVATIONS" "$NUMBERS" | sed '/^$/d'
   echo "slack skipped (HTTP ${HTTP_CODE})"
 fi

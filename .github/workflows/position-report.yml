@@ -1,10 +1,10 @@
-# ユーザーの建玉 × 最新材料ブリーフ (briefs) × 当日 close → Claude Code Action でポジション事実レポート → 各ユーザーへ DM。
+# ユーザーの建玉 × 最新材料ブリーフ (briefs) × 銘柄コンテキスト (contexts) × 当日 close → Claude Code Action でポジション事実レポート → 各ユーザーへ DM。
 #
 # 引け後 (eod cron) に Worker が建玉を持つユーザーがいれば repository_dispatch (event_type=position-report)
 # を 1 回撃つ。このワークフローはまず fan-out ジョブで Worker /position-users から userId 配列を引き、
 # report ジョブを userId ごとに matrix 展開する (max-parallel: 1 = 1 ユーザーずつ直列、OAuth レート安全側)。
 #
-# 各 report ジョブは Worker /position-context?userId= で「全建玉 × 最新材料ブリーフ × close × 含み損益」
+# 各 report ジョブは Worker /position-context?userId= で「全建玉 × 最新材料ブリーフ × 銘柄コンテキスト × close × 含み損益」
 # を 1 JSON で受け取り (数値はすべて Worker 側=決定論で算出済み)、レポートのルールを prompt にベタ書きした
 # Claude Code Action がそれを @ で読んで、ポートフォリオの事実 1 行 + 各建玉に関係する材料・リスクを
 # structured_output で返す。売買アクション (利確/損切り/増し玉) や緊急度は出さない — 判断は読み手が行う。
@@ -75,7 +75,7 @@ jobs:
       # Action 実行時は CLAUDE.md / AGENTS.md の指示がレポートの邪魔になりうるので退避する (共通アクション)。
       - uses: ./.github/actions/stash-claude-md
 
-      # ユーザーの全建玉 × 最新材料ブリーフ × 当日 close × 含み損益を Worker /position-context が
+      # ユーザーの全建玉 × 最新材料ブリーフ × 銘柄コンテキスト × 当日 close × 含み損益を Worker /position-context が
       # 1 call で正規化して返す。数値はすべて Worker 側 (決定論的) で算出済み。skill には curl を
       # 叩かせず材料の紐付けだけをさせる。userId が実在しない / 建玉ゼロなら 404 でここが落ち、当該
       # ユーザーはスキップされる (fail-fast: false なので他ユーザーには波及しない)。JSON は特殊文字を
@@ -105,15 +105,16 @@ jobs:
           prompt: |
             # position-report — 1 ユーザーの保有ポジション事実レポート
 
-            You read one user's holdings, each tagged with that name's latest 材料ブリーフ and the day's
-            close, and return the **facts that bear on each position** — the fresh materials and standing
+            You read one user's holdings, each tagged with that name's latest 材料ブリーフ, its standing
+            context, and the day's close, and return the **facts that bear on each position** — the fresh materials and standing
             risks a holder of this name should know tonight. **Never output an action or a verdict**: no
             利確/損切り/増し玉/継続, no urgency grade, no "should". The deterministic facts (建値, 現値,
             含み損益) are rendered by the posting step — do not restate them; add only what the numbers
             alone don't say.
 
             Report on what you can see now — the brief, 含み損益, account type — never hindsight. Do not
-            invent a market view; when a position has no brief (`brief: null`), give it an empty `notes`.
+            invent a market view; when a position has neither `brief` nor `context`, give it an empty
+            `notes`.
 
             ## Inputs
 
@@ -129,13 +130,15 @@ jobs:
               要約と影響分析), `briefedAt` = when it was saved. Lead on it for `notes`; an old `briefedAt`
               (days back) means the materials may predate today's tape — say so rather than presenting them
               as fresh.
+            - **`context`** (null when none): that name's standing context. Use it for standing risks and
+              drivers `brief` does not cover; never present it as fresh.
 
             ## Writing `notes` (per position)
 
-            0–3 lines per holding: which fresh material or risk in the brief bears on *this* 建玉 and how
+            0–3 lines per holding: which fresh material in `brief` or standing risk in `context` bears on *this* 建玉 and how
             it relates to the position's situation (信用 with a loss makes a 需給 risk more relevant; a
             large 含み益 makes a fading driver worth naming). Facts and their relevance only. A position
-            whose brief adds nothing gets an empty array — do not pad.
+            whose `brief` and `context` add nothing get an empty array — do not pad.
 
             ## Writing `portfolio` (one string)
 

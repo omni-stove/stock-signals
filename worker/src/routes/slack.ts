@@ -33,7 +33,12 @@ import {
 	slackThreads,
 	userProfiles,
 } from "../lib/schema";
-import { addReaction, openView, postMessage } from "../lib/slack";
+import {
+	addReaction,
+	openView,
+	postMessage,
+	postWithDetails,
+} from "../lib/slack";
 import {
 	ACTION_ID,
 	BLOCK_ID,
@@ -102,7 +107,7 @@ async function fireContext(env: Env, ticker: string): Promise<string> {
 	if (!row?.body)
 		return `${ticker} の living context はまだありません (IR/ニュース取得で生成されます)。`;
 
-	// sections があれば update 通知と同じ blocks で投稿し、見え方を揃える。
+	// sections があれば update 通知と同じくサマリー + スレッド詳細で投稿し、見え方を揃える。
 	// 旧データ (sections null) は素テキスト body にフォールバック。
 	const parsed = row.sections
 		? (JSON.parse(row.sections) as {
@@ -111,15 +116,15 @@ async function fireContext(env: Env, ticker: string): Promise<string> {
 			})
 		: null;
 	const posted = parsed
-		? await postMessage(env, {
+		? await postWithDetails(env, {
 				channel,
 				...sectionsToBlocks(parsed.title, parsed.sections),
 			})
-		: await postMessage(env, {
+		: await postWithDetails(env, {
 				channel,
 				text: `:page_facing_up: *${ticker}* の living context (更新 ${row.updatedAt})\n\n${row.body}`,
 			});
-	return posted
+	return posted?.detailsPosted
 		? `📄 ${ticker} の living context を context チャンネルへ流しました。`
 		: `${ticker} の context 投稿に失敗しました (SLACK_BOT_TOKEN / chat:write を確認してください)。`;
 }

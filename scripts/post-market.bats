@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # scripts/post-market.bats
-# post-market.sh が組み立てる Slack ペイロード (headline + 本文の section blocks) を検証する。
+# post-market.sh が組み立てる Slack ペイロード (親 = 太字の headline、details = 本文の section blocks) を検証する。
 #
 # 実行: pnpm run test:sh
 #
@@ -69,15 +69,17 @@ payload() {
 
 # === payload 構造 ===========================================================
 
-# kind / text / ticker(=market) が載り、先頭 section は headline
-@test "payload: carries market-brief kind, market ticker, and headline as first block" {
+# kind / text / ticker(=market) が載り、親の block は太字の headline だけ
+@test "payload: carries market-brief kind, market ticker, and bold headline as the only parent block" {
   run_pm "HEAD line" "one line body"
   [ "$status" -eq 0 ]
   local p; p="$(payload)"
   [ "$(printf '%s' "$p" | jq -r '.kind')" = "market-brief" ]
   [ "$(printf '%s' "$p" | jq -r '.ticker')" = "market" ]
   [ "$(printf '%s' "$p" | jq -r '.text')" = "HEAD line" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[0].text.text')" = "HEAD line" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 1 ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[0].text.text')" = "*HEAD line*" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.text')" = "one line body" ]
   printf '%s\n' "$output" | grep -q "slack skipped"
 }
 
@@ -87,16 +89,24 @@ payload() {
   run_pm "HEAD" 'first.\nsecond.\nthird.'
   [ "$status" -eq 0 ]
   local p; p="$(payload)"
-  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 4 ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "first." ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[3].text.text')" = "third." ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks | length')" -eq 3 ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "first." ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[2].text.text')" = "third." ]
 }
 
 @test "newline: blank lines are dropped" {
   run_pm "HEAD" 'a\n\n\nb'
   [ "$status" -eq 0 ]
   local p; p="$(payload)"
-  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 3 ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "a" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[2].text.text')" = "b" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks | length')" -eq 2 ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "a" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[1].text.text')" = "b" ]
+}
+
+# 本文が空なら details を付けない (空のスレッド返信を出さない)
+@test "details: empty body omits details" {
+  jq -n '{headline:"HEAD", body:[]}' > "$BATS_TEST_TMPDIR/m.json"
+  run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$BATS_TEST_TMPDIR/m.json" 2>&1
+  [ "$status" -eq 0 ]
+  [ "$(payload | jq -r 'has("details")')" = "false" ]
 }

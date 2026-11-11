@@ -86,21 +86,25 @@ payload() {
 
 # === crash mode =============================================================
 
-# ticker/kind が載り、ヘッダ (text + 先頭ブロック) を script が組み、N は配列長-1
-@test "crash: script builds header and prepends header block" {
+# ticker/kind が載り、親 = 太字ヘッダ + 総括、details = scenario。N は配列長-1
+@test "crash: parent carries bold header and summary, details carry scenarios" {
   # scenario 2 ブロック + 総括 1 = 3 要素 → N=2。structured_output {blocks:[...]} で渡す。
   printf '%s' \
-    '{"blocks":[{"type":"section","text":{"type":"mrkdwn","text":"s1"}},{"type":"section","text":{"type":"mrkdwn","text":"s2"}},{"type":"section","text":{"type":"mrkdwn","text":"総括"}}]}' \
+    '{"blocks":[{"type":"section","text":{"type":"mrkdwn","text":"s1\nきっかけ"}},{"type":"section","text":{"type":"mrkdwn","text":"*s2*"}},{"type":"section","text":{"type":"mrkdwn","text":"総括\n本文"}}]}' \
     >"$BATS_TEST_TMPDIR/blocks.json"
   run_pr crash 285A "キオクシア" "$BATS_TEST_TMPDIR/blocks.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload)"
   [ "$(printf '%s' "$p" | jq -r '.ticker')" = "285A" ]
   [ "$(printf '%s' "$p" | jq -r '.kind')" = "crash-scenario" ]
-  [ "$(printf '%s' "$p" | jq -r '.text')" = "⚠️ 285A キオクシア 暴落プリモーテム (2 scenarios)" ]
-  # 先頭にヘッダブロックが差し込まれ、渡した s1 は 2 番目になる
-  [ "$(printf '%s' "$p" | jq -r '.blocks[0].text.text')" = "⚠️ 285A キオクシア 暴落プリモーテム (2 scenarios)" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "s1" ]
+  [ "$(printf '%s' "$p" | jq -r '.text')" = "$(printf '⚠️ 285A キオクシア 暴落プリモーテム (2 scenarios)\n*総括*\n本文')" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[0].text.text')" = "*⚠️ 285A キオクシア 暴落プリモーテム (2 scenarios)*" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "$(printf '*総括*\n本文')" ]
+  # scenario は 1 行目だけ太字にして details に載る (LLM が付けた * は二重にしない)
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks | length')" -eq 2 ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '*s1*\nきっかけ')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[1].text.text')" = "*s2*" ]
   # channel は付けない (Worker が SLACK_REPLY_CHANNEL から埋める)
   [ "$(printf '%s' "$p" | jq -r 'has("channel")')" = "false" ]
 }

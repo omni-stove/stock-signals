@@ -49,6 +49,35 @@ export async function postMessage(
 	}
 }
 
+// スレッドにぶら下げる詳細投稿。text は通知プレビュー/検索と conversations.replies に載る本文。
+export type SlackDetails = { text: string; blocks?: unknown[] };
+
+// サマリーを親として投稿し、details があればその親のスレッドに 1 通で返信する。
+// 親の投稿に失敗したら null を返し、details は投稿しない。
+// detailsPosted は details の投稿に成功したか (details が無ければ true)。
+export async function postWithDetails(
+	env: Env,
+	args: {
+		channel: string;
+		text: string;
+		blocks?: unknown[];
+		thread_ts?: string;
+		details?: SlackDetails;
+	},
+): Promise<{ ts: string; channel: string; detailsPosted: boolean } | null> {
+	const { details, ...parent } = args;
+	const posted = await postMessage(env, parent);
+	if (!posted) return null;
+	if (!details) return { ...posted, detailsPosted: true };
+	const reply = await postMessage(env, {
+		channel: posted.channel,
+		text: details.text,
+		blocks: details.blocks,
+		thread_ts: args.thread_ts ?? posted.ts,
+	});
+	return { ...posted, detailsPosted: reply !== null };
+}
+
 // 指定メッセージに絵文字リアクションを付ける (reactions.add)。スレッド返信を受け付けた
 // 直後に「処理中」を可視化する用途。要 reactions:write スコープ。channel + ts (返信メッセージ
 // の ts) で対象を指定する。best-effort: 失敗/未設定でも呼び出し側を止めない。
@@ -420,6 +449,87 @@ if (import.meta.vitest) {
 			const copy = [...base];
 			appendUserReply(base, "x", "102");
 			expect(base).toEqual(copy);
+		});
+	});
+
+	describe("postWithDetails", () => {
+		const env = { SLACK_BOT_TOKEN: "xoxb-test" } as Env;
+		const okResponse = (ts: string) => ({
+			json: async () => ({ ok: true, ts, channel: "C1" }),
+		});
+		const ngResponse = { json: async () => ({ ok: false, error: "x" }) };
+		const bodyOf = (mock: ReturnType<typeof vi.fn>, i: number) =>
+			JSON.parse(mock.mock.calls[i][1].body as string);
+
+		it("親を投稿し、details を親の ts のスレッドに返信する", async () => {
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(okResponse("100.1"))
+				.mockResolvedValueOnce(okResponse("100.2"));
+			vi.stubGlobal("fetch", fetchMock);
+			const posted = await postWithDetails(env, {
+				channel: "C1",
+				text: "summary",
+				details: { text: "detail", blocks: [{ type: "divider" }] },
+			});
+			expect(posted).toEqual({
+				ts: "100.1",
+				channel: "C1",
+				detailsPosted: true,
+			});
+			expect(bodyOf(fetchMock, 0).text).toBe("summary");
+			expect(bodyOf(fetchMock, 0).thread_ts).toBeUndefined();
+			expect(bodyOf(fetchMock, 1)).toEqual({
+				channel: "C1",
+				text: "detail",
+				blocks: [{ type: "divider" }],
+				thread_ts: "100.1",
+			});
+			vi.unstubAllGlobals();
+		});
+
+		it("details が無ければ親だけ投稿する", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(okResponse("100.1"));
+			vi.stubGlobal("fetch", fetchMock);
+			const posted = await postWithDetails(env, {
+				channel: "C1",
+				text: "summary",
+			});
+			expect(posted?.detailsPosted).toBe(true);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			vi.unstubAllGlobals();
+		});
+
+		it("親の投稿に失敗したら details を投稿せず null を返す", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(ngResponse);
+			vi.stubGlobal("fetch", fetchMock);
+			const posted = await postWithDetails(env, {
+				channel: "C1",
+				text: "summary",
+				details: { text: "detail" },
+			});
+			expect(posted).toBeNull();
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			vi.unstubAllGlobals();
+		});
+
+		it("details の投稿に失敗したら親の ts と detailsPosted=false を返す", async () => {
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(okResponse("100.1"))
+				.mockResolvedValueOnce(ngResponse);
+			vi.stubGlobal("fetch", fetchMock);
+			const posted = await postWithDetails(env, {
+				channel: "C1",
+				text: "summary",
+				details: { text: "detail" },
+			});
+			expect(posted).toEqual({
+				ts: "100.1",
+				channel: "C1",
+				detailsPosted: false,
+			});
+			vi.unstubAllGlobals();
 		});
 	});
 

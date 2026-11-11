@@ -24,29 +24,52 @@ export function sectionsToText(
 	return parts.join("\n\n");
 }
 
-// sections を Slack blocks に組み立てる。先頭に header、各セクションは divider + section で
-// 視覚的に分離する (見出しを *太字*、本文を 1 つの section テキストに)。
-// 通知プレビュー/検索用の fallback text も text として併せて返す (postMessage にそのまま展開できる形)。
+// サマリーに最新の 1 行を載せるセクションの見出し (context-builder の exact heading)。
+const LATEST_TOPIC_HEADING = "直近の重大トピック";
+
+// sections を Slack の親投稿 + スレッド詳細に組み立てる (postWithDetails にそのまま展開できる形)。
+// 親 = header + 最新トピック 1 行のサマリー。details = 全セクション (見出しを *太字*、
+// セクション間は divider)。
 export function sectionsToBlocks(
 	title: string,
 	sections: ContextSection[],
-): { blocks: unknown[]; text: string } {
+): {
+	blocks: unknown[];
+	text: string;
+	details: { blocks: unknown[]; text: string };
+} {
+	const latest = sections.find((s) => s.heading === LATEST_TOPIC_HEADING)
+		?.lines[0];
 	const blocks: unknown[] = [
 		{
 			type: "header",
 			text: { type: "plain_text", text: title, emoji: true },
 		},
+		...(latest
+			? [
+					{
+						type: "section",
+						text: { type: "mrkdwn", text: `*最新トピック*\n${latest}` },
+					},
+				]
+			: []),
 	];
-	for (const s of sections) {
-		blocks.push({ type: "divider" });
+	const detailBlocks = sections.flatMap((s, i) => {
 		const bodyText = s.lines.length > 0 ? s.lines.join("\n") : "—";
-		blocks.push({
+		const section = {
 			type: "section",
 			text: { type: "mrkdwn", text: `*${s.heading}*\n${bodyText}` },
-		});
-	}
-	const text = sectionsToText(title, sections);
-	return { blocks, text };
+		};
+		return i === 0 ? [section] : [{ type: "divider" }, section];
+	});
+	return {
+		blocks,
+		text: latest ? `${title}\n${latest}` : title,
+		details: {
+			blocks: detailBlocks,
+			text: sectionsToText(title, sections),
+		},
+	};
 }
 
 if (import.meta.vitest) {
@@ -82,21 +105,41 @@ if (import.meta.vitest) {
 	});
 
 	describe("sectionsToBlocks", () => {
-		it("header + 各セクション (divider + section) を組む", () => {
+		it("親は header + 最新トピック 1 行のサマリーにする", () => {
 			const { blocks, text } = sectionsToBlocks(title, sections);
+			expect(blocks).toHaveLength(2);
 			expect((blocks[0] as { type: string }).type).toBe("header");
 			expect((blocks[0] as { text: { text: string } }).text.text).toBe(title);
-			// セクション 3 つ → divider + section が 3 組。
-			expect(
-				blocks.filter((b) => (b as { type: string }).type === "divider"),
-			).toHaveLength(3);
-			expect(
-				blocks.filter((b) => (b as { type: string }).type === "section"),
-			).toHaveLength(3);
+			expect((blocks[1] as { text: { text: string } }).text.text).toBe(
+				"*最新トピック*\n2026-06-28: 増産発表 — 数週間は需給逼迫",
+			);
+			expect(text).toBe(`${title}\n2026-06-28: 増産発表 — 数週間は需給逼迫`);
+		});
+
+		it("最新トピックが無ければ親は header だけにする", () => {
+			const { blocks, text } = sectionsToBlocks(title, [
+				{ heading: "直近の重大トピック", lines: [] },
+			]);
+			expect(blocks).toHaveLength(1);
+			expect(text).toBe(title);
+		});
+
+		it("details は全セクションを divider 区切りで組む", () => {
+			const { details } = sectionsToBlocks(title, sections);
+			// セクション 3 つ → section 3 個の間に divider 2 個。
+			expect(details.blocks.map((b) => (b as { type: string }).type)).toEqual([
+				"section",
+				"divider",
+				"section",
+				"divider",
+				"section",
+			]);
 			// 見出しは太字、空セクションは — を出す。
-			const last = blocks[blocks.length - 1] as { text: { text: string } };
+			const last = details.blocks[details.blocks.length - 1] as {
+				text: { text: string };
+			};
 			expect(last.text.text).toBe("*証券会社レーティング*\n—");
-			expect(text).toBe(sectionsToText(title, sections));
+			expect(details.text).toBe(sectionsToText(title, sections));
 		});
 	});
 }

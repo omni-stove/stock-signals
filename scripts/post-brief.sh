@@ -6,8 +6,10 @@
 #   - skill 本体に curl を叩かせない。投稿経路 (Worker /slack/post, Bearer 認証, kind 付与,
 #     channel 省略, 503=Bot未設定→stdout フォールバック) は決定論的なのでこのスクリプトが持つ。
 #     skill は「材料・分析・強気/弱気」を構造化出力で渡すだけ。
+#   - 太字の headline と数値行をサマリーとして親に投稿し、本文・観測行は details として親のスレッドに
+#     1 通でぶら下げる (チャンネルにはサマリーだけが流れる)。
 #   - 数値行 (現在の現値・出来高ペース / 確定足の MA・レンジ・RSI・ATR・出来高倍率・OBV・CMF) は LLM に
-#     出させず、numctx の実在値からここで決定論で組んで投稿末尾の context block に貼る。LLM が水準・指標の
+#     出させず、numctx の実在値からここで決定論で組んで親の context block に貼る。LLM が水準・指標の
 #     数値を創作する余地を残さない (LLM はテクニカルの読みだけを返す)。
 #   - 強制決済スコア (追証売り/踏み上げ) は eod cron が D1 に算出済み。ここで D1 から最新行を引き、
 #     stance!=none のときだけ「観測事実」として本文末尾に 1 行貼る。fetch 失敗/該当なしは何も足さない。
@@ -75,7 +77,7 @@ BODY="$(printf '%s' "$SECTIONS_JSON" | jq -r 'join("\n")')"
 # position-report が建玉銘柄の最新材料としてこれを読む。
 BRIEF_BODY="$BODY"
 
-# --- 数値行 (決定論): numctx の実在値から組み、投稿末尾の context block に貼る ----
+# --- 数値行 (決定論): numctx の実在値から組み、親の context block に貼る ----
 # 📐 数値 の見出しの下に 2 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
 # 確定足 = daily の最新確定足の指標。ザラ場中は前営業日の足なので、当日の値とは行を分ける。
 # どちらも値があるものだけを " / " 連結し、値が 1 つも無ければ行ごとスキップする。
@@ -136,7 +138,7 @@ fi
 # 観測行を足す (空なら何もしない)。ブリーフ本文と視覚的に分けるため接頭辞を付ける。
 OBSERVATIONS=""
 if [[ -n "$FORCED_LINE" ]]; then
-  OBSERVATIONS="🧱 強制フロー観測: ${FORCED_LINE}"
+  OBSERVATIONS="🧱 *強制フロー観測*: ${FORCED_LINE}"
 fi
 
 # --- 指数リバランス窓の観測行 (LLM には渡さない。投稿末尾に貼るだけ) ----------
@@ -158,12 +160,13 @@ if printf '%s' "$REBAL_RAW" | jq -e . >/dev/null 2>&1; then
 fi
 if [[ -n "$REBAL_LINE" ]]; then
   OBSERVATIONS="${OBSERVATIONS:+${OBSERVATIONS}
-}📅 リバランス窓: ${REBAL_LINE}"
+}📅 *リバランス窓*: ${REBAL_LINE}"
 fi
 
-# headline → 本文グループ → 観測行 (1 行 1 section) → 数値行 (context block) の順に blocks を組む。
+# 親 = 太字の headline → 数値行 (context block)。details = 本文グループ → 観測行 (1 行 1 section)。
 # LLM 由来の文字列はリテラル "\n" を本物の改行へ正規化する (どちらで来ても同じ結果になる)。
 # brief_body は LLM 由来の本文素テキスト。Worker /slack/post が briefs テーブルに upsert する。
+DETAILS_TEXT="$(printf '%s\n' "$BODY" "$OBSERVATIONS" | sed '/^$/d')"
 PAYLOAD="$(jq -n \
   --arg ticker "$TICKER" \
   --arg headline "$HEADLINE" \
@@ -171,16 +174,21 @@ PAYLOAD="$(jq -n \
   --arg observations "$OBSERVATIONS" \
   --arg numbers "$NUMBERS" \
   --arg brief_body "$BRIEF_BODY" \
+  --arg details_text "$DETAILS_TEXT" \
   'def section: {type:"section", text:{type:"mrkdwn", text:.}};
+  def bold: "*" + gsub("\\*"; "") + "*";
   {
     ticker: $ticker,
     kind: "ticker-brief",
     text: $headline,
     brief_body: $brief_body,
-    blocks: ([$headline | section]
-      + ($sections | map(gsub("\\\\n"; "\n") | section))
-      + [$observations | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0) | section]
-      + (if $numbers == "" then [] else [{type:"context", elements:[{type:"mrkdwn", text:$numbers}]}] end))
+    blocks: ([$headline | bold | section]
+      + (if $numbers == "" then [] else [{type:"context", elements:[{type:"mrkdwn", text:$numbers}]}] end)),
+    details: {
+      text: $details_text,
+      blocks: (($sections | map(gsub("\\\\n"; "\n") | section))
+        + [$observations | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0) | section])
+    }
   }')"
 
 # テスト/オフライン用の注入口: POST_BRIEF_DRYRUN=1 で curl を叩かず、組み立てた payload を
@@ -201,6 +209,6 @@ HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
 if [[ "$HTTP_CODE" == "200" ]]; then
   echo "slack ok"
 else
-  printf '%s\n' "$HEADLINE" "$BODY" "$OBSERVATIONS" "$NUMBERS" | sed '/^$/d'
+  printf '%s\n' "$HEADLINE" "$NUMBERS" "$DETAILS_TEXT" | sed '/^$/d'
   echo "slack skipped (HTTP ${HTTP_CODE})"
 fi

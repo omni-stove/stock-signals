@@ -245,7 +245,7 @@ jobs:
       # (curl/jq/blocks 組み立て/フォールバックは script が持つ)。第2引数 = ブリーフ JSON、
       # 第3引数 = 前段で並行取得した指数リバランス窓の JSON (LLM には渡していない観測事実)。
       # 第4引数 = LLM に渡したのと同じ numctx。post-brief.sh が 📐 数値 (現在の値と確定足の指標) を numctx の
-      # 実在値から決定論で組んで投稿末尾に貼る (LLM は水準・指標の数値を出さない)。
+      # 実在値から決定論で組んでサマリーの見出しの下に貼る (LLM は水準・指標の数値を出さない)。
       - name: Post brief to Slack
         run: |
           printf '%s' "$BRIEF_JSON" > "$RUNNER_TEMP/brief.json"

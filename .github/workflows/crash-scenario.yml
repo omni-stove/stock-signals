@@ -164,7 +164,7 @@ jobs:
               "type":"object","additionalProperties":false,
               "required":["blocks"],
               "properties":{
-                "blocks":{"type":"array","minItems":2,"description":"scenario + 総括 の Slack section 配列。1 ブロック=1 scenario、総括ブロックを最後に。ヘッダブロックは含めない。各 scenario ブロックは次の行で始める (verbatim、[固有/マクロ] と 確度:<高/中/低> は exact token): <順位>. <名前> [固有/マクロ] 確度:<高/中/低> — 続けて きっかけ / 先行サイン / 想定下落 / 防御 の行",
+                "blocks":{"type":"array","minItems":2,"description":"scenario + 総括 の Slack section 配列。1 ブロック=1 scenario、総括ブロックを最後に。ヘッダブロックは含めない。各ブロックの 1 行目は見出しで、投稿時に太字になるので * を付けない。総括ブロックの 1 行目は 総括 だけにし、本文は 2 行目から。各 scenario ブロックは次の行で始める (verbatim、[固有/マクロ] と 確度:<高/中/低> は exact token): <順位>. <名前> [固有/マクロ] 確度:<高/中/低> — 続けて きっかけ / 先行サイン / 想定下落 / 防御 の行",
                   "items":{"type":"object","additionalProperties":false,"required":["type","text"],
                     "properties":{
                       "type":{"const":"section"},

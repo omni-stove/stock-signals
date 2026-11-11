@@ -4,6 +4,8 @@
 # スレッド返信) をまとめる。skill には curl を叩かせない。skill は中身を出力ファイルに書くだけで、
 # 投稿はこのスクリプト (= workflow の後続ステップ) が行う:
 #   - crash: ticker / name / scenario+総括 blocks をファイルで (ヘッダと配列長 N は script が組む)。
+#     親 = 太字のヘッダ + 総括のサマリー、details = 各 scenario を親のスレッドに 1 通でぶら下げる。
+#     各ブロックの 1 行目は見出しとして太字にする。
 #   - reply: thread-json のパスと返信本文ファイル (channel/thread_ts は script が抜く)。
 #
 # 使い方:
@@ -35,10 +37,19 @@ case "$MODE" in
       echo "post-reply.sh: signal-file lacks blocks array: $SIGNAL_FILE" >&2; exit 1; }
     PAYLOAD="$(jq \
       --arg ticker "$TICKER" --arg name "$NAME" \
-      '.blocks as $blocks
-       | def hdr: "⚠️ \($ticker) \($name) 暴落プリモーテム (\(($blocks|length)-1) scenarios)";
-         {ticker:$ticker, kind:"crash-scenario", text:hdr,
-          blocks:([{type:"section",text:{type:"mrkdwn",text:hdr}}] + $blocks)}' "$SIGNAL_FILE")"
+      'def bold: "*" + gsub("\\*"; "") + "*";
+       def bold_heading: .text.text |= (gsub("\\\\n"; "\n") | split("\n")
+         | ([.[0] | bold] + .[1:]) | join("\n"));
+       (.blocks | map(bold_heading)) as $blocks
+       | ($blocks[:-1]) as $scenarios
+       | ($blocks[-1:]) as $summary
+       | "⚠️ \($ticker) \($name) 暴落プリモーテム (\(($blocks|length)-1) scenarios)" as $hdr
+       | {ticker:$ticker, kind:"crash-scenario",
+          text:([$hdr] + ($summary | map(.text.text)) | join("\n")),
+          blocks:([{type:"section",text:{type:"mrkdwn",text:($hdr | bold)}}] + $summary)}
+         + (if ($scenarios | length) > 0
+            then {details:{text:($scenarios | map(.text.text) | join("\n\n")), blocks:$scenarios}}
+            else {} end)' "$SIGNAL_FILE")"
     ;;
   reply)
     THREAD_JSON="${2:?usage: post-reply.sh reply <thread-json> <signal-file>}"
@@ -69,6 +80,6 @@ if curl -sf -X POST "${WORKER_URL%/}/slack/post" \
     "${AUTH[@]}" -H 'Content-Type: application/json' -d "$PAYLOAD" >/dev/null 2>&1; then
   echo "slack ok"
 else
-  printf '%s\n' "$PAYLOAD" | jq -r '.text // (.blocks | tostring)'
+  printf '%s\n' "$PAYLOAD" | jq -r '[.text, (.details.text // empty)] | join("\n")'
   echo "slack skipped"
 fi

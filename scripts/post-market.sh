@@ -6,8 +6,8 @@
 #   - skill 本体に curl を叩かせない。投稿経路 (Worker /slack/post, Bearer 認証, kind 付与,
 #     503=Bot未設定→stdout フォールバック) は決定論的なのでこのスクリプトが持つ。
 #     skill は「ヘッドライン・本文行」を引数で渡すだけ。
-#   - ブリーフは銘柄非依存なので ticker は固定で "market"。blocks は本文行 (改行区切り) を
-#     section に詰めるだけ。
+#   - ブリーフは銘柄非依存なので ticker は固定で "market"。太字の headline をサマリーとして親に投稿し、
+#     本文行 (改行区切り) は section に詰めて details として親のスレッドに 1 通でぶら下げる。
 #
 # 入力:
 #   $1 = signal-file (必須。market-brief スキルの構造化出力 (structured_output) を書いた JSON の
@@ -35,22 +35,26 @@ HEADLINE="$(printf '%s' "$SIGNAL_JSON" | jq -r '.headline // ""')"
 BODY="$(printf '%s' "$SIGNAL_JSON" | jq -r '(.body // []) | join("\n")')"
 [[ -n "$HEADLINE" ]] || { echo "post-market.sh: empty headline in $SIGNAL_FILE" >&2; exit 1; }
 
-# headline + 本文行を section blocks に組み立てる。リテラル "\n" も実改行も
+# 親 = 太字の headline、details = 本文行の section blocks。リテラル "\n" も実改行も
 # どちらで渡されても同じになるよう gsub で正規化してから split する。
 # brief_body は本文素テキスト。Worker /slack/post が briefs (ticker='market') に upsert し、
 # judge-context が market_brief として個別ブリーフに同梱する。
 PAYLOAD="$(jq -n \
   --arg headline "$HEADLINE" \
   --arg body "$BODY" \
-  '{
-    ticker: "market",
-    kind: "market-brief",
-    text: $headline,
-    brief_body: $body,
-    blocks: ([{type:"section", text:{type:"mrkdwn", text:$headline}}]
-      + ([$body | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0)
-          | {type:"section", text:{type:"mrkdwn", text:.}}]))
-  }')"
+  'def section: {type:"section", text:{type:"mrkdwn", text:.}};
+  def bold: "*" + gsub("\\*"; "") + "*";
+  [$body | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0)] as $lines
+  | {
+      ticker: "market",
+      kind: "market-brief",
+      text: $headline,
+      brief_body: $body,
+      blocks: [$headline | bold | section]
+    }
+    + (if ($lines | length) > 0
+       then {details: {text: ($lines | join("\n")), blocks: ($lines | map(section))}}
+       else {} end)')"
 
 if [[ "${POST_MARKET_DRYRUN:-}" == "1" ]]; then
   printf 'POST %s %s\n' "${WORKER_URL%/}/slack/post" "$(jq -c . <<<"$PAYLOAD")" >&2

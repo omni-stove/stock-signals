@@ -10,7 +10,7 @@ import { checkIndexRebalance } from "../lib/event-context";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
 import { resolveMarketPhase } from "../lib/market-phase";
 import { briefs, slackThreads } from "../lib/schema";
-import { notifySlack, postMessage } from "../lib/slack";
+import { notifySlack, postWithDetails, type SlackDetails } from "../lib/slack";
 
 export const misc = new Hono<{ Bindings: Env }>();
 
@@ -72,11 +72,13 @@ misc.get("/test-slack", async (c) => {
 // POST /slack/post : Bot トークンで Slack に投稿する (要 SYNC_TOKEN 認証)。
 // webhook と違い ts が取れるので、解析結果の投稿 (thread_ts 無し) は slack_threads に控え、
 // その ts へのスレッド返信から銘柄を復元できるようにする (返信対話の起点)。
-//   body(JSON): { channel, ticker, kind, text, blocks?, context_sections?, thread_ts? }
+//   body(JSON): { channel, ticker, kind, text, blocks?, details?, context_sections?, thread_ts? }
 //     - thread_ts 無し = 新規スレッドの親 (解析結果)。投稿後 ts を slack_threads に INSERT。
 //     - thread_ts 有り = 返答 (slack-reply)。同スレッドにぶら下げるだけ (記録しない)。
-//     - context_sections (={title, sections}) があると Worker 側で header/divider/section の blocks に
-//       組んで投稿する (銘柄コンテキストの見やすい区切り投稿。text は組まれた fallback を使う)。
+//     - details (={text, blocks?}) = 親のサマリーを補足する詳細。親のスレッドに 1 通で返信する。
+//       親は投稿できて details だけ失敗したら、briefs / slack_threads を保存したうえで 502 を返す。
+//     - context_sections (={title, sections}) があると Worker 側でサマリーの親と全セクションの
+//       details に組んで投稿する。
 //   channel 省略時は SLACK_REPLY_CHANNEL を使う。SLACK_BOT_TOKEN 未設定なら 503。
 misc.post("/slack/post", async (c) => {
 	const env = c.env;
@@ -94,6 +96,7 @@ misc.post("/slack/post", async (c) => {
 		kind?: string;
 		text?: string;
 		blocks?: unknown[];
+		details?: SlackDetails;
 		context_sections?: { title: string; sections: ContextSection[] };
 		thread_ts?: string;
 		// ブリーフ本文の素テキスト (post-brief.sh / post-market.sh が載せる)。
@@ -107,6 +110,7 @@ misc.post("/slack/post", async (c) => {
 		: null;
 	const text = rendered?.text ?? b.text;
 	const blocks = rendered?.blocks ?? b.blocks;
+	const details = rendered?.details ?? b.details;
 	if (!channel || !text) {
 		throw new HTTPException(400, {
 			res: Response.json(
@@ -120,11 +124,12 @@ misc.post("/slack/post", async (c) => {
 		});
 	}
 
-	const posted = await postMessage(env, {
+	const posted = await postWithDetails(env, {
 		channel,
 		text,
 		blocks,
 		thread_ts: b.thread_ts,
+		details,
 	});
 	if (!posted) {
 		throw new HTTPException(502, {
@@ -173,6 +178,19 @@ misc.post("/slack/post", async (c) => {
 				set: { ticker: b.ticker, kind, channel: posted.channel, createdAt },
 			})
 			.run();
+	}
+	if (!posted.detailsPosted) {
+		throw new HTTPException(502, {
+			res: Response.json(
+				{
+					ok: false,
+					error: "details post failed",
+					ts: posted.ts,
+					channel: posted.channel,
+				},
+				{ status: 502 },
+			),
+		});
 	}
 	return c.json({ ok: true, ts: posted.ts, channel: posted.channel });
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # scripts/post-brief.bats
-# post-brief.sh が組み立てる Slack ペイロード (headline + 材料/テクニカル/強気・弱気/注視点の section blocks +
-# 観測行 + 決定論の数値行の context block) と no_update の早期終了を検証する。
+# post-brief.sh が組み立てる Slack ペイロード (親 = 太字の headline + 決定論の数値行の context block、
+# details = 材料/テクニカル/強気・弱気/注視点の section blocks + 観測行) と no_update の早期終了を検証する。
 #
 # 実行: pnpm run test:sh
 #
@@ -96,8 +96,8 @@ payload_for() {
 
 # === payload 構造 ===========================================================
 
-# kind / text / ticker / brief_body が載り、先頭 section は headline
-@test "payload: carries kind, text, brief_body and headline as first block" {
+# kind / text / ticker / brief_body が載り、親の block は太字の headline だけ
+@test "payload: carries kind, text, brief_body and bold headline as the only parent block" {
   write_brief "HEAD line" "2026-08-05 topic" "why it matters" > "$BATS_TEST_TMPDIR/b.json"
   run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
@@ -105,7 +105,10 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.kind')" = "ticker-brief" ]
   [ "$(printf '%s' "$p" | jq -r '.ticker')" = "285A" ]
   [ "$(printf '%s' "$p" | jq -r '.text')" = "HEAD line" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[0].text.text')" = "HEAD line" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 1 ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[0].text.text')" = "*HEAD line*" ]
+  # スレッド詳細に本文が載る
+  printf '%s' "$p" | jq -e '.details.text | test("why it matters")' >/dev/null
   # brief_body は LLM 由来の本文素テキスト (Worker が briefs に保存する)。
   printf '%s' "$p" | jq -e '.brief_body | test("2026-08-05 topic")' >/dev/null
   printf '%s' "$p" | jq -e '.brief_body | test("why it matters")' >/dev/null
@@ -124,13 +127,13 @@ payload_for() {
   run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  # headline + 新着 + テクニカル + 強気 + 弱気 + 注視 = 6 blocks
-  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 6 ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "$(printf '🆕 *新着*\n・2026-08-05 topic\n　→ path one\n・2026-08-04 other\n　→ path two')" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[2].text.text')" = "$(printf '📈 *テクニカル*\n・tape read')" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[3].text.text')" = "$(printf '🐂 *強気*\n・strong point\n・second point')" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[4].text.text')" = "$(printf '🐻 *弱気*\n・risk point')" ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[5].text.text')" = "$(printf '👀 *注視*\n・next earnings')" ]
+  # 新着 + テクニカル + 強気 + 弱気 + 注視 = 5 blocks
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks | length')" -eq 5 ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🆕 *新着*\n・2026-08-05 topic\n　→ path one\n・2026-08-04 other\n　→ path two')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[1].text.text')" = "$(printf '📈 *テクニカル*\n・tape read')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[2].text.text')" = "$(printf '🐂 *強気*\n・strong point\n・second point')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[3].text.text')" = "$(printf '🐻 *弱気*\n・risk point')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[4].text.text')" = "$(printf '👀 *注視*\n・next earnings')" ]
   # テクニカルの読みは LLM 由来なので brief_body に含める
   printf '%s' "$p" | jq -e '.brief_body | test("tape read")' >/dev/null
 }
@@ -142,8 +145,8 @@ payload_for() {
   run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "$(printf '🐻 *弱気*\n・risk point')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks | length')" -eq 1 ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🐻 *弱気*\n・risk point')" ]
 }
 
 # 全リストが空だと本文が組めないので落とす (headline だけの投稿は出さない)
@@ -154,7 +157,7 @@ payload_for() {
   [ "$status" -ne 0 ]
 }
 
-# === numbers: 数値行 (numctx の実在値から決定論で組み、末尾の context block に貼る) ===
+# === numbers: 数値行 (numctx の実在値から決定論で組み、親の context block に貼る) ===
 
 # numctx-file 付きで実行するヘルパ。$1=numctx JSON
 run_pb_ctx() {
@@ -174,7 +177,7 @@ numbers_text() {
   payload_for "/slack/post" | jq -r '.blocks[] | select(.type == "context") | .elements[0].text'
 }
 
-# 現在の行と確定足の行が 1 つの context block に分かれて載る。乖離は符号付き
+# 現在の行と確定足の行が親の headline の直後の context block に分かれて載る。乖離は符号付き
 @test "numbers: full numctx renders current and confirmed lines in one context block" {
   run_pb_ctx '{"prices":{"latest":{"price":10000}},
                "daily":{"status":"ok","latest_date":"2026-10-26","close":9900,"ma5":9800,"ma25":9700,
@@ -182,7 +185,8 @@ numbers_text() {
                         "range_pct":85,"atr_pct":2.4,"atr_vs_baseline":1.31,"vol_x_20d":1.9,
                         "vol_x_20d_intraday":null,"obv_trend":"rising","cmf_20d":0.12}}'
   [ "$status" -eq 0 ]
-  [ "$(payload_for "/slack/post" | jq -r '.blocks[-1].type')" = "context" ]
+  [ "$(payload_for "/slack/post" | jq -r '.blocks | map(.type) | join(",")')" = "section,context" ]
+  [ "$(payload_for "/slack/post" | jq -r '[.details.blocks[] | select(.type == "context")] | length')" -eq 0 ]
   [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000\n2026-10-26 確定足: MA5 9800 / MA25 9700（乖離 +2.3%%） / 20日レンジ 9000〜10200（位置 85%%） / RSI14 72 / ATR 2.4%%（平常比 1.31倍） / 出来高 1.9倍 / OBV 上向き / CMF20 0.12')" ]
 }
 
@@ -235,13 +239,13 @@ numbers_text() {
   [ "$(printf '%s' "$p" | jq -r '.brief_body | test("RSI14|現値")')" = "false" ]
 }
 
-# 観測行は数値の context block より前に section で載る
-@test "numbers: observations come before the context block" {
+# 観測行は親ではなく details に載り、数値の context block は親に残る
+@test "numbers: observations stay in details while numbers stay in the parent" {
   FETCH_FORCED_JSON='{"rows":[{"stance":"building","summary":"toss 285A"}]}' \
     run_pb_ctx '{"prices":{"latest":{"price":10000}}}'
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  printf '%s' "$p" | jq -e '.blocks[-2].text.text | test("強制フロー観測")' >/dev/null
+  printf '%s' "$p" | jq -e '.details.blocks[-1].text.text | test("強制フロー観測")' >/dev/null
   [ "$(printf '%s' "$p" | jq -r '.blocks[-1].type')" = "context" ]
 }
 
@@ -254,8 +258,8 @@ numbers_text() {
     run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("強制フロー観測")' >/dev/null
-  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("toss warning 285A")' >/dev/null
+  printf '%s' "$p" | jq -e '.details.blocks[-1].text.text | test("強制フロー観測")' >/dev/null
+  printf '%s' "$p" | jq -e '.details.blocks[-1].text.text | test("toss warning 285A")' >/dev/null
   # 観測行は brief_body には含めない。
   [ "$(printf '%s' "$p" | jq -r '.brief_body | test("強制フロー観測")')" = "false" ]
 }
@@ -267,7 +271,7 @@ numbers_text() {
     run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '.blocks[-1].text.text | test("強制フロー観測")')" = "false" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[-1].text.text | test("強制フロー観測")')" = "false" ]
 }
 
 # === rebalance: 指数リバランス窓の観測行 (LLM には渡さない) ================
@@ -280,8 +284,8 @@ numbers_text() {
     run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("リバランス窓")' >/dev/null
-  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("MSCI")' >/dev/null
+  printf '%s' "$p" | jq -e '.details.blocks[-1].text.text | test("リバランス窓")' >/dev/null
+  printf '%s' "$p" | jq -e '.details.blocks[-1].text.text | test("MSCI")' >/dev/null
 }
 
 # forced 観測 + リバランス観測が両方ある日は両方付く (順序: forced → rebalance)
@@ -292,8 +296,8 @@ numbers_text() {
     run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  printf '%s' "$p" | jq -e '.blocks[-2].text.text | test("強制フロー観測")' >/dev/null
-  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("リバランス窓")' >/dev/null
+  printf '%s' "$p" | jq -e '.details.blocks[-2].text.text | test("強制フロー観測")' >/dev/null
+  printf '%s' "$p" | jq -e '.details.blocks[-1].text.text | test("リバランス窓")' >/dev/null
 }
 
 # === rebalance-file: 前段で並行取得した JSON ファイルを第3引数で受け取る ========
@@ -309,8 +313,8 @@ numbers_text() {
     bash "$SCRIPT" 285A "$f" "$rf" 2>&1
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("リバランス窓")' >/dev/null
-  printf '%s' "$p" | jq -e '.blocks[-1].text.text | test("FTSE")' >/dev/null
+  printf '%s' "$p" | jq -e '.details.blocks[-1].text.text | test("リバランス窓")' >/dev/null
+  printf '%s' "$p" | jq -e '.details.blocks[-1].text.text | test("FTSE")' >/dev/null
 }
 
 # 第3引数を省略しても (rebalance-file なし) 何も足さず正常終了する
@@ -322,5 +326,5 @@ numbers_text() {
     bash "$SCRIPT" 285A "$f" 2>&1
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '[.blocks[].text.text | select(test("リバランス窓"))] | length')" -eq 0 ]
+  [ "$(printf '%s' "$p" | jq -r '[.details.blocks[].text.text | select(test("リバランス窓"))] | length')" -eq 0 ]
 }

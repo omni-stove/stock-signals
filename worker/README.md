@@ -5,7 +5,7 @@
 LLM 判定を GitHub Actions に移した。**ローカル常駐プロセスもローカル cron も持たない。**
 
 - 収集: kabutan / kioxia をスクレイプ (IR / per_ticker ニュース / prices / daily (+TOPIX) / fundamentals / premarket / earnings)。
-  空売りまわりは日証金 (逆日歩 CSV)・karauri.net (機関の空売り残高)・JPX (空売り比率 PDF / 投資部門別 xlsx) から引け後に取る
+  空売りまわりは日証金 (逆日歩 CSV)・karauri.net (機関の空売り残高)・JPX (空売り比率 PDF / 投資部門別 xlsx) から夕方 (18:00) に取る
 - 保存: 記事本文JSON → **R2** (`ARTICLES`)、メタ・時系列・重複排除キー → **D1** (`DB`)
 - 発火: Cron Triggers (下記) + 手動 `/run`
 - 判定: 新規 IR/ニュースがあれば `repository_dispatch(signal-update)` で **GitHub Actions の context-builder** を起動する。判定ルールはワークフローの `prompt` にベタ書きされ、`/context-input` の正規化済み JSON を `@` で読んで銘柄ごとの **D1 コンテキスト** (`POST /context`、`contexts` テーブル) を再生成、`post-context.sh` が更新後の全文をセクション区切りの blocks で Slack のコンテキスト更新チャンネルへ投稿、続けて `repository_dispatch(signal-judge)` で signal-judge を起動。signal-judge が `/judge-context` を引いて buy/sell を構造化判定し、`post-signal.sh` が Slack へ通知しつつ `/slack/post` 経由でその判定を `signals` テーブルへ保存する (コンテキストは触らない)。
@@ -22,14 +22,16 @@ HTTP 層は `src/routes/` に分かれる。各ルートと用途はファイル
 
 ## Cron 割り当て (wrangler.toml [triggers], UTC基準)
 
-Cloudflare の cron trigger 上限は **5個**。新規 cron は足せないので、ニュース収集と
-決算予定日推定は既存 cron に相乗りさせている。発火した cron 式を `scheduled()` 内で
+Cloudflare の cron trigger 上限は **5個** で、5個とも使っている。新しい収集は既存 cron に
+相乗りさせる。発火した cron 式を `scheduled()` 内で
 `event.cron` により判別し種別を振り分ける (`CRON_KIND`)。昼(12:30)の IR intake は
 専用 cron を持たず prices ループに相乗りさせている (`event.scheduledTime` で昼スロットを判定)。
 
 cron 式と JST の対応は `wrangler.toml [triggers]` のコメントに、種別ごとの収集内容は
 `cron.ts` (`CRON_KIND` の振り分け) に書く。intake (寄り前/引け後)・prices (場中5分毎)・
-eod (引け後) の3種で、寄り前は地合い、引け後は信用残や決算予定推定などを相乗りさせる。
+eod (引け後)・flows (夕方) の4種で、寄り前は地合い、引け後は信用残や決算予定推定などを相乗りさせる。
+eod と flows は重いので、ジョブを自分自身 (service binding `SELF`) の `/run` に 1 つずつ投げ、
+別 invocation として CPU 上限を個別に受けさせる (`fan-out.ts`)。
 
 ## 本番デプロイ
 

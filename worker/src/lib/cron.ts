@@ -2,27 +2,23 @@
 // 発火した cron 式を event.cron で判別して取得種別に振り分ける。
 
 import { collectDisclosures } from "./disclosure";
-import { collectEarnings } from "./earnings";
 import type { Env } from "./env";
 import { jpSqWeek } from "./event-context";
 import { remindUpcomingEvents } from "./event-reminder";
+import { fanOut } from "./fan-out";
 import { collectForcedLiquidation } from "./forced-liquidation";
 import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
-import { collectInvestorFlows } from "./investor-flows";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
 import { collectLiveIndexes } from "./live-indexes";
-import { collectMacroEvents } from "./macro-events";
 import { collectMargin } from "./margin";
 import { collectMarketNews } from "./market-news";
 import { collectNews } from "./news";
-import { collectJpPeerEarnings, collectPeerEarnings } from "./peer-earnings";
 import { listPositionUsers } from "./position-report";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
-import { collectShortInterest } from "./short-interest";
 import { notifyNewsSlack, notifyParseFailure } from "./slack";
-import { collectTimeseries, WATCHLIST } from "./timeseries";
+import { collectTimeseries, DAILY_CODES, WATCHLIST } from "./timeseries";
 
 // 銘柄ニュース + 市場テーマニュースの新着を Slack (SLACK_NEWS_WEBHOOK_URL) に通知する。
 // IR(notifySlack) と別チャンネルに分離する。webhook 未設定/新着 0 なら no-op。best-effort。
@@ -58,22 +54,24 @@ async function notifyFreshNews(
 }
 
 // 発火した cron 式 → 取得種別。wrangler.toml の [triggers] crons と対応させること。
-// Cloudflare の cron trigger 上限は5個。新規 cron は足せないので、複数ソースの収集は
-// 既存 cron に相乗りさせ、scheduled() 内で順に実行する:
+// Cloudflare の cron trigger 上限は5個で、5個とも使っている。新しい収集は既存 cron に相乗りさせる:
 //   - intake (8:30/20:00):  IR + ニュースを収集し、新規があれば signal-report 起動。
 //                           寄り前(8:30)のみ地合い(米国指数+日経先物)も先に取得する。
 //                           引け後は 20:00 (決算・適時開示が19時台以降に出ても当夜のうちに拾うため)。
 //   - prices (場中5分毎):   prices + ニュース速報を収集し、新規ニュースで signal-report 起動。
 //                           さらに JST 12:30 相当スロットでは IR intake も相乗りさせる (昼の専用 cron を
-//                           立てず4個に収めるため。下の isNoonIntakeSlot 参照)。
+//                           立てないため。下の isNoonIntakeSlot 参照)。
 //                           JST 15:00 相当の最終スロット (isPreCloseSlot) では大引け前にその時点の材料
 //                           だけで翌日寄り越えの玉を判断するため、intake 同様に全銘柄を無条件判定する。
-//   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日推定 + 空売り需給 + 投資部門別
-const CRON_KIND: Record<string, "intake" | "prices" | "eod"> = {
+//   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日推定 + ピア決算日
+//   - flows  (18:00):        空売り需給 (逆日歩/機関の空売り残高/東証全体の空売り比率) + 投資部門別
+// eod / flows は重いので、ジョブを 1 つずつ別 invocation で回す (fan-out.ts)。
+const CRON_KIND: Record<string, "intake" | "prices" | "eod" | "flows"> = {
 	"30 23 * * *": "intake",
 	"0 11 * * *": "intake",
 	"*/5 0-6 * * *": "prices",
-	"0 7 * * *": "eod", // JST 16:00 引け後: daily + fundamentals + earnings
+	"0 7 * * *": "eod",
+	"0 9 * * *": "flows",
 };
 
 // JST 12:30 (= UTC 03:30) のスロットか。場中 prices ループ (*/5 0-6) はどのスロットでも
@@ -319,42 +317,19 @@ export async function runScheduled(
 		return;
 	}
 	if (kind === "eod") {
-		// 引け後の1日1回。daily (watchlist + TOPIX + 日経225、足りない過去分の補完込み) + fundamentals +
-		// 次回決算予定日の推定をまとめて実行。
-		const d = await collectTimeseries(env, "daily", null);
-		const f = await collectTimeseries(env, "fundamentals", null);
-		const e = await collectEarnings(env, null);
-		// 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率) と投資部門別売買 (週次)。
-		// 公表が夕方〜翌日のものは前営業日分を拾う。失敗しても eod の主収集は壊さない。
-		const si = await collectShortInterest(env, null).catch((err) => {
-			console.error("short-interest failed:", err);
-			return null;
-		});
-		const inv = await collectInvestorFlows(env).catch((err) => {
-			console.error("investor-flows failed:", err);
-			return null;
-		});
-		// 海外SOX系ピア (MU/NVDA 等) の次回決算日も毎 eod 取得する。次回日は決算ごとに繰り上がる
-		// ため月初1回では最大1ヶ月古くなる。watchlist の earnings と同頻度・同思想 (毎日上書き)。
-		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
-		const pe = await collectPeerEarnings(env, null).catch((err) => {
-			console.error("peer-earnings failed:", err);
-			return null;
-		});
-		// 国内ピア (東エレ/ディスコ 等) の次回決算日も同様に毎 eod 取得する (kabutan から推定)。
-		const pej = await collectJpPeerEarnings(env, null).catch((err) => {
-			console.error("peer-earnings-jp failed:", err);
-			return null;
-		});
-		// マクロイベント (FOMC/日銀) は月初スロットでだけ相乗り収集する。会合は年8回・先の日程が
-		// 確定公表されており月1で十分。失敗しても eod の主収集は壊さない (catch でログのみ)。
-		let macro: Record<string, unknown> | null = null;
-		if (isJstMonthStart(event.scheduledTime)) {
-			macro = await collectMacroEvents(env).catch((err) => {
-				console.error("macro-events failed:", err);
-				return null;
-			});
-		}
+		// 引け後の1日1回。日足 (watchlist + TOPIX + 日経225、足りない過去分の補完込み)・fundamentals・
+		// 次回決算予定日・ピア決算日 (毎日上書き)・FOMC/日銀 (月初だけ) を、1 ジョブ = 1 invocation で回す。
+		const { results: eodJobs, failed: eodFailed } = await fanOut(env, [
+			...DAILY_CODES.map((code) => ({ kind: "daily", code })),
+			...WATCHLIST.map((code) => ({ kind: "fundamentals", code })),
+			{ kind: "earnings" },
+			{ kind: "peer-earnings" },
+			{ kind: "peer-earnings-jp" },
+			...(isJstMonthStart(event.scheduledTime)
+				? [{ kind: "macro-events" }]
+				: []),
+		]);
+		if (eodFailed.length > 0) console.error("eod jobs failed:", eodFailed);
 		// 強制決済スコア (追証売り/踏み上げ) を当日 daily が確定した直後に算出して D1 に保存する。
 		// daily を上で収集済みなので最新足が揃っている。margin は intake で取得済みの最新行を読む。
 		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
@@ -385,18 +360,29 @@ export async function runScheduled(
 		console.log(
 			"scheduled eod done:",
 			JSON.stringify({
-				daily: d,
-				fundamentals: f,
-				earnings: e,
-				...(si ? { shortInterest: si } : {}),
-				...(inv ? { investorFlows: inv } : {}),
-				...(pe ? { peerEarnings: pe } : {}),
-				...(pej ? { peerEarningsJp: pej } : {}),
-				...(macro ? { macroEvents: macro } : {}),
+				jobs: eodJobs,
+				failed: eodFailed,
 				...(fl ? { forcedLiquidation: fl.results } : {}),
 				...(pr ? { positionReview: pr } : {}),
 			}),
 		);
+		return;
+	}
+	if (kind === "flows") {
+		// 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率) と投資部門別売買 (週次)。
+		// 公表が夕方以降のものを拾うため引け後 eod と時間をずらし、1 ジョブ = 1 invocation で回す。
+		const { results, failed } = await fanOut(env, [
+			{ kind: "short-interest", part: "lending" },
+			...WATCHLIST.map((code) => ({
+				kind: "short-interest",
+				part: "positions",
+				code,
+			})),
+			{ kind: "short-interest", part: "market" },
+			{ kind: "investor-flows" },
+		]);
+		if (failed.length > 0) console.error("flows jobs failed:", failed);
+		console.log("scheduled flows done:", JSON.stringify({ results, failed }));
 		return;
 	}
 	const res = await collectTimeseries(env, kind, null);

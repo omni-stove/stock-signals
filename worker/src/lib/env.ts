@@ -4,6 +4,9 @@
 export interface Env {
 	DB: D1Database;
 	ARTICLES: R2Bucket;
+	// 自分自身への service binding (wrangler.toml [[services]])。cron が重い収集を /run に
+	// 1 ジョブずつ投げ、別 invocation として CPU 上限を個別に受けさせる (fan-out.ts)。
+	SELF?: Fetcher;
 	USER_AGENT: string;
 	MIN_INTERVAL_MS: string;
 	// Slack Incoming Webhook URL (Secret)。未設定なら通知をスキップ (取得自体は動く)。

@@ -112,9 +112,11 @@ export interface MaterialEvent {
 
 const EVENT_LOOKBACK_DAYS = 90;
 const EVENT_MAX = 6;
-// 株価材料になりにくい定型の開示は除く。
+// 超過リターンが出た材料のうち、渡す件数 (新しい順)。
+const EVENT_SHOWN = 3;
+// 株価材料になりにくい定型の開示・広報は除く。
 const ROUTINE_RE =
-	/取得状況|定款|統合報告書|ガバナンス|株主総会|招集|役員|人事|組織|払込完了|譲渡制限|株式報酬|株式ユニット|説明会|資料|訂正/;
+	/取得状況|定款|統合報告書|ガバナンス|株主総会|招集|役員|人事|組織|払込完了|譲渡制限|株式報酬|株式ユニット|説明会|資料|訂正|出展|受賞|募集/;
 
 export function buildEventReactions(
 	events: MaterialEvent[],
@@ -172,7 +174,12 @@ export function buildEventReactions(
 			partial: asc[after + 1] === undefined,
 		};
 	});
-	return { status: "ok", items };
+	// 超過リターンが 1 つも出せない材料は判断材料にならないので渡さない。
+	const shown = items
+		.filter((i) => i.excess_2d_pct != null || i.excess_to_date_pct != null)
+		.slice(0, EVENT_SHOWN);
+	if (shown.length === 0) return { status: "none" };
+	return { status: "ok", items: shown };
 }
 
 if (import.meta.vitest) {
@@ -292,6 +299,53 @@ if (import.meta.vitest) {
 			expect(buildEventReactions([], stock, topix, "2026-06-05").status).toBe(
 				"none",
 			);
+		});
+		it("出展・受賞などの広報は除く", () => {
+			expect(
+				buildEventReactions(
+					[
+						{ date: "2026-06-03", title: "「SEMICON West」に出展" },
+						{ date: "2026-06-03", title: "IR優良企業賞を受賞" },
+					],
+					stock,
+					topix,
+					"2026-06-05",
+				).status,
+			).toBe("none");
+		});
+		it("TOPIX が無く超過リターンが出せない材料は渡さない", () => {
+			expect(
+				buildEventReactions(
+					[{ date: "2026-06-03", title: "業績予想の修正に関するお知らせ" }],
+					stock,
+					[],
+					"2026-06-05",
+				).status,
+			).toBe("none");
+		});
+		it("超過リターンが出た材料を新しい順に 3 件まで", () => {
+			const long = series(
+				"2026-06-01",
+				Array.from({ length: 10 }, (_, i) => 100 + i),
+			);
+			const longTopix = series(
+				"2026-06-01",
+				Array.from({ length: 10 }, () => 1000),
+			);
+			const out = buildEventReactions(
+				["02", "03", "04", "05", "08"].map((d) => ({
+					date: `2026-06-${d}`,
+					title: "新製品の発表",
+				})),
+				long,
+				longTopix,
+				"2026-06-12",
+			);
+			expect((out.items as { date: string }[]).map((i) => i.date)).toEqual([
+				"2026-06-08",
+				"2026-06-05",
+				"2026-06-04",
+			]);
 		});
 	});
 }

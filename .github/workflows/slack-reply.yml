@@ -137,11 +137,12 @@ jobs:
             `hold_style` is `swing`/`day`/`mid_long` (玉の持ち方の基本), `max_position_pct` a per-name size cap (%),
             `note` free-text 特記事項. Any field may be null.
 
-            The other JSON is the **numeric context** — `tape`/`premarket`/`margin` are current values,
-            `context_body` is the fixed accumulated context:
+            The other JSON is the **numeric context** — `prices`/`premarket`/`margin` are current values,
+            `context_body` is the fixed accumulated context. A block with nothing to report is left out; an
+            absent block means no data:
 
             - **`context_body`** is your primary fundamental input, lead on it; 直近の重大トピック is freshest.
-              Null → say `context: unavailable` and answer on price + backdrop alone.
+              Absent → say `context: unavailable` and answer on price + backdrop alone.
             - **`ticker_note`**: qualifies the other inputs, never leads.
             - **`prices` / `premarket` / `margin`** confirm the fundamental read with the current tape; don't let
               them flip it. `premarket.us_session: carried_over` = the US was closed and those numbers are a
@@ -154,9 +155,9 @@ jobs:
               52週高値・安値), `relative` (excess return vs TOPIX over 5/20/60 days), `event_reactions` (how each
               recent disclosure traded vs TOPIX), `revisions` (company forecast and its 修正; no analyst consensus is
               collected), `valuation` (予想PER/PBR, own range, sector peers), `short_interest` (逆日歩, institutional
-              short reports by `calc_date`, 東証全体の空売り比率), `investor_flows` (weekly market-wide 投資部門別),
-              `supply` (売出し/公募/CB/大株主の異動; `lockup_*` are rough dates from the announcement). Skip any
-              with `status` `none`/`insufficient`/`unavailable`.
+              short reports by `calc_date`), `sector` (this ticker's `rank` of `peers_n` and `rel_strength_pct`
+              in its sector), `supply` (売出し/公募/CB/大株主の異動; `lockup_*` are rough dates from the
+              announcement). Market-wide flows (投資部門別・空売り比率) are in `market_brief` when present.
             - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
             ## What to do

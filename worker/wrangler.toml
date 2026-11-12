@@ -34,16 +34,22 @@ account_id = "020120735d111b7d06111196719171c1"  # admin@omnistove.com
 #                            さらに JST 12:30 相当 (UTC 03:30) のスロットでは IR intake も相乗りさせる
 #                            (event.scheduledTime の時刻で判定。下記 scheduled() 参照)。
 #   eod (引け後1回):         JST 16:00 = UTC 07:00 で daily + fundamentals + 決算予定日推定
-# ※Cloudflare の cron trigger 上限は5個。昼(12:30)の IR intake は専用 cron を立てず prices ループに
-#   相乗りさせて4個に収める。ニュース収集は intake/prices に、決算予定日推定は eod に、
-#   地合い取得は寄り前 intake に相乗りさせ、scheduled() 内で順に実行する。
+#   flows (夕方1回):         JST 18:00 = UTC 09:00 で空売り需給 + 投資部門別
+# ※Cloudflare の cron trigger 上限は5個で、5個とも使っている。新しい収集は既存 cron に相乗りさせる。
 [triggers]
 crons = [
   "30 23 * * *",    # JST 08:30 寄り前 IR + ニュース + 地合い (+ market-brief を dispatch)
   "0 11 * * *",     # JST 20:00 引け後 IR + ニュース
   "*/5 0-6 * * *",  # JST 09:00-15:00 5分毎  prices + ニュース速報 (12:30 相当スロットで IR intake も)
   "0 7 * * *",      # JST 16:00 引け後  daily + fundamentals + earnings (eod)
+  "0 9 * * *",      # JST 18:00 空売り需給 + 投資部門別 (flows)
 ]
+
+# 自分自身への service binding。cron が重い収集を /run に 1 ジョブずつ投げ、別 invocation として
+# CPU 上限を個別に受けさせる (src/lib/fan-out.ts)。
+[[services]]
+binding = "SELF"
+service = "stock-signals-collector"
 
 # D1: 取得済みURLハッシュ(重複排除)と記事メタを持つ。
 # スキーマの真の情報源は src/lib/schema.ts。drizzle-kit が差分 migration を drizzle/ に生成し、

@@ -5,13 +5,14 @@
 //
 // 取得は D1/R2 直読み (サブリクエストなし)。正規化は lib/judge-context.ts に集約。
 //
-// 出力 (event_context は需給イベント1行、market_brief は当日朝のマーケットブリーフ / 無ければ null、
-// forced は強制決済フローのスコア / stance==none なら {status:"none"}):
+// 出力 (lib/judge-context.ts の JUDGE_BLOCKS。null・中身の無い status のブロックと特になしの
+// event_context は compactJudgeContext が落とす):
 //   { ticker, today, market_phase, market_brief, event_context, ticker_note,
 //     context_body, earnings, earnings_result, revisions, valuation, premarket, sector, daily, trend,
-//     relative, event_reactions, prices, margin, short_interest, investor_flows, supply, forced }
-// sector は対象銘柄が属する同一セクタのピアの相対強弱 (無ければ null)。trend / relative /
+//     relative, event_reactions, prices, margin, short_interest, supply, forced }
+// sector は同一セクタ内での対象銘柄の順位・相対強弱とセクタ平均。trend / relative /
 // event_reactions は約1年分の日足と TOPIX から、supply は適時開示・公式 IR の見出しから組む。
+// 市場全体の需給 (投資部門別・東証全体の空売り比率) は market-brief 側に任せて載せない。
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
 import { and, desc, eq, gte, like, or } from "drizzle-orm";
@@ -21,7 +22,6 @@ import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
 import type { DailyRow } from "../lib/indicators";
 import { avgVolume20d } from "../lib/indicators";
-import { buildInvestorFlows, readInvestorFlows } from "../lib/investor-flows";
 import {
 	buildDaily,
 	buildEarnings,
@@ -32,6 +32,7 @@ import {
 	buildPrices,
 	buildRevisions,
 	buildValuation,
+	compactJudgeContext,
 	type ForcedRow,
 	type ForecastSnapshot,
 	type FundamentalsSnapshot,
@@ -63,12 +64,11 @@ import {
 	buildSectors,
 	type DailyBar,
 	type PremarketLine,
+	sectorForTicker,
 } from "../lib/sectors";
 import {
 	buildLending,
-	buildMarketShortRatio,
 	buildShortPositions,
-	readMarketShortRatio,
 	readShortInterest,
 } from "../lib/short-interest";
 import { buildSupply } from "../lib/supply-events";
@@ -190,8 +190,6 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 	);
 
 	const shortInterest = await readShortInterest(env.DB, code);
-	const marketShortRows = await readMarketShortRatio(env.DB);
-	const investorFlowRows = await readInvestorFlows(env.DB);
 
 	// latest.ts の prices select と完全に揃える (row 全体)。
 	const priceRows = (await db(env.DB)
@@ -203,7 +201,6 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 			change_pct: prices.changePct,
 			volume: prices.volume,
 			quote_time: prices.quoteTime,
-			pts_price: prices.ptsPrice,
 			fetched_at: prices.fetchedAt,
 		})
 		.from(prices)
@@ -342,47 +339,46 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 				}
 			: null;
 
-	return c.json({
-		ticker: code,
-		today,
-		market_phase: marketPhase,
-		market_brief:
-			marketBriefRow && marketBriefDate === today
-				? {
-						headline: marketBriefRow.headline,
-						body: marketBriefRow.body,
-						date: marketBriefDate,
-					}
-				: null,
-		event_context: buildEventContext(today, macroRows, marketPhase),
-		// 当該銘柄分の固定注記だけ同梱 (watchlist は静的、note 未設定なら null)。
-		ticker_note: TICKERS.find((t) => t.code === code)?.note ?? null,
-		context_body: contextRow?.body ?? null,
-		earnings: buildEarnings(earningsRow?.next_date ?? null, today),
-		earnings_result: buildEarningsResult(fundamentalsRows, today),
-		revisions: buildRevisions(fundamentalsRows, today),
-		valuation: buildValuation(fundamentalsRows, peerPers),
-		premarket: premarketBlock,
-		// 対象銘柄が属する sector の1件だけ (rows は相対強弱の強い順)。sector 未設定なら null。
-		sector: sectorReports[0] ?? null,
-		daily: buildDaily(dailyRows, intradayVol, today),
-		trend: buildTrend(dailyLong),
-		relative: buildRelative(dailyLong, topixRows),
-		event_reactions: buildEventReactions(
-			officialArticles,
-			dailyLong,
-			topixRows,
+	return c.json(
+		compactJudgeContext({
+			ticker: code,
 			today,
-		),
-		prices: buildPrices(priceRows, epochNow),
-		margin: buildMargin(marginRows),
-		short_interest: {
-			lending: buildLending(shortInterest.lending),
-			positions: buildShortPositions(shortInterest.positions, today),
-			market_short_ratio: buildMarketShortRatio(marketShortRows),
-		},
-		investor_flows: buildInvestorFlows(investorFlowRows),
-		supply: buildSupply(officialArticles, today),
-		forced: buildForced(forcedRow ?? null),
-	});
+			market_phase: marketPhase,
+			market_brief:
+				marketBriefRow && marketBriefDate === today
+					? {
+							headline: marketBriefRow.headline,
+							body: marketBriefRow.body,
+							date: marketBriefDate,
+						}
+					: null,
+			event_context: buildEventContext(today, macroRows, marketPhase),
+			// 当該銘柄分の固定注記だけ同梱 (watchlist は静的、note 未設定なら null)。
+			ticker_note: TICKERS.find((t) => t.code === code)?.note ?? null,
+			context_body: contextRow?.body ?? null,
+			earnings: buildEarnings(earningsRow?.next_date ?? null, today),
+			earnings_result: buildEarningsResult(fundamentalsRows, today),
+			revisions: buildRevisions(fundamentalsRows, today),
+			valuation: buildValuation(fundamentalsRows, peerPers),
+			premarket: premarketBlock,
+			sector: sectorForTicker(sectorReports[0], code),
+			daily: buildDaily(dailyRows, intradayVol, today),
+			trend: buildTrend(dailyLong),
+			relative: buildRelative(dailyLong, topixRows),
+			event_reactions: buildEventReactions(
+				officialArticles,
+				dailyLong,
+				topixRows,
+				today,
+			),
+			prices: buildPrices(priceRows, epochNow),
+			margin: buildMargin(marginRows),
+			short_interest: {
+				lending: buildLending(shortInterest.lending),
+				positions: buildShortPositions(shortInterest.positions, today),
+			},
+			supply: buildSupply(officialArticles, today),
+			forced: buildForced(forcedRow ?? null),
+		}),
+	);
 });

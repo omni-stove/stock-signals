@@ -213,6 +213,29 @@ export function buildSectors(
 	return reports;
 }
 
+// 銘柄単体の判断用に、SectorReport から対象銘柄の位置とセクタ平均だけを抜く。
+// 外部地合い (backdrop) は premarket と重なるので持たない。対象がセクタに居なければ null。
+export function sectorForTicker(
+	report: SectorReport | null | undefined,
+	code: string,
+): Record<string, unknown> | null {
+	if (!report) return null;
+	const idx = report.rows.findIndex((r) => r.code === code);
+	if (idx < 0) return null;
+	const self = report.rows[idx];
+	return {
+		sector: report.sector,
+		avg_change_pct: report.avg_change_pct,
+		avg_ret_5d_pct: report.avg_ret_5d_pct,
+		peers_n: report.rows.length,
+		rank: idx + 1,
+		change_pct: self.change_pct,
+		ret_5d_pct: self.ret_5d_pct,
+		vol_ratio: self.vol_ratio,
+		rel_strength_pct: self.rel_strength_pct,
+	};
+}
+
 // in-source tests (集計の振る舞い)。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
@@ -297,6 +320,23 @@ if (import.meta.vitest) {
 			expect(r.rows[0].code).toBe("A");
 			expect((r.rows[0].rel_strength_pct ?? 0) > 0).toBe(true);
 			expect((r.rows[1].rel_strength_pct ?? 0) < 0).toBe(true);
+		});
+
+		it("sectorForTicker は対象銘柄の順位とセクタ平均だけを返す", () => {
+			const [r] = buildSectors(
+				meta,
+				{ sox_change_pct: 0.2 },
+				{
+					A: bars([10, 10, 10, 10, 10, 12], 2),
+					B: bars([10, 10, 10, 10, 10, 10], 0),
+				},
+			);
+			const out = sectorForTicker(r, "B");
+			expect(out).toMatchObject({ sector: "semi", peers_n: 2, rank: 2 });
+			expect(out).not.toHaveProperty("rows");
+			expect(out).not.toHaveProperty("backdrop");
+			expect(sectorForTicker(r, "Z")).toBeNull();
+			expect(sectorForTicker(null, "A")).toBeNull();
 		});
 
 		it("daily 行なしの銘柄は note を付け null 値で出る", () => {

@@ -289,25 +289,36 @@ async function collectMarketShortRatio(
 }
 
 // 3 ソースをまとめて収集する。1 つが落ちても他は続行する。
+// part を指定するとその 1 つだけ取る (lending = 逆日歩 / positions = 機関の空売り残高 /
+// market = 東証全体の空売り比率)。省略時は全部 (code 指定時は銘柄別の 2 つだけ)。
+export type ShortInterestPart = "lending" | "positions" | "market";
+
 export async function collectShortInterest(
 	env: ShortInterestEnv,
 	codeFilter: string | null,
+	part: ShortInterestPart | null = null,
 ): Promise<Record<string, unknown>> {
 	const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	const out: Record<string, unknown> = {};
-	out.lending = await collectLending(env, codes).catch((e) => ({
-		error: (e as Error).message,
-	}));
-	const positions: Record<string, unknown> = {};
-	for (const code of codes) {
-		await sleep(interval);
-		positions[code] = await collectShortPositionsOne(env, code).catch((e) => ({
+	if (!part || part === "lending") {
+		out.lending = await collectLending(env, codes).catch((e) => ({
 			error: (e as Error).message,
 		}));
 	}
-	out.positions = positions;
-	if (!codeFilter) {
+	if (!part || part === "positions") {
+		const positions: Record<string, unknown> = {};
+		for (const [i, code] of codes.entries()) {
+			if (i > 0 || !part) await sleep(interval);
+			positions[code] = await collectShortPositionsOne(env, code).catch(
+				(e) => ({
+					error: (e as Error).message,
+				}),
+			);
+		}
+		out.positions = positions;
+	}
+	if (part === "market" || (!part && !codeFilter)) {
 		out.marketShortRatio = await collectMarketShortRatio(env).catch((e) => ({
 			error: (e as Error).message,
 		}));

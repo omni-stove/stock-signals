@@ -154,7 +154,7 @@ jobs:
             - `materials`: the fresh items, newest first; merge items on one theme. Each is
               `YYYY-MM-DD <what happened>` only — no effect or analysis.
             - `technical`: whether trend and money flow confirm or diverge from the fresh materials. Do not
-              restate indicators one by one, forecast, or name a level to act on. Empty when `daily` is skipped.
+              restate indicators one by one, forecast, or name a level to act on. Empty when `daily` is absent.
             - `bull` / `bear`: the strongest points on earnings and supply-demand, fresh materials first, as
               facts and their weight. For a fresh material, give why it matters: the concrete path into
               earnings or price, and a precedent or first market reaction when known. Either side may be empty
@@ -171,15 +171,16 @@ jobs:
 
             ## Inputs
 
-            How to read the fields (what to lead on, what to ignore):
+            How to read the fields (what to lead on, what to ignore). A block with nothing to report is left
+            out; an absent block means no data — do not mention it.
 
             - **`context_body`** carries two layers: 直近の重大トピック (freshest) and older structural context.
-              Null → brief on price/tape facts alone.
+              Absent → brief on price/tape facts alone.
             - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary (前夜米市場・
-              先物・セクター・当日イベント). Use it to frame today's backdrop; null → no fresh morning
-              summary, skip.
-            - **`prices`**: ignore `pts_price`; use `change_pct`/`volume`/`quote_time`/`slot` (`slot` =
-              `premarket`/`regular`/`closing`). `quote_status: closed` → stale tape, demoted to backdrop.
+              先物・セクター・投資部門別・空売り比率・当日イベント). Use it to frame today's backdrop.
+            - **`prices`**: `latest` is the last quote (`change_pct` 前日比). `quote_status: closed` → stale tape,
+              demoted to backdrop. `live` adds `trajectory`: today's 前日比 at `from_quote_time` and its
+              high/low since then — the intraday path.
             - **`market_phase`** (JST trading-day position) says what to lead on: `premarket` → lead on
               `premarket`/context (digesting overnight NY); `afternoon_session` with a live tape → lead on the
               live tape; `closed` → describe the close.
@@ -204,11 +205,11 @@ jobs:
               `us_session: carried_over` = the US was closed overnight (休場明け) and these numbers are the prior
               close (printed `us_close_jst_date`) that the previous JP session already traded on — treat as no new
               overnight information, don't report it as fresh.
-            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`; a `特になし` tail
-              means no event fired — ignore it.
-            - **`sector`** (`{ backdrop, avg_ret_5d_pct, rows }`, null → skip): peer tape, `rows` sorted 相対強弱の強い順.
-              This ticker's `rel_strength_pct` (its 5日リターン − セクタ平均) is the sector read — lead on it over SOX.
-            - **`forced`** (status `none` → skip): `summary` already states the forced-flow timing
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`.
+            - **`sector`**: this ticker within its watchlist sector — `rank` of `peers_n` by 相対強弱, its
+              `rel_strength_pct` (5日リターン − セクタ平均 `avg_ret_5d_pct`), `change_pct`, `vol_ratio`. This is the
+              sector read — lead on it over SOX.
+            - **`forced`**: `summary` already states the forced-flow timing
               (投げ/踏み, ~何営業日後のどのセッション, building=これから / exhausted=出尽くし); take it as
               given and report it as a 需給 fact (投げ pending is usually a `bear` line, 踏み上げ a `bull`
               line, or a `watch` line).
@@ -219,7 +220,7 @@ jobs:
               starts at `window_start`, not a full year.
             - **`relative`** (`returns[]` per 5/20/60 days: `ret_pct` − `topix_ret_pct` = `excess_pct`): strength
               against the whole market. Use it with `sector` to separate a name-specific move from the market.
-            - **`event_reactions`** (`items[]`, status `none` → skip): for each recent disclosure/IR date, the
+            - **`event_reactions`** (`items[]`, up to 3 newest): for each recent disclosure/IR date, the
               excess return over TOPIX across the 2 sessions from the prior close (`excess_2d_pct`) and since then
               to now (`excess_to_date_pct`). Report how the market took a material — a good-news item that sold off
               or faded is itself a fact. `partial: true` = the second session is not in yet.
@@ -235,11 +236,8 @@ jobs:
               consecutive days charged; `listed: false` = not on the list, no 逆日歩) — a running 逆日歩 is
               short-squeeze fuel. `positions` = institutional short reports of 0.5% or more (`total_ratio_pct`,
               change `total_ratio_chg_pct` since `chg_since`; weigh each holder by its `calc_date`, an old report is
-              weak evidence). `market_short_ratio` = 東証全体の空売り比率 (`ratio_pct`, `avg_5d_pct`), market-wide
-              sentiment only.
-            - **`investor_flows`** (market-wide, weekly 東証プライム, 億円, `net` 買い越し=正): who is buying the
-              market — `foreigners_streak_weeks` (正 = 連続買い越し, 負 = 連続売り越し). Backdrop, not a name fact.
-            - **`supply`** (`items[]`, status `none` → skip): disclosures that add supply — 売出し/公募/第三者割当/
+              weak evidence).
+            - **`supply`** (`items[]`): disclosures that add supply — 売出し/公募/第三者割当/
               CB/分売/自己株処分/大株主の異動. `lockup_90d` / `lockup_180d` are rough dates counted from the
               announcement; the actual lock-up term and start are in the filing — state them only when confirmed.
               A lock-up end or a pending offering inside the holding horizon is a `bear`/`watch` fact.
@@ -249,7 +247,6 @@ jobs:
               name may move on a metric other than EPS).
             - **`ticker_note`**: qualifies the other inputs.
             - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
-            - Skip any block whose `status` is `insufficient`/`stale`/`unavailable`.
 
             ## 数値コンテキスト
 

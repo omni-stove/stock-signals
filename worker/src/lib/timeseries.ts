@@ -28,13 +28,15 @@ export { WATCHLIST, WATCHLIST_NAMES };
 export const BENCHMARK_CODE = "0010";
 // SQ値の元になる日経225 の kabutan コード。sq-brief が SQ週の値動きと NT倍率に使う。日足だけ貯める。
 export const NIKKEI225_CODE = "0000";
+// 日足を取る銘柄 (watchlist + TOPIX + 日経225)。
+export const DAILY_CODES = [...WATCHLIST, BENCHMARK_CODE, NIKKEI225_CODE];
 
 // 52週高値・安値と MA75 に約1年分の日足が要る。kabutan の日足ページは 1 ページ約 30 本で page=2.. と
 // 遡れるので、保存済みが DAILY_HISTORY_TARGET 本に満たない銘柄は 1 回の収集で最大
 // BACKFILL_PAGES_PER_RUN ページだけ過去分を足す。
 const DAILY_HISTORY_TARGET = 260;
 const DAILY_ROWS_PER_PAGE = 30;
-const BACKFILL_PAGES_PER_RUN = 3;
+const BACKFILL_PAGES_PER_RUN = 1;
 
 // 取得対象の URL テンプレート (prices / daily / fundamentals)。
 const URL_PRICES = (code: string) => `https://kabutan.jp/stock/?code=${code}`;
@@ -526,10 +528,7 @@ export async function collectTimeseries(
 	kind: Kind,
 	codeFilter: string | null,
 ): Promise<Record<string, unknown>> {
-	const universe =
-		kind === "daily"
-			? [...WATCHLIST, BENCHMARK_CODE, NIKKEI225_CODE]
-			: WATCHLIST;
+	const universe = kind === "daily" ? DAILY_CODES : WATCHLIST;
 	const codes = universe.filter((c) => !codeFilter || c === codeFilter);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	const collect = COLLECTORS[kind];

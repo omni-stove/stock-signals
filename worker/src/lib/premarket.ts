@@ -12,9 +12,10 @@
 import { db } from "./db";
 import { stripTags } from "./html";
 import { parseKabutanIndex } from "./live-indexes";
+import { prevNyseSession } from "./market-calendar";
 import { type PeerRelease, SOX_PEERS } from "./peer-earnings";
 import { premarketBackdrop } from "./schema";
-import { fetchHtml, sleep } from "./utils";
+import { addDays, fetchHtml, sleep } from "./utils";
 
 export interface PremarketEnv {
 	DB: D1Database;
@@ -480,22 +481,9 @@ export function buildPremarketBlock(
 // market-brief だけが読む。銘柄ブリーフには渡さない (市場全体の材料は market-brief 経由)。
 // 米国セッションの終値日 (SOX と同じ JST 暦日) と揃わない銘柄は落とし、決算日に当たる銘柄にだけ
 // earnings を付ける: after_this_close = この終値の後に発表 (終値に未反映、反応は時間外と次の
-// セッション) / in_close = この終値に反映済み (寄り前発表、または前営業日の引け後発表)。
+// セッション) / in_close = この終値に反映済み (寄り前発表、または前の NYSE 取引日の引け後発表)。
 
 export type PeerEarningsRow = { kind?: string | null; date: string };
-
-function addDaysIso(date: string, days: number): string {
-	const d = new Date(`${date}T12:00:00Z`);
-	d.setUTCDate(d.getUTCDate() + days);
-	return d.toISOString().slice(0, 10);
-}
-
-function prevWeekday(date: string): string {
-	let d = addDaysIso(date, -1);
-	while ([0, 6].includes(new Date(`${d}T12:00:00Z`).getUTCDay()))
-		d = addDaysIso(d, -1);
-	return d;
-}
 
 function peerEarnings(
 	release: PeerRelease,
@@ -504,7 +492,7 @@ function peerEarnings(
 ): "after_this_close" | "in_close" | null {
 	if (reportDates.has(usDate))
 		return release === "after_close" ? "after_this_close" : "in_close";
-	if (release === "after_close" && reportDates.has(prevWeekday(usDate)))
+	if (release === "after_close" && reportDates.has(prevNyseSession(usDate)))
 		return "in_close";
 	return null;
 }
@@ -520,7 +508,7 @@ export function buildUsPeersBlock(
 	if (!usCloseJstDate || !Array.isArray(quotes) || quotes.length === 0)
 		return { status: "unavailable" };
 	// 米国の引け (16:00 ET) は JST の翌朝なので、米国の取引日は JST 暦日の前日。
-	const usDate = addDaysIso(usCloseJstDate, -1);
+	const usDate = addDays(usCloseJstDate, -1);
 	const peers = SOX_PEERS.flatMap((peer) => {
 		const q = (quotes as PeerQuote[]).find((x) => x?.ticker === peer.ticker);
 		if (q?.change_pct == null) return [];
@@ -899,6 +887,13 @@ if (import.meta.vitest) {
 			expect(b.peers).toEqual([
 				{ ticker: "MU", role: "メモリ", change_pct: 1, earnings: "in_close" },
 			]);
+		});
+
+		it("米国の祝日をまたいでも、前の取引日の引け後決算を反映済みとする", () => {
+			// 感謝祭 (11/26 木) 休場。JST 11/28 (土) 06:00 の終値 = 米国 11/27 (金)。
+			expect(
+				peerEarnings("after_close", "2026-11-27", new Set(["2026-11-25"])),
+			).toBe("in_close");
 		});
 
 		it("終値日が無い・データが無ければ unavailable", () => {

@@ -241,6 +241,10 @@ jobs:
               CB/分売/自己株処分/大株主の異動. `lockup_90d` / `lockup_180d` are rough dates counted from the
               announcement; the actual lock-up term and start are in the filing — state them only when confirmed.
               A lock-up end or a pending offering inside the holding horizon is a `bear`/`watch` fact.
+              `large_holding_new` / `large_holding_change` are EDINET 大量保有報告書 / 変更報告書 by `filer`
+              (`ratio_pct` after, `prev_ratio_pct` before; `special` = an institution's routine 特例報告). Report a
+              holder crossing 5%, or building or cutting a stake, as a supply-demand fact; `ratio_pct: null` → name
+              the filing without a direction. Older than a few weeks (`days_since`) → background only.
             - **Earnings near** (`earnings`) is binary-event risk — report the date as a `watch`/`bear` fact.
               **Just out** (`earnings_result.status: fresh`): report `verdict` (beat/miss/inline) as a
               material, and read the price reaction through **## 決算の特色・クセ** in `context_body` (the

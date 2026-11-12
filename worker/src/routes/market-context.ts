@@ -3,10 +3,11 @@
 //   GET /market-context?now=<ISO8601 任意>
 //
 // 取得は D1 直読み。出力構造:
-//   { asof, market_phase, event_context, premarket, live_indexes, sectors, market_news,
+//   { asof, market_phase, event_context, premarket, us_peers, live_indexes, sectors, market_news,
 //     investor_flows, market_short_ratio }
 //
 // premarket は judge-context と違い us_indexes / date も載せる (市場全体のマーケットブリーフに使うため)。
+// us_peers は海外ピア個別株の前夜の騰落 (決算日に当たる銘柄は終値に反映済みか付き)。
 // live_indexes は場中に同時進行で動く指数 (日経225/KOSPI) の最新現値 (premarket=前夜確定 と対)。
 
 import { desc, eq } from "drizzle-orm";
@@ -19,6 +20,7 @@ import { buildLiveIndexesBlock, type LiveIndexRow } from "../lib/live-indexes";
 import { resolveMarketPhase } from "../lib/market-phase";
 import {
 	buildPremarketBlock,
+	buildUsPeersBlock,
 	PREMARKET_COLUMNS,
 	parseUsIndexes,
 } from "../lib/premarket";
@@ -93,7 +95,7 @@ export async function readMarketBackdrop(
 				us_indexes: usIndexes,
 			}
 		: null;
-	return { premarketBlock, premarketLine, liveIndexRows };
+	return { pmRow, premarketBlock, premarketLine, liveIndexRows };
 }
 
 export const marketContext = new Hono<{ Bindings: Env }>();
@@ -104,7 +106,7 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 	const epochNow = Date.now();
 	const { today, marketPhase } = resolveMarketPhase(now, epochNow);
 
-	const { premarketBlock, premarketLine, liveIndexRows } =
+	const { pmRow, premarketBlock, premarketLine, liveIndexRows } =
 		await readMarketBackdrop(env, epochNow, today);
 
 	// sectors: watchlist 各銘柄の daily を 20 本ずつ引いて集計する。
@@ -156,6 +158,12 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 		market_phase: marketPhase,
 		event_context: buildEventContext(today, macroRows, marketPhase),
 		premarket: premarketBlock,
+		us_peers: buildUsPeersBlock(
+			pmRow?.us_peers_json,
+			pmRow?.fetched_at,
+			(premarketBlock.date as string | null) ?? null,
+			macroRows,
+		),
 		live_indexes: buildLiveIndexesBlock(liveIndexRows, epochNow),
 		sectors:
 			sectorReports.length > 0

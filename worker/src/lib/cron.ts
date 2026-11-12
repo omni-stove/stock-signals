@@ -7,6 +7,7 @@ import { jpSqWeek } from "./event-context";
 import { remindUpcomingEvents } from "./event-reminder";
 import { fanOut } from "./fan-out";
 import { collectForcedLiquidation } from "./forced-liquidation";
+import { readFreshness, staleSources } from "./freshness";
 import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
@@ -17,7 +18,12 @@ import { collectNews } from "./news";
 import { listPositionUsers } from "./position-report";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
-import { notifyNewsSlack, notifyParseFailure } from "./slack";
+import {
+	notifyJobFailure,
+	notifyNewsSlack,
+	notifyOps,
+	notifyParseFailure,
+} from "./slack";
 import { collectTimeseries, DAILY_CODES, WATCHLIST } from "./timeseries";
 
 // 銘柄ニュース + 市場テーマニュースの新着を Slack (SLACK_NEWS_WEBHOOK_URL) に通知する。
@@ -65,6 +71,7 @@ async function notifyFreshNews(
 //                           だけで翌日寄り越えの玉を判断するため、intake 同様に全銘柄を無条件判定する。
 //   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日推定 + ピア決算日
 //   - flows  (18:00):        空売り需給 (逆日歩/機関の空売り残高/東証全体の空売り比率) + 投資部門別
+//                            + 大量保有報告書 (EDINET)
 // eod / flows は重いので、ジョブを 1 つずつ別 invocation で回す (fan-out.ts)。
 const CRON_KIND: Record<string, "intake" | "prices" | "eod" | "flows"> = {
 	"30 23 * * *": "intake",
@@ -122,6 +129,17 @@ function isJstMonthStart(scheduledTime: number): boolean {
 	const jst = new Date(scheduledTime + 9 * 60 * 60 * 1000);
 	const d = jst.getUTCDate();
 	return d >= 1 && d <= 3;
+}
+
+// D1 の表ごとの最新日を見て、遅れている収集を運用チャンネルに知らせる (freshness.ts)。
+async function notifyStaleSources(env: Env, today: string): Promise<void> {
+	try {
+		const stale = staleSources(await readFreshness(env, today), today);
+		if (stale.length > 0)
+			await notifyOps(env, `⚠️ データ更新の途絶: ${stale.join(", ")}`);
+	} catch (e) {
+		console.error("freshness check failed:", e);
+	}
 }
 
 // Cron Trigger 発火時。event.cron でどの cron が鳴ったか判別して種別を振り分ける。
@@ -255,6 +273,10 @@ export async function runScheduled(
 			...news.emptyParses.map((c) => `news:${c}`),
 			...(mnews?.emptyParse ? ["market-news"] : []),
 		]);
+		// 引け後 (20:00) は eod / flows の収集が済んでいるので、表ごとの途絶を確かめる (1日1回)。
+		if (event.cron === "0 11 * * *") {
+			await notifyStaleSources(env, jstDate(event.scheduledTime));
+		}
 		return;
 	}
 	if (kind === "prices") {
@@ -330,6 +352,7 @@ export async function runScheduled(
 				: []),
 		]);
 		if (eodFailed.length > 0) console.error("eod jobs failed:", eodFailed);
+		await notifyJobFailure(env, "eod", eodFailed);
 		// 強制決済スコア (追証売り/踏み上げ) を当日 daily が確定した直後に算出して D1 に保存する。
 		// daily を上で収集済みなので最新足が揃っている。margin は intake で取得済みの最新行を読む。
 		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
@@ -369,7 +392,8 @@ export async function runScheduled(
 		return;
 	}
 	if (kind === "flows") {
-		// 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率) と投資部門別売買 (週次)。
+		// 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率)・投資部門別売買 (週次)・
+		// 大量保有報告書 (EDINET)。
 		// 公表が夕方以降のものを拾うため引け後 eod と時間をずらし、1 ジョブ = 1 invocation で回す。
 		const { results, failed } = await fanOut(env, [
 			{ kind: "short-interest", part: "lending" },
@@ -380,8 +404,10 @@ export async function runScheduled(
 			})),
 			{ kind: "short-interest", part: "market" },
 			{ kind: "investor-flows" },
+			{ kind: "large-holdings" },
 		]);
 		if (failed.length > 0) console.error("flows jobs failed:", failed);
+		await notifyJobFailure(env, "flows", failed);
 		console.log("scheduled flows done:", JSON.stringify({ results, failed }));
 		return;
 	}

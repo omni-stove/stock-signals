@@ -12,12 +12,13 @@ async function inflate(
 	return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-// zip から name のエントリを取り出して UTF-8 文字列で返す。無ければ null。
+// zip から名前が match に合う最初のエントリを取り出してバイト列で返す。無ければ null。
 // 中央ディレクトリ (末尾の EOCD から辿る) を走査し、stored(0) / deflate(8) だけを扱う。
-export async function unzipText(
+export async function unzipBytes(
 	zip: Uint8Array,
-	name: string,
-): Promise<string | null> {
+	match: string | ((name: string) => boolean),
+): Promise<Uint8Array | null> {
+	const hit = typeof match === "string" ? (n: string) => n === match : match;
 	const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
 	let eocd = -1;
 	for (let i = zip.length - 22; i >= Math.max(0, zip.length - 65_557); i--) {
@@ -40,16 +41,25 @@ export async function unzipText(
 		const localOffset = view.getUint32(p + 42, true);
 		const entryName = decoder.decode(zip.subarray(p + 46, p + 46 + nameLen));
 		p += 46 + nameLen + extraLen + commentLen;
-		if (entryName !== name) continue;
+		if (!hit(entryName)) continue;
 		const localNameLen = view.getUint16(localOffset + 26, true);
 		const localExtraLen = view.getUint16(localOffset + 28, true);
 		const start = localOffset + 30 + localNameLen + localExtraLen;
 		const data = zip.subarray(start, start + compSize);
-		if (method === 0) return decoder.decode(data);
-		if (method === 8) return decoder.decode(await inflate(data, "deflate-raw"));
+		if (method === 0) return data;
+		if (method === 8) return inflate(data, "deflate-raw");
 		return null;
 	}
 	return null;
+}
+
+// zip から name のエントリを取り出して UTF-8 文字列で返す。無ければ null。
+export async function unzipText(
+	zip: Uint8Array,
+	name: string,
+): Promise<string | null> {
+	const bytes = await unzipBytes(zip, name);
+	return bytes ? new TextDecoder("utf-8").decode(bytes) : null;
 }
 
 // PDF の FlateDecode ストリームを展開し、latin1 文字列の配列で返す (展開できないものは飛ばす)。

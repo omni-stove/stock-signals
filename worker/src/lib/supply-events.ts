@@ -1,6 +1,9 @@
 // judge-context 用: 株の供給が増えるイベント (売出し・公募・第三者割当・CB・分売・自己株処分・
 // 大株主の異動・ロックアップ) を、適時開示・公式 IR の見出しから拾って並べる。
 // 見出しの分類だけを決定論で行い、条件 (株数・ロックアップの期間と起点) は開示本文が一次情報。
+// EDINET の大量保有報告書・変更報告書 (large-holdings.ts で絞ったもの) も同じ items に並べる。
+
+import { holdingItems, type LargeHoldingRow } from "./large-holdings";
 
 export interface SupplyArticle {
 	date: string; // 発表日 YYYY-MM-DD
@@ -49,6 +52,7 @@ function classifySupply(title: string): string | null {
 export function buildSupply(
 	articles: SupplyArticle[],
 	today: string,
+	holdings: LargeHoldingRow[] = [],
 ): Record<string, unknown> {
 	const since = addDays(today, -LOOKBACK_DAYS);
 	const seen = new Set<string>();
@@ -75,10 +79,13 @@ export function buildSupply(
 						: {}),
 				},
 			];
-		})
-		.sort((a, b) => (a.date < b.date ? 1 : -1))
+		});
+	const merged = [...items, ...holdingItems(holdings, today)]
+		.sort((a, b) => (String(a.date) < String(b.date) ? 1 : -1))
 		.slice(0, 8);
-	return items.length > 0 ? { status: "ok", items } : { status: "none" };
+	return merged.length > 0
+		? { status: "ok", items: merged }
+		: { status: "none" };
 }
 
 if (import.meta.vitest) {
@@ -142,6 +149,26 @@ if (import.meta.vitest) {
 					},
 				],
 			});
+		});
+		it("大量保有の報告を日付順に混ぜる", () => {
+			const out = buildSupply(
+				[{ date: "2026-09-01", title: "株式の売出しに関するお知らせ" }],
+				"2026-11-11",
+				[
+					{
+						filer: "ファンドX",
+						report_kind: "new",
+						special: false,
+						submit_date: "2026-11-05",
+						ratio: 5.3,
+						prev_ratio: null,
+					},
+				],
+			);
+			expect((out.items as { kind: string }[]).map((i) => i.kind)).toEqual([
+				"large_holding_new",
+				"secondary_offering",
+			]);
 		});
 		it("該当なしは none", () => {
 			expect(buildSupply([], "2026-11-11")).toEqual({ status: "none" });

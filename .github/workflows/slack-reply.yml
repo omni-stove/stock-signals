@@ -157,7 +157,7 @@ jobs:
               collected), `valuation` (予想PER/PBR, own range, sector peers), `short_interest` (逆日歩, institutional
               short reports by `calc_date`), `sector` (this ticker's `rank` of `peers_n` and `rel_strength_pct`
               in its sector), `supply` (売出し/公募/CB/大株主の異動; `lockup_*` are rough dates from the
-              announcement). Market-wide flows (投資部門別・空売り比率) are in `market_brief` when present.
+              announcement; `large_holding_*` = EDINET 大量保有・変更報告書 with `ratio_pct` / `prev_ratio_pct`). Market-wide flows (投資部門別・空売り比率) are in `market_brief` when present.
             - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
             ## What to do

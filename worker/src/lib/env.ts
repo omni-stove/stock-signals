@@ -62,6 +62,9 @@ export interface Env {
 	GH_APP_ID?: string;
 	GH_APP_PRIVATE_KEY?: string;
 	GH_APP_INSTALL_ID?: string;
+	// EDINET API v2 の Subscription-Key (Secret)。未設定なら大量保有報告書の収集をスキップする。
+	//   設定: npx wrangler secret put EDINET_API_KEY
+	EDINET_API_KEY?: string;
 	// 発火先リポジトリ (owner/repo)。未設定なら下記デフォルトを使う。
 	GITHUB_REPO?: string;
 }

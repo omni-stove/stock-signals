@@ -100,6 +100,11 @@ jobs:
               → report from `sectors` + event alone. `us_session: carried_over` = 米国休場明け — the numbers are
               the prior close (`date`) that the last JP session already traded on; say so and don't report them
               as fresh overnight news.
+            - **`us_peers`** (`peers[]`: `ticker`, `role`, `change_pct` for the US session `us_date`) explains
+              what drove SOX. Name a peer only when it carries `earnings` or splits from SOX (opposite sign, or a
+              much larger move); otherwise skip — never list them all. `earnings: after_this_close` = the peer
+              reported after this close, so `change_pct` does not include the result and the reaction comes in
+              today's session; `in_close` = the close already reflects it. `unavailable` → skip.
             - **`live_indexes`** is Asia trading live in the same session. Each entry: `key` (`nikkei225` =
               Tokyo's own live tape / `kospi` = semis-heavy Korea, Samsung / SK hynix), `price`, `change_pct`,
               `status` (`ok` / `stale` = older than 1h → demote). Pre-open (`market_phase: premarket`) they

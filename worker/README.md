@@ -60,6 +60,9 @@ pnpm exec wrangler deploy                                 # ★初回のみ手�
 - **GitHub App (omnistove-internal-auth)**: 新規 IR/ニュースで context-builder を repository_dispatch
   で起動する。`GH_APP_PRIVATE_KEY` を Secret、`GH_APP_ID` / `GH_APP_INSTALL_ID` を wrangler.toml vars に。
   3つ揃っていなければ発火は no-op (収集自体は動く)。`curl .../dispatch-test?code=285A` で E2E 確認。
+- **EDINET API**: 大量保有報告書の収集に使う。EDINET API の利用登録で発行される Subscription-Key を
+  `pnpm exec wrangler secret put EDINET_API_KEY` で入れる。未設定なら収集をスキップ。
+  `curl .../run?kind=large-holdings` で確認。
 
 ## D1 スキーマ (`src/lib/schema.ts` / drizzle-kit migration)
 

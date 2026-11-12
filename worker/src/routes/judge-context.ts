@@ -11,7 +11,8 @@
 //     context_body, earnings, earnings_result, revisions, valuation, premarket, sector, daily, trend,
 //     relative, event_reactions, prices, margin, short_interest, supply, forced }
 // sector は同一セクタ内での対象銘柄の順位・相対強弱とセクタ平均。trend / relative /
-// event_reactions は約1年分の日足と TOPIX から、supply は適時開示・公式 IR の見出しから組む。
+// event_reactions は約1年分の日足と TOPIX から、supply は適時開示・公式 IR の見出しと EDINET の
+// 大量保有報告書から組む。
 // 市場全体の需給 (投資部門別・東証全体の空売り比率) は market-brief 側に任せて載せない。
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
@@ -40,6 +41,7 @@ import {
 	type PremarketRow,
 	type PriceRow,
 } from "../lib/judge-context";
+import { readLargeHoldings } from "../lib/large-holdings";
 import { resolveMarketPhase, sessionElapsedFrac } from "../lib/market-phase";
 import { PREMARKET_COLUMNS } from "../lib/premarket";
 import {
@@ -377,7 +379,11 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 				lending: buildLending(shortInterest.lending),
 				positions: buildShortPositions(shortInterest.positions, today),
 			},
-			supply: buildSupply(officialArticles, today),
+			supply: buildSupply(
+				officialArticles,
+				today,
+				await readLargeHoldings(env, code, today),
+			),
 			forced: buildForced(forcedRow ?? null),
 		}),
 	);

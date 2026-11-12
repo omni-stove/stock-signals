@@ -1,5 +1,5 @@
 // Cloudflare Worker: 手動起動 (dev検証/オンデマンド) ルート。
-//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|peer-earnings-jp|macro-events|margin|short-interest|investor-flows|premarket&code=285A[&limit=N][&part=]
+//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|peer-earnings-jp|macro-events|margin|short-interest|investor-flows|large-holdings|premarket&code=285A[&limit=N][&part=]
 //   short-interest は part=lending|positions|market で 1 つだけ取れる。cron は重い収集をここへ
 //   1 ジョブずつ投げる (lib/fan-out.ts)。
 //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
@@ -17,6 +17,7 @@ import { dispatchSignalUpdate } from "../lib/github-dispatch";
 import { collectInvestorFlows } from "../lib/investor-flows";
 import { collectAll } from "../lib/ir-collect";
 import { DEFAULT_LIMIT } from "../lib/ir-sources";
+import { collectLargeHoldings } from "../lib/large-holdings";
 import { collectMacroEvents } from "../lib/macro-events";
 import { collectMargin } from "../lib/margin";
 import { collectMarketNews } from "../lib/market-news";
@@ -152,6 +153,11 @@ run.get("/", async (c) => {
 	if (kind === "investor-flows") {
 		// 投資部門別売買状況 (JPX 週次、東証プライム) の未取得週を取る。
 		const result = await collectInvestorFlows(env);
+		return c.json({ ok: true, kind, result });
+	}
+	if (kind === "large-holdings") {
+		// EDINET の大量保有報告書・変更報告書 (監視銘柄が対象のもの) の直近分を取る。
+		const result = await collectLargeHoldings(env);
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "prices" || kind === "daily" || kind === "fundamentals") {

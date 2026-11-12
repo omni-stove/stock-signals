@@ -130,7 +130,8 @@ jobs:
               disclosure that sold off on `excess_2d_pct` shows exhausted buyers), `valuation.per` against
               `per_range`/`peers` (how much good news the price carries), `revisions.revisions[]` (a `down`
               revision or a forecast left unchanged into a strong cycle). Supply shocks: `supply.items[]`
-              (売出し/公募/CB/大株主の異動, `lockup_90d`/`lockup_180d` are rough dates from the announcement) and
+              (売出し/公募/CB/大株主の異動, `lockup_90d`/`lockup_180d` are rough dates from the announcement; a
+              `large_holding_change` with `ratio_pct` below `prev_ratio_pct` = a large holder selling down) and
               `short_interest` (`positions.total_ratio_pct` rising = institutions building shorts; a running
               `lending.fee` = squeeze fuel, not a crash path). `sector.rel_strength_pct` / `rank` of `peers_n`
               separates a name-specific run-up from the sector's.

@@ -394,16 +394,11 @@ export async function notifyEventReminder(
 	}
 }
 
-// 収集ソースの「HTTP 200 なのに一覧パース0件」を運用者に警告する。ソースサイトの DOM 変更で
-// 収集がエラーも出さずに止まる事故の検知用。sources は "news:285A" / "market-news" 等のラベル。
-// 送り先は SLACK_WEBHOOK_URL (レポートと同じ運用チャンネル)。未設定/0件なら no-op。best-effort。
-export async function notifyParseFailure(
-	env: Env,
-	sources: string[],
-): Promise<void> {
+// 運用者向けの警告を SLACK_WEBHOOK_URL (レポートと同じ運用チャンネル) に 1 行流す。
+// 未設定なら no-op。通知失敗は収集を止めない (best-effort)。
+export async function notifyOps(env: Env, text: string): Promise<void> {
 	const webhook = env.SLACK_WEBHOOK_URL;
-	if (!webhook || sources.length === 0) return;
-	const text = `⚠️ 収集一覧のパース0件 (DOM変更の可能性): ${sources.join(", ")}`;
+	if (!webhook) return;
 	try {
 		const res = await fetch(webhook, {
 			method: "POST",
@@ -412,13 +407,35 @@ export async function notifyParseFailure(
 		});
 		if (!res.ok) {
 			console.error(
-				`slack parse-failure notify failed: HTTP ${res.status} ${await res.text()}`,
+				`slack ops notify failed: HTTP ${res.status} ${await res.text()}`,
 			);
 		}
 	} catch (e) {
-		// 通知失敗は収集を止めない (best-effort)。
-		console.error(`slack parse-failure notify error: ${(e as Error).message}`);
+		console.error(`slack ops notify error: ${(e as Error).message}`);
 	}
+}
+
+// 収集ソースの「HTTP 200 なのに一覧パース0件」を警告する。ソースサイトの DOM 変更で
+// 収集がエラーも出さずに止まる事故の検知用。sources は "news:285A" / "market-news" 等のラベル。
+export async function notifyParseFailure(
+	env: Env,
+	sources: string[],
+): Promise<void> {
+	if (sources.length === 0) return;
+	await notifyOps(
+		env,
+		`⚠️ 収集一覧のパース0件 (DOM変更の可能性): ${sources.join(", ")}`,
+	);
+}
+
+// fan-out で落ちた収集ジョブ (fan-out.ts の jobKey) を警告する。0 件なら no-op。
+export async function notifyJobFailure(
+	env: Env,
+	cron: string,
+	jobs: string[],
+): Promise<void> {
+	if (jobs.length === 0) return;
+	await notifyOps(env, `⚠️ 収集ジョブ失敗 (${cron}): ${jobs.join(", ")}`);
 }
 
 if (import.meta.vitest) {
@@ -577,6 +594,27 @@ if (import.meta.vitest) {
 			const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
 			expect(body.text).toContain("パース0件");
 			expect(body.text).toContain("news:285A, market-news");
+			vi.unstubAllGlobals();
+		});
+	});
+
+	describe("notifyJobFailure", () => {
+		const env = { SLACK_WEBHOOK_URL: "https://hooks.slack.com/x" } as Env;
+
+		it("失敗ジョブ 0 件なら fetch を呼ばない (no-op)", async () => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyJobFailure(env, "eod", []);
+			expect(fetchMock).not.toHaveBeenCalled();
+			vi.unstubAllGlobals();
+		});
+
+		it("cron 種別と失敗ジョブを 1 行で送る", async () => {
+			const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyJobFailure(env, "eod", ["daily:6857", "earnings"]);
+			const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+			expect(body.text).toBe("⚠️ 収集ジョブ失敗 (eod): daily:6857, earnings");
 			vi.unstubAllGlobals();
 		});
 	});

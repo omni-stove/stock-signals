@@ -1,6 +1,6 @@
 // Cloudflare Worker: 寄り前の地合い収集 (premarket backdrop)
 //
-// kabutan パーサで米国指数 (SOX/Nasdaq/Dow/VIX)・CME日経225先物(ドル建て)・ドル円を、
+// kabutan パーサで米国指数 (SOX/Nasdaq/Dow/VIX)・海外ピア個別株・CME日経225先物(ドル建て)・ドル円を、
 // 米財務省の日次イールド CSV で米10年債利回りを取得し、D1 テーブル premarket_backdrop に
 // INSERT OR REPLACE で冪等に書く。
 //
@@ -12,6 +12,7 @@
 import { db } from "./db";
 import { stripTags } from "./html";
 import { parseKabutanIndex } from "./live-indexes";
+import { type PeerRelease, SOX_PEERS } from "./peer-earnings";
 import { premarketBackdrop } from "./schema";
 import { fetchHtml, sleep } from "./utils";
 
@@ -109,6 +110,28 @@ function parseUsIndex(html: string, idx: UsIndexDef): IndexQuote {
 	};
 }
 
+// us.kabutan.jp の個別株ページ。アイコンにも text-3xl が付くので、現値ブロックは
+// "$787.89 前日比 -23.41 ( -2.89 %) NY時間 12日 16:00 日本時間 13日 06:00" の並びで探す。
+const US_STOCK_URL = (ticker: string) =>
+	`https://us.kabutan.jp/stocks/${ticker}`;
+
+type PeerQuote = {
+	ticker: string;
+	change_pct: number | null;
+	jst_time: string | null;
+};
+
+function parseUsStock(html: string, ticker: string): PeerQuote {
+	const m = stripTags(html).match(
+		/\$[\d,]+(?:\.\d+)?\s*前日比\s*[+\-－ー]?[\d,]+(?:\.\d+)?\s*\(\s*([+\-－ー]?[\d.]+)\s*%\s*\)\s*NY時間\s*[0-9]{1,2}日\s*[0-9:]{4,5}\s*日本時間\s*([0-9]{1,2}日\s*[0-9:]{4,5})/,
+	);
+	return {
+		ticker,
+		change_pct: m ? toNumber(m[1]) : null,
+		jst_time: m ? m[2].replace(/\s+/g, " ") : null,
+	};
+}
+
 // CME日経225先物(ドル建て)ページ。.text-3xl 周辺は "65,560円 ー 円 ー 6月限" のように
 // 現値+限月。前日比は空欄のことが多いので現値と限月だけ取る。
 function parseNikkeiFutures(html: string): {
@@ -155,7 +178,7 @@ function parseTreasury10y(csv: string): Us10y {
 	};
 }
 
-// 米国指数 (SOX/Nasdaq/Dow/VIX)・日経先物・ドル円・米10年債を取得し、premarket_backdrop に1行 INSERT する (append-only)。
+// 米国指数 (SOX/Nasdaq/Dow/VIX)・海外ピア個別株・日経先物・ドル円・米10年債を取得し、premarket_backdrop に1行 INSERT する (append-only)。
 // 1指数が落ちても他は続行 (price=null で残す)。PK は取得時刻 (UTC ISO8601) なので
 // 暦日変換は一切しない — 時差ズレを構造的に避けるため。同じ NY クローズを複数回取っても
 // 取得ごとに別行が積まれるだけで、最新は fetched_at DESC LIMIT 1 で取れる。
@@ -182,6 +205,24 @@ export async function collectBackdrop(
 				jst_time: null,
 			});
 			console.error(`premarket [${idx.key}] error: ${(e as Error).message}`);
+		}
+	}
+
+	const us_peers: PeerQuote[] = [];
+	for (const peer of SOX_PEERS) {
+		await sleep(interval);
+		try {
+			us_peers.push(
+				parseUsStock(
+					await fetchHtml(US_STOCK_URL(peer.ticker), env),
+					peer.ticker,
+				),
+			);
+		} catch (e) {
+			us_peers.push({ ticker: peer.ticker, change_pct: null, jst_time: null });
+			console.error(
+				`premarket [${peer.ticker}] error: ${(e as Error).message}`,
+			);
 		}
 	}
 
@@ -245,6 +286,7 @@ export async function collectBackdrop(
 		us10yChangeBp: macro.us10y_change_bp,
 		us10yDate: macro.us10y_date,
 		usIndexesJson: JSON.stringify(us_indexes),
+		usPeersJson: JSON.stringify(us_peers),
 	};
 	await db(env.DB)
 		.insert(premarketBackdrop)
@@ -283,6 +325,7 @@ export const PREMARKET_COLUMNS = {
 	us10y_change_bp: premarketBackdrop.us10yChangeBp,
 	us10y_date: premarketBackdrop.us10yDate,
 	us_indexes_json: premarketBackdrop.usIndexesJson,
+	us_peers_json: premarketBackdrop.usPeersJson,
 };
 
 export type MacroRow = {
@@ -431,6 +474,75 @@ export function buildPremarketBlock(
 		...macroFields(row),
 		us_indexes: usIndexes,
 	};
+}
+
+// ── 海外ピアの前夜の騰落 (/market-context 用) ───────────────────────────────
+// market-brief だけが読む。銘柄ブリーフには渡さない (市場全体の材料は market-brief 経由)。
+// 米国セッションの終値日 (SOX と同じ JST 暦日) と揃わない銘柄は落とし、決算日に当たる銘柄にだけ
+// earnings を付ける: after_this_close = この終値の後に発表 (終値に未反映、反応は時間外と次の
+// セッション) / in_close = この終値に反映済み (寄り前発表、または前営業日の引け後発表)。
+
+export type PeerEarningsRow = { kind?: string | null; date: string };
+
+function addDaysIso(date: string, days: number): string {
+	const d = new Date(`${date}T12:00:00Z`);
+	d.setUTCDate(d.getUTCDate() + days);
+	return d.toISOString().slice(0, 10);
+}
+
+function prevWeekday(date: string): string {
+	let d = addDaysIso(date, -1);
+	while ([0, 6].includes(new Date(`${d}T12:00:00Z`).getUTCDay()))
+		d = addDaysIso(d, -1);
+	return d;
+}
+
+function peerEarnings(
+	release: PeerRelease,
+	usDate: string,
+	reportDates: Set<string>,
+): "after_this_close" | "in_close" | null {
+	if (reportDates.has(usDate))
+		return release === "after_close" ? "after_this_close" : "in_close";
+	if (release === "after_close" && reportDates.has(prevWeekday(usDate)))
+		return "in_close";
+	return null;
+}
+
+// usCloseJstDate は buildPremarketBlock の date (SOX 等の米国終値の JST 暦日)。
+export function buildUsPeersBlock(
+	json: string | null | undefined,
+	fetchedAt: string | null | undefined,
+	usCloseJstDate: string | null,
+	earningsRows: PeerEarningsRow[],
+): Record<string, unknown> {
+	const quotes = parseUsIndexes(json);
+	if (!usCloseJstDate || !Array.isArray(quotes) || quotes.length === 0)
+		return { status: "unavailable" };
+	// 米国の引け (16:00 ET) は JST の翌朝なので、米国の取引日は JST 暦日の前日。
+	const usDate = addDaysIso(usCloseJstDate, -1);
+	const peers = SOX_PEERS.flatMap((peer) => {
+		const q = (quotes as PeerQuote[]).find((x) => x?.ticker === peer.ticker);
+		if (q?.change_pct == null) return [];
+		if (resolveUsCloseJstDate([q], fetchedAt) !== usCloseJstDate) return [];
+		const dates = new Set(
+			earningsRows
+				.filter((r) => r.kind === `peer_earnings:${peer.ticker}`)
+				.map((r) => r.date),
+		);
+		const earnings = peerEarnings(peer.release, usDate, dates);
+		return [
+			{
+				ticker: peer.ticker,
+				role: peer.role,
+				change_pct: q.change_pct,
+				...(earnings ? { earnings } : {}),
+			},
+		];
+	});
+	return peers.length > 0
+		? { status: "ok", us_date: usDate, peers }
+		: { status: "unavailable" };
 }
 
 if (import.meta.vitest) {
@@ -689,6 +801,118 @@ if (import.meta.vitest) {
 			expect(b.vix_price).toBeNull();
 			expect(b.us10y_date).toBeNull();
 			expect(b.us_indexes).toEqual([]);
+		});
+	});
+
+	describe("parseUsStock", () => {
+		it("アイコンの text-3xl を飛ばし、現値ブロックから騰落率と JST 時刻を取る", () => {
+			const html = [
+				'<i class="fa-regular fa-chart-line text-3xl !block !w-6"></i> 株価情報',
+				'<div class="flex-1 text-right text-3xl mr-1">$787.89</div>',
+				"<div> 前日比 -23.41 ( -2.89 %) NY時間 12日 16:00 日本時間 13日 06:00 &nbsp; PER 10.6 倍</div>",
+			].join("");
+			expect(parseUsStock(html, "MU")).toEqual({
+				ticker: "MU",
+				change_pct: -2.89,
+				jst_time: "13日 06:00",
+			});
+		});
+		it("現値ブロックが無ければ null", () => {
+			expect(parseUsStock("<div>maintenance</div>", "MU")).toEqual({
+				ticker: "MU",
+				change_pct: null,
+				jst_time: null,
+			});
+		});
+	});
+
+	describe("buildUsPeersBlock", () => {
+		// JST 11/13 (金) 08:30 取得。米国の終値は JST 11/13 06:00 = 米国 11/12 (木)。
+		const FETCHED = "2026-11-12T23:30:00Z";
+		const json = (rows: Partial<PeerQuote>[]) =>
+			JSON.stringify(rows.map((r) => ({ jst_time: "13日 06:00", ...r })));
+
+		it("終値日が揃った銘柄だけを SOX_PEERS の順に並べる", () => {
+			const b = buildUsPeersBlock(
+				json([
+					{ ticker: "NVDA", change_pct: 1.2 },
+					{ ticker: "MU", change_pct: -2.9 },
+					{ ticker: "AMAT", change_pct: 0.4, jst_time: "12日 06:00" },
+					{ ticker: "KLAC", change_pct: null },
+				]),
+				FETCHED,
+				"2026-11-13",
+				[],
+			);
+			expect(b).toEqual({
+				status: "ok",
+				us_date: "2026-11-12",
+				peers: [
+					{ ticker: "MU", role: "メモリ", change_pct: -2.9 },
+					{ ticker: "NVDA", role: "GPU", change_pct: 1.2 },
+				],
+			});
+		});
+
+		it("決算日に当たる銘柄に、終値に反映済みかを付ける", () => {
+			const b = buildUsPeersBlock(
+				json([
+					{ ticker: "MU", change_pct: -2.9 }, // 当日引け後 → 未反映
+					{ ticker: "NVDA", change_pct: 1.2 }, // 前営業日の引け後 → 反映済み
+					{ ticker: "TSM", change_pct: 3.1 }, // 当日寄り前 → 反映済み
+				]),
+				FETCHED,
+				"2026-11-13",
+				[
+					{ kind: "peer_earnings:MU", date: "2026-11-12" },
+					{ kind: "peer_earnings:NVDA", date: "2026-11-11" },
+					{ kind: "peer_earnings:TSM", date: "2026-11-12" },
+				],
+			);
+			expect(b.peers).toEqual([
+				{
+					ticker: "MU",
+					role: "メモリ",
+					change_pct: -2.9,
+					earnings: "after_this_close",
+				},
+				{ ticker: "NVDA", role: "GPU", change_pct: 1.2, earnings: "in_close" },
+				{
+					ticker: "TSM",
+					role: "ファウンドリ",
+					change_pct: 3.1,
+					earnings: "in_close",
+				},
+			]);
+		});
+
+		it("週明けの朝は金曜の終値を基準に、木曜引け後の決算を反映済みとする", () => {
+			// JST 11/16 (月) 朝。終値は JST 11/14 06:00 = 米国 11/13 (金)。
+			const b = buildUsPeersBlock(
+				JSON.stringify([
+					{ ticker: "MU", change_pct: 1, jst_time: "14日 06:00" },
+				]),
+				"2026-11-15T23:30:00Z",
+				"2026-11-14",
+				[{ kind: "peer_earnings:MU", date: "2026-11-12" }],
+			);
+			expect(b.peers).toEqual([
+				{ ticker: "MU", role: "メモリ", change_pct: 1, earnings: "in_close" },
+			]);
+		});
+
+		it("終値日が無い・データが無ければ unavailable", () => {
+			expect(buildUsPeersBlock(null, FETCHED, "2026-11-13", [])).toEqual({
+				status: "unavailable",
+			});
+			expect(
+				buildUsPeersBlock(
+					json([{ ticker: "MU", change_pct: 1 }]),
+					FETCHED,
+					null,
+					[],
+				),
+			).toEqual({ status: "unavailable" });
 		});
 	});
 }

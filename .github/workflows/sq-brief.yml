@@ -98,6 +98,16 @@ jobs:
               SQ (`pre_day_abs_x` above 1 while `sq_day_share` is at or below normal), or barely (all near 1).
               `n` is small (one SQ a month) — say so when it is, weigh `major` lightly when `major.n` ≤ 2, and
               never present an average of a handful of events as a law. `status: insufficient` → skip that name.
+              **`events[].tags`** note what else was going on in each past SQ week: `trend` (SQ週前の地合い: up /
+              down / range, from `pre_20d_ret_pct` against the name's normal 20-day swing), `earnings` (自社決算が
+              `sq_week` / `post_week` (SQ明け) / `none`; `unknown` = no earnings record that far back; `null` = index),
+              `macro` (FOMC・日銀・ピア決算・その銘柄の指数採用/除外 in the SQ week), `confounded` (earnings or macro
+              overlapped, so the move may not be SQ's). `clean` / `sensitivity_clean` are the same aggregates over
+              the non-confounded events only, present only when some event was confounded. When `sensitivity`
+              and `sensitivity_clean` disagree, lead with `sensitivity_clean` and name the tagged event that drove
+              the gap; when `clean.n` ≤ 2, say the SQ effect can't be separated. Use
+              `trend` to explain an outlier or to note which past weeks resemble this one, never to filter the
+              aggregates further.
             - **`week_to_date`**: this week so far (前週末からのリターン, `excess_pct` = TOPIX比). A week that has
               already run hard into SQ is what `reversal_rate` speaks to.
             - **`premarket`** (last night's NY: `sox_change_pct` leads for semis, `nikkei_futures_price` is the

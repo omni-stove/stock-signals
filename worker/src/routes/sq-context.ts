@@ -7,9 +7,10 @@
 //     investor_flows, market: { nikkei225, topix, nt_ratio }, tickers: [{ code, name, sector_role,
 //     history, week_to_date }] }
 // sq は今週の日本SQ (SQ週でなければ次の SQ と in_week=false)。history は過去の SQ週の値動きと
-// SQ連動度 (lib/sq-week)。日経225 と銘柄は TOPIX 比の超過分も持つ。
+// SQ連動度 (lib/sq-week)。日経225 と銘柄は TOPIX 比の超過分も持つ。各回の備考のタグは macro_events と、
+// 銘柄なら決算発表日 (articles の決算短信の日付 + earnings.detail の直近 2 回) から付ける。
 
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, like, notLike } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
@@ -23,7 +24,7 @@ import {
 import { buildInvestorFlows, readInvestorFlows } from "../lib/investor-flows";
 import { buildLiveIndexesBlock } from "../lib/live-indexes";
 import { resolveMarketPhase } from "../lib/market-phase";
-import { daily, macroEvents } from "../lib/schema";
+import { articles, daily, earnings, macroEvents } from "../lib/schema";
 import {
 	buildMarketShortRatio,
 	readMarketShortRatio,
@@ -56,6 +57,34 @@ async function readBars(env: Env, code: string): Promise<SqBar[]> {
 		.all()) as SqBar[];
 }
 
+// 決算発表日 (YYYY-MM-DD)。決算短信の掲載日と、earnings.detail に残る直近 2 回の発表日を合わせる。
+async function readEarningsDates(env: Env, code: string): Promise<string[]> {
+	const rows = await db(env.DB)
+		.select({ published_at: articles.publishedAt })
+		.from(articles)
+		.where(
+			and(
+				eq(articles.ticker, code),
+				like(articles.title, "%決算短信%"),
+				notLike(articles.title, "%訂正%"),
+			),
+		)
+		.all();
+	const next = await db(env.DB)
+		.select({ detail: earnings.detail })
+		.from(earnings)
+		.where(eq(earnings.ticker, code))
+		.get();
+	const dates = new Set<string>();
+	for (const r of rows) {
+		const d = r.published_at?.slice(0, 10);
+		if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) dates.add(d);
+	}
+	for (const m of next?.detail?.matchAll(/\((\d{4}-\d{2}-\d{2})\)/g) ?? [])
+		dates.add(m[1]);
+	return [...dates].sort();
+}
+
 export const sqContext = new Hono<{ Bindings: Env }>();
 
 sqContext.get("/sq-context", async (c: Context<{ Bindings: Env }>) => {
@@ -82,20 +111,6 @@ sqContext.get("/sq-context", async (c: Context<{ Bindings: Env }>) => {
 		today,
 	);
 
-	const topix = await readBars(env, BENCHMARK_CODE);
-	const nikkei = await readBars(env, NIKKEI225_CODE);
-	const tickers = [];
-	for (const t of WATCHLIST_META) {
-		const bars = await readBars(env, t.code);
-		tickers.push({
-			code: t.code,
-			name: t.name,
-			sector_role: t.sector_role,
-			history: buildSqHistory(bars, weekStart, topix),
-			week_to_date: week ? buildSqWeekToDate(bars, weekStart, topix) : null,
-		});
-	}
-
 	const macroRows = (await db(env.DB)
 		.select({
 			date: macroEvents.date,
@@ -106,6 +121,24 @@ sqContext.get("/sq-context", async (c: Context<{ Bindings: Env }>) => {
 		})
 		.from(macroEvents)
 		.all()) as MacroEventRow[];
+
+	const topix = await readBars(env, BENCHMARK_CODE);
+	const nikkei = await readBars(env, NIKKEI225_CODE);
+	const tickers = [];
+	for (const t of WATCHLIST_META) {
+		const bars = await readBars(env, t.code);
+		tickers.push({
+			code: t.code,
+			name: t.name,
+			sector_role: t.sector_role,
+			history: buildSqHistory(bars, weekStart, topix, {
+				code: t.code,
+				earningsDates: await readEarningsDates(env, t.code),
+				macroRows,
+			}),
+			week_to_date: week ? buildSqWeekToDate(bars, weekStart, topix) : null,
+		});
+	}
 
 	return c.json({
 		asof: today,
@@ -120,11 +153,11 @@ sqContext.get("/sq-context", async (c: Context<{ Bindings: Env }>) => {
 		investor_flows: buildInvestorFlows(await readInvestorFlows(env.DB)),
 		market: {
 			nikkei225: {
-				history: buildSqHistory(nikkei, weekStart, topix),
+				history: buildSqHistory(nikkei, weekStart, topix, { macroRows }),
 				week_to_date: week ? buildSqWeekToDate(nikkei, weekStart, topix) : null,
 			},
 			topix: {
-				history: buildSqHistory(topix, weekStart),
+				history: buildSqHistory(topix, weekStart, undefined, { macroRows }),
 				week_to_date: week ? buildSqWeekToDate(topix, weekStart) : null,
 			},
 			nt_ratio: buildNtRatio(nikkei, topix, weekStart),

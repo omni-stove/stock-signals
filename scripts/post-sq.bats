@@ -91,6 +91,12 @@ payload() {
   grep -qF '6857 アドバンテスト: 今週 +12.23%（TOPIX比 +10.73%） / SQ連動 寄りギャップ 1.58倍 / SQ日の割合 24%（平常 21%） / SQ前の日次値幅 0.87倍 / 週の値幅 0.82倍 / 出来高 1.17倍 / 明け反転 80%（n=5）' <<<"$t"
 }
 
+@test "numbers: clean count when some past SQ overlapped earnings or events" {
+  jq '.tickers[0].history.clean = {n:3}' "$CTX" > "$CTX.tmp" && mv "$CTX.tmp" "$CTX"
+  run_sq "$SIG" "$CTX"
+  payload | jq -r '.blocks[1].elements[0].text' | grep -qF '明け反転 80%（n=5・決算/イベントの重なりを除くと n=3）'
+}
+
 @test "numbers: ticker without data is skipped" {
   run_sq "$SIG" "$CTX"
   ! payload | jq -r '.blocks[1].elements[0].text' | grep -qF '6976'

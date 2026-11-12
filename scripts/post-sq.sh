@@ -44,7 +44,8 @@ SECTIONS_JSON="$(printf '%s' "$SIGNAL_JSON" | jq -c '
 # --- 数値行 (決定論) ----------------------------------------------------------
 # 1 行目 = SQ日・限月・残り日数、日経225 (TOPIX比) と TOPIX の今週リターン、NT倍率 (前週末比)。2 行目以降 = 銘柄ごとの今週リターン (TOPIX比) と
 # 過去の SQ連動度 (SQ日の寄りギャップが平常週の同じ曜日の何倍か / 週の値動きのうち SQ日の割合と平常週の同じ曜日の割合 /
-# 月〜SQ前日の日次値幅・SQ週の値幅が平常の何倍か / SQ日の出来高倍率 / 明けの反転率)。
+# 月〜SQ前日の日次値幅・SQ週の値幅が平常の何倍か / SQ日の出来高倍率 / 明けの反転率) と回数 (決算・イベントが重なった回を
+# 除いた回数も)。
 NUMBERS=""
 if [[ -n "$SQCTX_FILE" && -s "$SQCTX_FILE" ]] && jq -e . "$SQCTX_FILE" >/dev/null 2>&1; then
   NUMBERS="$(jq -r '
@@ -53,7 +54,7 @@ if [[ -n "$SQCTX_FILE" && -s "$SQCTX_FILE" ]] && jq -e . "$SQCTX_FILE" >/dev/nul
       then "今週 \(.ret_pct | signed)%" + (if .excess_pct != null then "（TOPIX比 \(.excess_pct | signed)%）" else "" end)
       else empty end;
     def sens: if (.status // "") == "ok" then
-      (.sensitivity // {}) as $s | (.all.n // 0) as $n
+      (.sensitivity // {}) as $s | (.all.n // 0) as $n | (.clean.n // null) as $c
       | [ ($s.sq_gap_abs_x as $v | if $v != null then "寄りギャップ \($v)倍" else empty end),
           (if $s.sq_day_share != null
            then "SQ日の割合 \($s.sq_day_share * 100 | round)%" + (if $s.normal_day_share != null then "（平常 \($s.normal_day_share * 100 | round)%）" else "" end)
@@ -62,7 +63,8 @@ if [[ -n "$SQCTX_FILE" && -s "$SQCTX_FILE" ]] && jq -e . "$SQCTX_FILE" >/dev/nul
           ($s.sq_week_abs_x as $v | if $v != null then "週の値幅 \($v)倍" else empty end),
           ($s.sq_vol_x as $v | if $v != null then "出来高 \($v)倍" else empty end),
           ($s.reversal_rate as $v | if $v != null then "明け反転 \($v * 100 | round)%" else empty end) ]
-      | if length == 0 then empty else "SQ連動 " + join(" / ") + "（n=\($n)）" end
+      | if length == 0 then empty
+        else "SQ連動 " + join(" / ") + "（n=\($n)" + ($c | if . != null then "・決算/イベントの重なりを除くと n=\(.)" else "" end) + "）" end
       else empty end;
     .sq as $sq
     | [ ( [ "SQ \($sq.date)（\($sq.month)月限・\(if $sq.major then "メジャー" else "オプションのみ" end)）"

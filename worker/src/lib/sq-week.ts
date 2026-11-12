@@ -8,12 +8,26 @@
 //   - post_ret  : SQ日の終値 → 翌週 (SQ明け) 最終日の終値。翌週が終わっていなければ null
 //   - sq_day_share : SQ週の月〜SQ日の日次値幅 (終値の前日比の絶対値) の合計のうち SQ日が占める割合
 //   - pre_day_abs  : 月〜SQ前日の日次値幅の平均
+//   - pre_20d_ret  : SQ週に入る前の 20 日リターン (前週末の終値 ÷ その 20 本前の終値)
+// 各回に備考のタグ (tags) を付ける:
+//   - trend      : SQ週前の地合い。pre_20d_ret が平常の 20 日分の値幅 (平常日の日次値幅 × √20) を超えれば up、
+//                  下回れば down、その間は range
+//   - earnings   : 自社の決算発表が SQ週 (前週金曜の引け後〜SQ前日) か SQ明け (SQ日〜翌週木曜) にあるか。
+//                  決算日が 1 件も無い、または最古の決算日がその回の翌週より後なら unknown。指数は null
+//   - macro      : SQ週 (月〜SQ日) に日本で効く FOMC・日銀・ピア決算・その銘柄の指数採用/除外
+//   - confounded : 決算 (SQ週・SQ明け) か macro が重なった回。SQ 以外の材料で振れた可能性がある
+// confounded を除いた回だけの集計 (clean) と SQ連動度 (sensitivity_clean) も出す。
 // 銘柄は同じ SQ の TOPIX の値を引いた超過分も持つ。
 // SQ連動度は SQ のときの振れを平常時 (SQ週以外) の振れで割った倍率 (1 = SQ でも平常どおり)。
 // SQ日の寄りギャップと SQ日の割合は、曜日の癖 (週末をまたぐ金曜の寄り等) を除くため平常週の同じ曜日と比べる。
 // rows はすべて date 降順 (新しい順) で受け取る。
 
-import { addDaysYmd, type JpSq, jpSqDates } from "./event-context";
+import {
+	addDaysYmd,
+	type JpSq,
+	jpSqDates,
+	type MacroEventRow,
+} from "./event-context";
 
 export interface SqBar {
 	date: string;
@@ -35,9 +49,26 @@ export interface SqEvent {
 	post_ret_pct: number | null;
 	sq_day_share: number | null;
 	pre_day_abs_pct: number | null;
+	pre_20d_ret_pct: number | null;
+	tags?: SqTags;
+}
+
+export interface SqTags {
+	trend: "up" | "down" | "range" | null;
+	earnings: "sq_week" | "post_week" | "none" | "unknown" | null;
+	macro: string[];
+	confounded: boolean;
+}
+
+// 備考のタグの元。earningsDates を渡さない (指数) と earnings は null。
+export interface SqTagInput {
+	code?: string;
+	earningsDates?: string[];
+	macroRows?: MacroEventRow[];
 }
 
 const VOL_WINDOW = 20;
+const TREND_WINDOW = 20;
 
 function round2(x: number): number {
 	return Math.round(x * 100) / 100;
@@ -120,6 +151,10 @@ function buildEvent(bars: Bar[], sq: JpSq): SqEvent | null {
 		sq_day_share:
 			weekAbsSum > 0 ? round2(dayAbs[dayAbs.length - 1] / weekAbsSum) : null,
 		pre_day_abs_pct: preAbs == null ? null : round2(preAbs),
+		pre_20d_ret_pct:
+			p >= TREND_WINDOW
+				? retPct(prevClose, bars[p - TREND_WINDOW].close)
+				: null,
 	};
 }
 
@@ -271,11 +306,101 @@ function summarize(
 	};
 }
 
-// 過去の SQ週 (before より前に SQ日がある回) の値動きと SQ連動度を組む。
+// その回の SQ週に重なる macro_events (日本で効く日 = jst_effect_date か date)。
+function macroHits(e: SqEvent, rows: MacroEventRow[], code?: string): string[] {
+	const monday = mondayOf(e.date);
+	const hits = new Set<string>();
+	for (const r of rows) {
+		const kind = r.kind || "";
+		const own = code != null && kind === `index_change:${code}`;
+		if (
+			!own &&
+			kind !== "fomc" &&
+			kind !== "boj" &&
+			!kind.startsWith("peer_earnings")
+		)
+			continue;
+		const eff = r.jst_effect_date || r.date;
+		if (eff >= monday && eff <= e.date) hits.add(r.label);
+	}
+	return [...hits];
+}
+
+function earningsTag(
+	e: SqEvent,
+	dates: string[] | undefined,
+): SqTags["earnings"] {
+	if (!dates) return null;
+	const monday = mondayOf(e.date);
+	const postEnd = addDaysYmd(monday, 11);
+	if (!dates.length || dates.reduce((a, b) => (a < b ? a : b)) > postEnd)
+		return "unknown";
+	if (dates.some((d) => d >= addDaysYmd(monday, -3) && d < e.date))
+		return "sq_week";
+	if (dates.some((d) => d >= e.date && d < postEnd)) return "post_week";
+	return "none";
+}
+
+function tagEvent(
+	e: SqEvent,
+	tagIn: SqTagInput,
+	trendBand: number | null,
+): SqTags {
+	const r = e.pre_20d_ret_pct;
+	const trend =
+		r == null || trendBand == null
+			? null
+			: r > trendBand
+				? "up"
+				: r < -trendBand
+					? "down"
+					: "range";
+	const earnings = earningsTag(e, tagIn.earningsDates);
+	const macro = macroHits(e, tagIn.macroRows ?? [], tagIn.code);
+	return {
+		trend,
+		earnings,
+		macro,
+		confounded:
+			earnings === "sq_week" || earnings === "post_week" || macro.length > 0,
+	};
+}
+
+// SQ連動度 (SQ のときの振れ ÷ 平常時の振れ)。
+function sensitivityOf(
+	events: SqEvent[],
+	base: Baseline,
+): Record<string, number | null> {
+	const gapEvents = events.filter((e) => e.sq_gap_pct != null);
+	const gapAbs = mean(gapEvents.map((e) => Math.abs(e.sq_gap_pct as number)));
+	const shareEvents = events.filter((e) => e.sq_day_share != null);
+	const share = mean(shareEvents.map((e) => e.sq_day_share as number));
+	const normalShare = sameWeekdayBase(shareEvents, base.share_by_wd);
+	const preAbs = mean(
+		events.map((e) => e.pre_day_abs_pct).filter((x): x is number => x != null),
+	);
+	const weekAbs = mean(events.map((e) => Math.abs(e.week_ret_pct)));
+	const volX = mean(
+		events.map((e) => e.sq_vol_x).filter((x): x is number => x != null),
+	);
+	return {
+		sq_gap_abs_x: ratio(gapAbs, sameWeekdayBase(gapEvents, base.gap_by_wd)),
+		sq_day_share: share == null ? null : round2(share),
+		normal_day_share: normalShare == null ? null : round2(normalShare),
+		pre_day_abs_x: ratio(preAbs, base.day_abs),
+		sq_week_abs_x: ratio(weekAbs, base.week_abs),
+		sq_vol_x: volX == null ? null : round2(volX),
+		reversal_rate: reversalRate(events),
+	};
+}
+
+// 過去の SQ週 (before より前に SQ日がある回) の値動きと SQ連動度を組む。tagIn で各回に備考のタグを付け、
+// confounded を除いた回だけの clean / sensitivity_clean も出す (除く回が無ければ出さない)。
 export function buildSqHistory(
 	rowsDesc: SqBar[],
 	before: string,
 	benchDesc?: SqBar[],
+	tagIn: SqTagInput = {},
 ): Record<string, unknown> & { events?: SqEvent[] } {
 	const bars = ascClosed(rowsDesc);
 	if (bars.length < VOL_WINDOW + 5)
@@ -295,35 +420,28 @@ export function buildSqHistory(
 			: null;
 
 	const base = baseline(bars, new Set(events.map((e) => mondayOf(e.date))));
-	const gapEvents = events.filter((e) => e.sq_gap_pct != null);
-	const gapAbs = mean(gapEvents.map((e) => Math.abs(e.sq_gap_pct as number)));
-	const shareEvents = events.filter((e) => e.sq_day_share != null);
-	const share = mean(shareEvents.map((e) => e.sq_day_share as number));
-	const normalShare = sameWeekdayBase(shareEvents, base.share_by_wd);
-	const preAbs = mean(
-		events.map((e) => e.pre_day_abs_pct).filter((x): x is number => x != null),
-	);
-	const weekAbs = mean(events.map((e) => Math.abs(e.week_ret_pct)));
-	const volX = mean(
-		events.map((e) => e.sq_vol_x).filter((x): x is number => x != null),
-	);
+	const trendBand =
+		base.day_abs == null ? null : base.day_abs * Math.sqrt(TREND_WINDOW);
+	for (const e of events) e.tags = tagEvent(e, tagIn, trendBand);
 	const majors = events.filter((e) => e.major);
+	const clean = events.filter((e) => !e.tags?.confounded);
+	const hasConfounded = clean.length < events.length;
+	const earningsDates = tagIn.earningsDates ?? [];
 
 	return {
 		status: "ok",
 		window_start: bars[0].date,
+		earnings_known_from: earningsDates.length
+			? earningsDates.reduce((a, b) => (a < b ? a : b))
+			: null,
 		events,
 		all: summarize(events, bench),
 		major: majors.length ? summarize(majors, bench) : { n: 0 },
-		sensitivity: {
-			sq_gap_abs_x: ratio(gapAbs, sameWeekdayBase(gapEvents, base.gap_by_wd)),
-			sq_day_share: share == null ? null : round2(share),
-			normal_day_share: normalShare == null ? null : round2(normalShare),
-			pre_day_abs_x: ratio(preAbs, base.day_abs),
-			sq_week_abs_x: ratio(weekAbs, base.week_abs),
-			sq_vol_x: volX == null ? null : round2(volX),
-			reversal_rate: reversalRate(events),
-		},
+		...(hasConfounded ? { clean: summarize(clean, bench) } : {}),
+		sensitivity: sensitivityOf(events, base),
+		...(hasConfounded
+			? { sensitivity_clean: clean.length ? sensitivityOf(clean, base) : null }
+			: {}),
 	};
 }
 
@@ -440,7 +558,12 @@ if (import.meta.vitest) {
 				post_ret_pct: -1.94,
 				sq_day_share: 0.33,
 				pre_day_abs_pct: 0.5,
+				pre_20d_ret_pct: 0,
+				tags: { trend: "range", earnings: null, macro: [], confounded: false },
 			});
+			// 除く回が無ければ clean は出さない。
+			expect(out.clean).toBeUndefined();
+			expect(out.sensitivity_clean).toBeUndefined();
 			// before より後の SQ (07-10) は入れない。
 			expect((out.events as SqEvent[]).length).toBe(1);
 			expect((out.sensitivity as { reversal_rate: number }).reversal_rate).toBe(
@@ -486,6 +609,64 @@ if (import.meta.vitest) {
 			const out = buildSqHistory(rows, "2026-07-06", topix);
 			const all = out.all as { week_excess: { mean: number } };
 			expect(all.week_excess.mean).toBe(2);
+		});
+		it("SQ週前の 20 日リターンが平常の 20 日分の値幅を超えれば trend=up", () => {
+			// 05-11〜06-05 に毎日 +1% 上げ、ほかの日は横ばい。
+			let px = 100;
+			const rows = series(dates, (date) => {
+				if (date >= "2026-05-11" && date <= "2026-06-05") px *= 1.01;
+				return { open: px, close: px };
+			});
+			const e = (buildSqHistory(rows, "2026-07-06").events as SqEvent[])[0];
+			expect(e.pre_20d_ret_pct).toBeGreaterThan(20);
+			expect(e.tags?.trend).toBe("up");
+		});
+		it("決算日で earnings を SQ週 / SQ明け / なし / 不明に分ける", () => {
+			const rows = series(dates, () => ({}));
+			const tag = (earningsDates: string[]) =>
+				(
+					buildSqHistory(rows, "2026-07-06", undefined, {
+						earningsDates,
+					}).events as SqEvent[]
+				)[0].tags?.earnings;
+			// SQ = 06-12 (月 = 06-08)。前週金曜 06-05 の引け後は SQ週に効く。
+			expect(tag(["2026-06-05"])).toBe("sq_week");
+			expect(tag(["2026-06-11"])).toBe("sq_week");
+			// SQ日の引け後〜翌週木曜は SQ明けに効く。
+			expect(tag(["2026-06-12"])).toBe("post_week");
+			expect(tag(["2026-06-18"])).toBe("post_week");
+			expect(tag(["2026-04-30", "2026-07-30"])).toBe("none");
+			// 最古の決算日が翌週より後 = その回の決算は分からない。
+			expect(tag(["2026-07-30"])).toBe("unknown");
+			expect(tag([])).toBe("unknown");
+		});
+		it("SQ週に macro が重なった回は confounded で clean から外す", () => {
+			const rows = series(dates, (date) =>
+				date === "2026-07-10" ? { open: 104, close: 105 } : {},
+			);
+			const out = buildSqHistory(rows, "2026-07-31", undefined, {
+				code: "6857",
+				macroRows: [
+					// FOMC は米国の翌日 (= SQ日) に効く。
+					{
+						date: "2026-07-09",
+						kind: "fomc",
+						label: "FOMC",
+						jst_effect_date: "2026-07-10",
+					},
+					// 他銘柄の指数イベントと SQ週の外は拾わない。
+					{ date: "2026-07-08", kind: "index_change:285A", label: "285A 採用" },
+					{ date: "2026-06-15", kind: "boj", label: "日銀" },
+				],
+			});
+			const [jun, jul] = out.events as SqEvent[];
+			expect(jun.tags?.macro).toEqual([]);
+			expect(jul.tags).toMatchObject({ macro: ["FOMC"], confounded: true });
+			expect((out.all as { n: number }).n).toBe(2);
+			expect((out.clean as { n: number }).n).toBe(1);
+			const s = out.sensitivity as Record<string, number>;
+			const c = out.sensitivity_clean as Record<string, number>;
+			expect(c.sq_week_abs_x).toBeLessThan(s.sq_week_abs_x);
 		});
 		it("足が少なければ insufficient", () => {
 			expect(

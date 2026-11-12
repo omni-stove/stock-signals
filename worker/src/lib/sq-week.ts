@@ -6,8 +6,11 @@
 //   - sq_gap    : SQ前日の終値 → SQ日の始値 (SQ値は寄りで決まる)
 //   - sq_vol_x  : SQ日の出来高 / SQ週前 20 日の平均出来高
 //   - post_ret  : SQ日の終値 → 翌週 (SQ明け) 最終日の終値。翌週が終わっていなければ null
+//   - sq_day_share : SQ週の月〜SQ日の日次値幅 (終値の前日比の絶対値) の合計のうち SQ日が占める割合
+//   - pre_day_abs  : 月〜SQ前日の日次値幅の平均
 // 銘柄は同じ SQ の TOPIX の値を引いた超過分も持つ。
-// SQ連動度は SQ のときの振れを平常時の振れで割った倍率 (1 = SQ でも平常どおり)。
+// SQ連動度は SQ のときの振れを平常時 (SQ週以外) の振れで割った倍率 (1 = SQ でも平常どおり)。
+// SQ日の寄りギャップと SQ日の割合は、曜日の癖 (週末をまたぐ金曜の寄り等) を除くため平常週の同じ曜日と比べる。
 // rows はすべて date 降順 (新しい順) で受け取る。
 
 import { addDaysYmd, type JpSq, jpSqDates } from "./event-context";
@@ -30,6 +33,8 @@ export interface SqEvent {
 	sq_gap_pct: number | null;
 	sq_vol_x: number | null;
 	post_ret_pct: number | null;
+	sq_day_share: number | null;
+	pre_day_abs_pct: number | null;
 }
 
 const VOL_WINDOW = 20;
@@ -51,6 +56,10 @@ function median(xs: number[]): number | null {
 	const s = [...xs].sort((a, b) => a - b);
 	const m = Math.floor(s.length / 2);
 	return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+function weekdayOf(date: string): number {
+	return new Date(`${date}T12:00:00Z`).getUTCDay();
 }
 
 function mondayOf(date: string): string {
@@ -83,6 +92,13 @@ function buildEvent(bars: Bar[], sq: JpSq): SqEvent | null {
 		.filter((v): v is number => v != null && v > 0);
 	const avgVol = volBase.length === VOL_WINDOW ? mean(volBase) : null;
 
+	// 月〜SQ日の日次値幅 (前週末からの各日の終値の前日比の絶対値)。
+	const dayAbs = bars
+		.slice(wk, k + 1)
+		.map((b, i) => Math.abs((b.close / bars[wk + i - 1].close - 1) * 100));
+	const weekAbsSum = dayAbs.reduce((a, b) => a + b, 0);
+	const preAbs = mean(dayAbs.slice(0, -1));
+
 	const nextMonday = addDaysYmd(monday, 7);
 	const nextFriday = addDaysYmd(monday, 11);
 	const nextWeek = bars.filter(
@@ -101,33 +117,90 @@ function buildEvent(bars: Bar[], sq: JpSq): SqEvent | null {
 		sq_vol_x:
 			avgVol && sqBar.volume != null ? round2(sqBar.volume / avgVol) : null,
 		post_ret_pct: postEnd ? retPct(postEnd.close, sqBar.close) : null,
+		sq_day_share:
+			weekAbsSum > 0 ? round2(dayAbs[dayAbs.length - 1] / weekAbsSum) : null,
+		pre_day_abs_pct: preAbs == null ? null : round2(preAbs),
 	};
 }
 
-// SQ日以外の寄りのギャップ絶対値の平均と、SQ週以外の週次リターン絶対値の平均。
-function baseline(
-	bars: Bar[],
-	sqDays: Set<string>,
-	sqWeeks: Set<string>,
-): { gap_abs: number | null; week_abs: number | null } {
-	const gaps: number[] = [];
+// SQ週以外の平常時の振れ。gap_by_wd / share_by_wd は曜日 (0=日..6=土) ごと。
+interface Baseline {
+	gap_by_wd: Map<number, number>;
+	share_by_wd: Map<number, number>;
+	day_abs: number | null;
+	week_abs: number | null;
+}
+
+function meanBy(groups: Map<number, number[]>): Map<number, number> {
+	const out = new Map<number, number>();
+	for (const [k, v] of groups) out.set(k, mean(v) as number);
+	return out;
+}
+
+function push(groups: Map<number, number[]>, k: number, v: number): void {
+	const g = groups.get(k);
+	if (g) g.push(v);
+	else groups.set(k, [v]);
+}
+
+function baseline(bars: Bar[], sqWeeks: Set<string>): Baseline {
+	const gaps = new Map<number, number[]>();
+	const dayAbs: number[] = [];
+	// 週ごとの日次値幅 (曜日付き)。週の最初の足が前週末の終値を持てる週だけ。
+	const weekDays = new Map<string, { wd: number; abs: number }[]>();
 	for (let i = 1; i < bars.length; i++) {
-		const o = bars[i].open;
-		if (o == null || sqDays.has(bars[i].date)) continue;
-		gaps.push(Math.abs((o / bars[i - 1].close - 1) * 100));
+		const b = bars[i];
+		const monday = mondayOf(b.date);
+		if (sqWeeks.has(monday)) continue;
+		const wd = weekdayOf(b.date);
+		if (b.open != null)
+			push(gaps, wd, Math.abs((b.open / bars[i - 1].close - 1) * 100));
+		const abs = Math.abs((b.close / bars[i - 1].close - 1) * 100);
+		dayAbs.push(abs);
+		const w = weekDays.get(monday);
+		if (w) w.push({ wd, abs });
+		else weekDays.set(monday, [{ wd, abs }]);
+	}
+	// 週の中で各曜日が占める割合。最初と最後の週は欠けている可能性があるので外す。
+	const shares = new Map<number, number[]>();
+	const weeks = [...weekDays.values()].slice(1, -1);
+	for (const days of weeks) {
+		const sum = days.reduce((a, d) => a + d.abs, 0);
+		if (sum <= 0) continue;
+		// SQ日は月〜SQ日で割るので、平常週も月〜その曜日までの合計で割る。
+		let acc = 0;
+		for (const d of days) {
+			acc += d.abs;
+			if (acc > 0) push(shares, d.wd, d.abs / acc);
+		}
 	}
 	// 週の最終足の終値を並べ、前週比の絶対値を取る。
 	const weekEnd = new Map<string, number>();
 	for (const b of bars) weekEnd.set(mondayOf(b.date), b.close);
-	const weeks = [...weekEnd.entries()];
+	const ends = [...weekEnd.entries()];
 	const weekRets: number[] = [];
-	for (let i = 1; i < weeks.length; i++) {
-		if (sqWeeks.has(weeks[i][0])) continue;
-		weekRets.push(Math.abs((weeks[i][1] / weeks[i - 1][1] - 1) * 100));
+	for (let i = 1; i < ends.length; i++) {
+		if (sqWeeks.has(ends[i][0])) continue;
+		weekRets.push(Math.abs((ends[i][1] / ends[i - 1][1] - 1) * 100));
 	}
-	// 最初と最後の週は欠けている可能性があるので外す。
 	weekRets.pop();
-	return { gap_abs: mean(gaps), week_abs: mean(weekRets) };
+	return {
+		gap_by_wd: meanBy(gaps),
+		share_by_wd: meanBy(shares),
+		day_abs: mean(dayAbs),
+		week_abs: mean(weekRets),
+	};
+}
+
+// 各 SQ の解決後の曜日に合わせた平常値の平均 (祝日で前倒しになった回は木曜と比べる)。
+function sameWeekdayBase(
+	events: SqEvent[],
+	byWd: Map<number, number>,
+): number | null {
+	const v = events
+		.map((e) => byWd.get(weekdayOf(e.date)))
+		.filter((x): x is number => x != null);
+	return v.length === events.length ? mean(v) : null;
 }
 
 function stat(xs: (number | null)[]): Record<string, number | null> {
@@ -221,16 +294,14 @@ export function buildSqHistory(
 					.filter((e): e is SqEvent => e != null)
 			: null;
 
-	const base = baseline(
-		bars,
-		new Set(events.map((e) => e.date)),
-		new Set(events.map((e) => mondayOf(e.date))),
-	);
-	const gapAbs = mean(
-		events
-			.map((e) => e.sq_gap_pct)
-			.filter((x) => x != null)
-			.map(Math.abs),
+	const base = baseline(bars, new Set(events.map((e) => mondayOf(e.date))));
+	const gapEvents = events.filter((e) => e.sq_gap_pct != null);
+	const gapAbs = mean(gapEvents.map((e) => Math.abs(e.sq_gap_pct as number)));
+	const shareEvents = events.filter((e) => e.sq_day_share != null);
+	const share = mean(shareEvents.map((e) => e.sq_day_share as number));
+	const normalShare = sameWeekdayBase(shareEvents, base.share_by_wd);
+	const preAbs = mean(
+		events.map((e) => e.pre_day_abs_pct).filter((x): x is number => x != null),
 	);
 	const weekAbs = mean(events.map((e) => Math.abs(e.week_ret_pct)));
 	const volX = mean(
@@ -245,7 +316,10 @@ export function buildSqHistory(
 		all: summarize(events, bench),
 		major: majors.length ? summarize(majors, bench) : { n: 0 },
 		sensitivity: {
-			sq_gap_abs_x: ratio(gapAbs, base.gap_abs),
+			sq_gap_abs_x: ratio(gapAbs, sameWeekdayBase(gapEvents, base.gap_by_wd)),
+			sq_day_share: share == null ? null : round2(share),
+			normal_day_share: normalShare == null ? null : round2(normalShare),
+			pre_day_abs_x: ratio(preAbs, base.day_abs),
 			sq_week_abs_x: ratio(weekAbs, base.week_abs),
 			sq_vol_x: volX == null ? null : round2(volX),
 			reversal_rate: reversalRate(events),
@@ -364,12 +438,27 @@ if (import.meta.vitest) {
 				sq_gap_pct: 1.96,
 				sq_vol_x: 3,
 				post_ret_pct: -1.94,
+				sq_day_share: 0.33,
+				pre_day_abs_pct: 0.5,
 			});
 			// before より後の SQ (07-10) は入れない。
 			expect((out.events as SqEvent[]).length).toBe(1);
 			expect((out.sensitivity as { reversal_rate: number }).reversal_rate).toBe(
 				1,
 			);
+		});
+		it("寄りギャップと SQ日の割合は平常週の同じ曜日と比べる", () => {
+			// 毎週金曜は 2% 高く寄って +1% で引け、月曜に戻す (SQ週も平常週も同じ)。
+			const rows = series(dates, (date) => {
+				const wd = new Date(`${date}T12:00:00Z`).getUTCDay();
+				return wd === 5 ? { open: 102, close: 101 } : {};
+			});
+			const s = buildSqHistory(rows, "2026-07-06").sensitivity as Record<
+				string,
+				number
+			>;
+			expect(s.sq_gap_abs_x).toBe(1);
+			expect(s.sq_day_share).toBe(s.normal_day_share);
 		});
 		it("祝日で SQ が前倒しなら週内の最後の足に解決する", () => {
 			const rows = series(

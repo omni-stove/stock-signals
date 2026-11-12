@@ -85,12 +85,17 @@ jobs:
               (the 225-heavy semis carry it), falling = sold harder; `insufficient` → skip.
             - **`market.*.history`** and **`tickers[].history`** — past SQ weeks from stored daily bars.
               Per event: `pre_ret_pct` (前週末→SQ前日), `week_ret_pct` (前週末→SQ日終値), `sq_gap_pct` (SQ前日終値→
-              SQ日始値), `sq_vol_x` (SQ日出来高 / 20日平均), `post_ret_pct` (SQ日→翌週末, SQ明け). `all` / `major`
+              SQ日始値), `sq_vol_x` (SQ日出来高 / 20日平均), `post_ret_pct` (SQ日→翌週末, SQ明け), `sq_day_share`
+              (月〜SQ日の日次値幅の合計のうち SQ日の割合), `pre_day_abs_pct` (月〜SQ前日の日次値幅の平均). `all` / `major`
               aggregate them (`n`, `mean`, `median`, `up_ratio`); tickers also carry `week_excess` /
               `sq_gap_excess` / `post_excess` (minus TOPIX on the same SQ) when TOPIX bars exist.
-              **`sensitivity`** is the SQ連動度: `sq_gap_abs_x` (SQ日の寄りギャップの大きさ ÷ 平常日の寄りギャップ),
-              `sq_week_abs_x` (SQ週の値幅 ÷ 平常週の値幅), `sq_vol_x` (SQ日の出来高倍率), `reversal_rate`
-              (SQ週の値動きが明けに逆向きになった割合). Above 1 = SQ moves it more than a normal day/week.
+              **`sensitivity`** is the SQ連動度, each against non-SQ weeks: `sq_gap_abs_x` (SQ日の寄りギャップ ÷
+              平常週の同じ曜日の寄りギャップ), `sq_day_share` vs `normal_day_share` (SQ日の割合 vs 平常週の同じ曜日の
+              割合), `pre_day_abs_x` (月〜SQ前日の日次値幅 ÷ 平常日), `sq_week_abs_x` (SQ週の値幅 ÷ 平常週),
+              `sq_vol_x` (SQ日の出来高倍率), `reversal_rate` (SQ週の値動きが明けに逆向きになった割合). Above 1 /
+              above the normal share = SQ moves it more than usual. Classify each name by where SQ hits it:
+              concentrated on SQ day (`sq_gap_abs_x` and `sq_day_share` above normal), spread across the days before
+              SQ (`pre_day_abs_x` above 1 while `sq_day_share` is at or below normal), or barely (all near 1).
               `n` is small (one SQ a month) — say so when it is, weigh `major` lightly when `major.n` ≤ 2, and
               never present an average of a handful of events as a law. `status: insufficient` → skip that name.
             - **`week_to_date`**: this week so far (前週末からのリターン, `excess_pct` = TOPIX比). A week that has
@@ -109,9 +114,10 @@ jobs:
             - **scenarios**: 2-3 of 上振れ / 下振れ / 膠着 (or SQ通過後の剥落), each with 確度 (高/中/低), the trigger
               that would set it off (a number or event from the inputs), and the path through SQ day and into
               SQ明け. Ground 確度 in the inputs (history + this week's run + tonight's backdrop), not in
-              adjectives. On SQ day (`days_to_sq` 0) focus on the opening print and the post-SQ unwind.
+              adjectives. On SQ day (`days_to_sq` 0) focus on the opening print and the post-SQ unwind; earlier in the week,
+              weigh the names whose SQ effect spreads across the days before SQ.
             - **sensitivity**: rank the names by SQ連動度 and say which are pushed most/least by SQ and in what way
-              (寄りのギャップ / 週の値幅 / 明けの反転), with the multiples. 1 line per point, at most 5 lines.
+              (SQ日の寄りに集中 / SQ前の日々に分散 / 明けの反転), with the multiples. 1 line per point, at most 5 lines.
             - **watch**: 1-3 facts to check today (a level, a print, an event), as facts to watch, not instructions.
             - Real numbers, not adjectives alone. Japanese. One point per line, short memo style.
 

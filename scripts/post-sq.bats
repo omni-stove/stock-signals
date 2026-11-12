@@ -31,7 +31,7 @@ setup() {
     },
     tickers: [
       {code:"6857", name:"アドバンテスト",
-       history:{status:"ok", all:{n:5}, sensitivity:{sq_gap_abs_x:1.94, sq_week_abs_x:0.82, sq_vol_x:1.17, reversal_rate:0.8}},
+       history:{status:"ok", all:{n:5}, sensitivity:{sq_gap_abs_x:1.58, sq_day_share:0.24, normal_day_share:0.21, pre_day_abs_x:0.87, sq_week_abs_x:0.82, sq_vol_x:1.17, reversal_rate:0.8}},
        week_to_date:{status:"ok", days:3, latest_date:"2026-11-11", ret_pct:12.23, excess_pct:10.73}},
       {code:"6976", name:"太陽誘電", history:{status:"insufficient"}, week_to_date:{status:"ok", days:0, ret_pct:0}}
     ]
@@ -88,7 +88,7 @@ payload() {
   local t
   t="$(payload | jq -r '.blocks[1].elements[0].text')"
   grep -qF 'SQ 2026-11-13（11月限・オプションのみ） あと1日 / 日経225 今週 +2.5%（TOPIX比 +1%） / TOPIX 今週 +1.5% / NT倍率 15.59（前週末 15.45）' <<<"$t"
-  grep -qF '6857 アドバンテスト: 今週 +12.23%（TOPIX比 +10.73%） / SQ連動 寄りギャップ 1.94倍 / 週の値幅 0.82倍 / 出来高 1.17倍 / 明け反転 80%（n=5）' <<<"$t"
+  grep -qF '6857 アドバンテスト: 今週 +12.23%（TOPIX比 +10.73%） / SQ連動 寄りギャップ 1.58倍 / SQ日の割合 24%（平常 21%） / SQ前の日次値幅 0.87倍 / 週の値幅 0.82倍 / 出来高 1.17倍 / 明け反転 80%（n=5）' <<<"$t"
 }
 
 @test "numbers: ticker without data is skipped" {

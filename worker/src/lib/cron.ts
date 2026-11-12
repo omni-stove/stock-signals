@@ -4,6 +4,7 @@
 import { collectDisclosures } from "./disclosure";
 import { collectEarnings } from "./earnings";
 import type { Env } from "./env";
+import { jpSqWeek } from "./event-context";
 import { remindUpcomingEvents } from "./event-reminder";
 import { collectForcedLiquidation } from "./forced-liquidation";
 import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
@@ -67,7 +68,7 @@ async function notifyFreshNews(
 //                           立てず4個に収めるため。下の isNoonIntakeSlot 参照)。
 //                           JST 15:00 相当の最終スロット (isPreCloseSlot) では大引け前にその時点の材料
 //                           だけで翌日寄り越えの玉を判断するため、intake 同様に全銘柄を無条件判定する。
-//   - eod    (16:00 引け後): daily (+TOPIX) + fundamentals + 決算予定日推定 + 空売り需給 + 投資部門別
+//   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日推定 + 空売り需給 + 投資部門別
 const CRON_KIND: Record<string, "intake" | "prices" | "eod"> = {
 	"30 23 * * *": "intake",
 	"0 11 * * *": "intake",
@@ -106,6 +107,13 @@ function isJstWeekend(scheduledTime: number): boolean {
 	const jst = new Date(scheduledTime + 9 * 60 * 60 * 1000);
 	const day = jst.getUTCDay(); // JST に +9h した値の UTC 曜日 = JST 曜日
 	return day === 0 || day === 6;
+}
+
+// 発火予定時刻を JST の暦日 (YYYY-MM-DD) にする。
+function jstDate(scheduledTime: number): string {
+	return new Date(scheduledTime + 9 * 60 * 60 * 1000)
+		.toISOString()
+		.slice(0, 10);
 }
 
 // 発火予定時刻 (JST) が月の最初の稼働日 (1〜3日のいずれか初回) かを判定する。マクロイベント
@@ -151,6 +159,15 @@ export async function runScheduled(
 				{},
 				event.scheduledTime,
 			).catch((e) => console.error("market-brief dispatch failed:", e));
+			// 日本SQ週 (SQ日を含む月〜金) は毎朝 sq-brief (SQ週の値動きシナリオ) も kick する。
+			if (jpSqWeek(jstDate(event.scheduledTime))) {
+				await dispatchEventPayload(
+					env,
+					"sq-brief",
+					{},
+					event.scheduledTime,
+				).catch((e) => console.error("sq-brief dispatch failed:", e));
+			}
 			// 重要イベント (watchlist 決算/FOMC/日銀/ピア決算/SQ/リバランス) の事前リマインダー。
 			// 3日前・前日・当日の朝にだけ Slack に1本流す (該当なしの朝は無音)。失敗しても収集は続行。
 			await remindUpcomingEvents(env, event.scheduledTime).catch((e) =>
@@ -302,7 +319,7 @@ export async function runScheduled(
 		return;
 	}
 	if (kind === "eod") {
-		// 引け後の1日1回。daily (watchlist + TOPIX、足りない過去分の補完込み) + fundamentals +
+		// 引け後の1日1回。daily (watchlist + TOPIX + 日経225、足りない過去分の補完込み) + fundamentals +
 		// 次回決算予定日の推定をまとめて実行。
 		const d = await collectTimeseries(env, "daily", null);
 		const f = await collectTimeseries(env, "fundamentals", null);

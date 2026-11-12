@@ -20,6 +20,7 @@ import { position } from "./routes/position";
 import { pull } from "./routes/pull";
 import { run } from "./routes/run";
 import { slack } from "./routes/slack";
+import { sqContext } from "./routes/sq-context";
 import { threadContext } from "./routes/thread-context";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -43,6 +44,7 @@ app.route("/", context); // /context (GET=read, POST=upsert)
 app.route("/", judgeContext); // /judge-context (ticker-brief/crash/slack-reply 用バンドル)
 app.route("/", contextInput); // /context-input (context-builder 用バンドル)
 app.route("/", marketContext); // /market-context (market-brief 用バンドル)
+app.route("/", sqContext); // /sq-context (sq-brief 用バンドル)
 app.route("/", threadContext); // /thread-context (slack-reply 用バンドル)
 app.route("/", position); // /position-users, /position-context (position-report 用バンドル)
 app.route("/", misc); // /dispatch-test, /test-slack
@@ -66,7 +68,7 @@ app.onError((err, c) => {
 
 app.notFound((c) =>
 	c.text(
-		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /context?code= /judge-context?code=&now= /context-input?code= /market-context?now= /thread-context?channel=&thread_ts=&kind=&text= /position-users /position-context?userId= /index-rebalance?now= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
+		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /context?code= /judge-context?code=&now= /context-input?code= /market-context?now= /sq-context?now= /thread-context?channel=&thread_ts=&kind=&text= /position-users /position-context?userId= /index-rebalance?now= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
 		404,
 	),
 );

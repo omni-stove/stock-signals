@@ -40,14 +40,13 @@ import {
 } from "../lib/short-interest";
 import { WATCHLIST_META } from "../lib/watchlist";
 
-export const marketContext = new Hono<{ Bindings: Env }>();
-
-marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
-	const env = c.env;
-	const now = c.req.query("now") ?? null;
-	const epochNow = Date.now();
-	const { today, marketPhase } = resolveMarketPhase(now, epochNow);
-
+// 寄り前の地合い (premarket 最新 1 行) と場中の指数 (日経225/KOSPI の最新現値) を読む。
+// sq-context も同じものを使う。
+export async function readMarketBackdrop(
+	env: Env,
+	epochNow: number,
+	today: string,
+) {
 	// premarket 最新 1 行 (us_indexes_json はパースして展開する)。
 	const pmRow = await db(env.DB)
 		.select(PREMARKET_COLUMNS)
@@ -94,6 +93,19 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 				us_indexes: usIndexes,
 			}
 		: null;
+	return { premarketBlock, premarketLine, liveIndexRows };
+}
+
+export const marketContext = new Hono<{ Bindings: Env }>();
+
+marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
+	const env = c.env;
+	const now = c.req.query("now") ?? null;
+	const epochNow = Date.now();
+	const { today, marketPhase } = resolveMarketPhase(now, epochNow);
+
+	const { premarketBlock, premarketLine, liveIndexRows } =
+		await readMarketBackdrop(env, epochNow, today);
 
 	// sectors: watchlist 各銘柄の daily を 20 本ずつ引いて集計する。
 	const barsByCode: Record<string, DailyBar[]> = {};

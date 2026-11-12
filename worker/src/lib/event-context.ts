@@ -51,10 +51,11 @@ function isoDow(date: Date): number {
 	const w = date.getUTCDay();
 	return w === 0 ? 7 : w;
 }
-// n 日加算した YYYY-MM-DD。
+// n 日加算した YYYY-MM-DD。sq-week も使う。
 function addDays(ymdStr: string, n: number): string {
 	return ymd(new Date(d(ymdStr).getTime() + n * 86400_000));
 }
+export const addDaysYmd = addDays;
 // 2 つの YYYY-MM-DD の暦日差 (b - a)。event-reminder も使う。
 export function daysDiff(a: string, b: string): number {
 	return Math.round((d(b).getTime() - d(a).getTime()) / 86400_000);
@@ -169,6 +170,45 @@ function checkSq(today: string): string[] {
 		}
 	}
 	return notes;
+}
+
+// --- 日本SQ の日付 (sq-week 用) ----------------------------------------------
+// 暦上の日本SQ日 (第2金曜)。祝日による前倒しは呼び出し側が実在する足で解決する。
+export interface JpSq {
+	date: string;
+	month: number;
+	major: boolean;
+}
+
+function jpSqOf(ym: string): JpSq {
+	const month = Number(ym.slice(5, 7));
+	return {
+		date: nthFriday(ym, 2),
+		month,
+		major: [3, 6, 9, 12].includes(month),
+	};
+}
+
+// [from, to] に入る日本SQ を古い順に返す。
+export function jpSqDates(from: string, to: string): JpSq[] {
+	const out: JpSq[] = [];
+	for (let ym = ymOf(from); ym <= ymOf(to); ym = nextYm(ym)) {
+		const sq = jpSqOf(ym);
+		if (sq.date >= from && sq.date <= to) out.push(sq);
+	}
+	return out;
+}
+
+// today が日本SQ週 (SQ日を含む月〜金) なら、その SQ と週の月曜・SQ日までの暦日数を返す。
+export function jpSqWeek(
+	today: string,
+): (JpSq & { week_start: string; days_to_sq: number }) | null {
+	const dow = isoDow(d(today));
+	if (dow > 5) return null;
+	const monday = addDays(today, -(dow - 1));
+	const sq = jpSqOf(ymOf(today));
+	if (sqPhase(sq.date, monday, addDays(monday, 4)) !== "week") return null;
+	return { ...sq, week_start: monday, days_to_sq: daysDiff(today, sq.date) };
 }
 
 // --- 指数リバランス算出 ------------------------------------------------------
@@ -414,6 +454,32 @@ if (import.meta.vitest) {
 		});
 		it("daysDiff: 06-12 → 06-19 = 7", () => {
 			expect(daysDiff("2026-06-12", "2026-06-19")).toBe(7);
+		});
+	});
+
+	describe("jpSqWeek / jpSqDates", () => {
+		it("SQ週の月曜〜金曜は SQ を返す (2026-11 SQ=11-13)", () => {
+			expect(jpSqWeek("2026-11-09")).toEqual({
+				date: "2026-11-13",
+				month: 11,
+				major: false,
+				week_start: "2026-11-09",
+				days_to_sq: 4,
+			});
+			expect(jpSqWeek("2026-11-13")?.days_to_sq).toBe(0);
+		});
+		it("メジャーSQ月は major=true (2026-12 SQ=12-11)", () => {
+			expect(jpSqWeek("2026-12-07")?.major).toBe(true);
+		});
+		it("SQ週以外と土日は null", () => {
+			expect(jpSqWeek("2026-11-16")).toBeNull();
+			expect(jpSqWeek("2026-11-14")).toBeNull();
+		});
+		it("期間内の SQ を古い順に列挙する", () => {
+			expect(jpSqDates("2026-05-09", "2026-07-31").map((s) => s.date)).toEqual([
+				"2026-06-12",
+				"2026-07-10",
+			]);
 		});
 	});
 

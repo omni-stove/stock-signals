@@ -1,0 +1,151 @@
+# SQ週ブリーフ → Claude Code Action で SQ週の値動きシナリオ → Slack通知。
+#
+# 日本SQ週 (SQ日を含む月〜金) の毎朝、市場全体の SQ週の値動きシナリオと、監視銘柄が SQ にどれだけ
+# 振られやすいか (SQ連動度) を 1 本にまとめて届ける。売買の方向・指値・損切りは出さない — 判断は読み手が行う。
+#
+# 起動経路は 2 つ:
+#   - repository_dispatch (event_type=sq-brief) … Worker の寄り前 intake cron (JST 08:30) が
+#       market-brief の直後、今日が日本SQ週のときだけ発火する (worker/src/lib/cron.ts)。
+#   - workflow_dispatch … 手動実行 (検証用)。引数なし。SQ週以外は次の SQ を対象にする。
+#
+# 起動後はルールを prompt にベタ書きした Claude Code Action が Worker /sq-context の JSON を @ で読み、
+# シナリオを structured_output で返す。投稿は後続ステップ (post-sq.sh) が数値行を決定論で足して行う。
+# **このワークフローはコンテキストを一切書き換えない** (出力は Slack のみ)。
+#
+# 認証・Secret は market-brief.yml と同じ:
+#   secret   CLAUDE_CODE_OAUTH_TOKEN  … `claude setup-token` の出力 (必須)
+#   variable WORKER_URL               … https://stock-signals-collector.<sub>.workers.dev (必須)
+#   secret   SYNC_TOKEN               … Worker に SYNC_TOKEN を設定している場合のみ (任意)
+
+name: sq-brief
+
+on:
+  repository_dispatch:
+    types: [sq-brief]    # Worker の寄り前 intake (JST 08:30) が SQ週の朝だけ発火する。
+  workflow_dispatch: {}  # 手動実行 (検証用)。引数なし。
+
+concurrency:
+  group: sq-brief
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write  # claude-code-action@v1 が OIDC トークン取得に要求する
+
+jobs:
+  sq-brief:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Action 実行時は CLAUDE.md / AGENTS.md の指示がブリーフの邪魔になりうるので退避する (共通アクション)。
+      - uses: ./.github/actions/stash-claude-md
+
+      # SQ の日付・過去の SQ週の値動きと SQ連動度・今週の途中経過・前夜の地合いを Worker /sq-context が
+      # 1 call で返す。集計は Worker 側 (決定論) で行い、skill は Read するだけ。
+      - name: Build SQ context
+        run: |
+          curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
+            "${WORKER_URL%/}/sq-context" > "$RUNNER_TEMP/sqctx.json"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Run sq-brief
+        id: brief
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "omnistove-internal-auth,github-actions[bot]"
+          prompt: |
+            # sq-brief
+
+            Produce the morning **SQ週ブリーフ** for a semis-heavy Japanese watchlist held for days to three
+            weeks: how this SQ week is likely to move, and how strongly each name gets pushed around by SQ.
+            Give scenarios with 確度, never a verdict: no buy/sell direction, no 指値, no 損切り, no advice
+            verbs. The watchlist names move largely together as one sector, so don't write a forecast per name —
+            the per-name question is only **how much SQ moves it** compared with its normal days.
+
+            Do not post to Slack; do not run any script; do not write any file — return structured output
+            and stop. Judge only on what these inputs show now; never on hindsight or a later result.
+
+            ## Inputs
+
+            Lead on `history` + `week_to_date` (what SQ has done to these names and how this week has run into
+            it); `premarket` sets today's gap; the rest only raises or lowers 確度.
+
+            - **`sq`**: this week's 日本SQ. `date` (SQ値は当日の寄りで決まる), `major` (3・6・9・12月 = 先物と
+              オプションの両方が清算されるメジャーSQ; otherwise options only and weaker), `days_to_sq`
+              (0 = today is SQ day, pre-open). `in_week: false` = not an SQ week (manual run) — frame the
+              brief as a preview of the next SQ.
+            - **`market.nikkei225`** leads the market-wide scenarios — SQ値 is the 日経225 settlement; its
+              `history` carries `*_excess` vs TOPIX, i.e. how much SQ pushed 日経225 apart from the broad market.
+              **`market.topix`** is the broad-market reference. **`market.nt_ratio`** (日経225 ÷ TOPIX: `nt`,
+              `prev_week_end`, `avg_20d`): NT rising into SQ = 日経225 side bid harder than the broad market
+              (the 225-heavy semis carry it), falling = sold harder; `insufficient` → skip.
+            - **`market.*.history`** and **`tickers[].history`** — past SQ weeks from stored daily bars.
+              Per event: `pre_ret_pct` (前週末→SQ前日), `week_ret_pct` (前週末→SQ日終値), `sq_gap_pct` (SQ前日終値→
+              SQ日始値), `sq_vol_x` (SQ日出来高 / 20日平均), `post_ret_pct` (SQ日→翌週末, SQ明け). `all` / `major`
+              aggregate them (`n`, `mean`, `median`, `up_ratio`); tickers also carry `week_excess` /
+              `sq_gap_excess` / `post_excess` (minus TOPIX on the same SQ) when TOPIX bars exist.
+              **`sensitivity`** is the SQ連動度: `sq_gap_abs_x` (SQ日の寄りギャップの大きさ ÷ 平常日の寄りギャップ),
+              `sq_week_abs_x` (SQ週の値幅 ÷ 平常週の値幅), `sq_vol_x` (SQ日の出来高倍率), `reversal_rate`
+              (SQ週の値動きが明けに逆向きになった割合). Above 1 = SQ moves it more than a normal day/week.
+              `n` is small (one SQ a month) — say so when it is, weigh `major` lightly when `major.n` ≤ 2, and
+              never present an average of a handful of events as a law. `status: insufficient` → skip that name.
+            - **`week_to_date`**: this week so far (前週末からのリターン, `excess_pct` = TOPIX比). A week that has
+              already run hard into SQ is what `reversal_rate` speaks to.
+            - **`premarket`** (last night's NY: `sox_change_pct` leads for semis, `nikkei_futures_price` is the
+              home gap, plus ドル円・米10年債・VIX; `status: stale` → demote, `us_session: carried_over` → not fresh),
+              **`live_indexes`** (場中の日経225/KOSPI; pre-open they are stale, skip),
+              **`market_short_ratio`** (空売り比率 vs 5日平均 — heavy hedging is squeeze fuel into SQ),
+              **`investor_flows`** (週次の海外投資家の買い越し/売り越しの連続), **`event_context`** (other events
+              this week — FOMC/日銀/ピア決算 overlapping SQ week change the scenarios; `特になし` → ignore).
+            - **`market_phase`**: `premarket` (today's gap isn't in yet) / 場中 / `closed`.
+
+            ## Writing
+
+            - **headline**: `🎯 SQ週ブリーフ: <一言>` — what matters most for this SQ week today.
+            - **scenarios**: 2-3 of 上振れ / 下振れ / 膠着 (or SQ通過後の剥落), each with 確度 (高/中/低), the trigger
+              that would set it off (a number or event from the inputs), and the path through SQ day and into
+              SQ明け. Ground 確度 in the inputs (history + this week's run + tonight's backdrop), not in
+              adjectives. On SQ day (`days_to_sq` 0) focus on the opening print and the post-SQ unwind.
+            - **sensitivity**: rank the names by SQ連動度 and say which are pushed most/least by SQ and in what way
+              (寄りのギャップ / 週の値幅 / 明けの反転), with the multiples. 1 line per point, at most 5 lines.
+            - **watch**: 1-3 facts to check today (a level, a print, an event), as facts to watch, not instructions.
+            - Real numbers, not adjectives alone. Japanese. One point per line, short memo style.
+
+            ## SQコンテキスト
+
+            @${{ runner.temp }}/sqctx.json
+          claude_args: >-
+            --model opus --effort high --allowedTools Read --max-turns 30
+            --json-schema '{
+              "type":"object","additionalProperties":false,
+              "required":["headline","scenarios","sensitivity","watch"],
+              "properties":{
+                "headline":{"type":"string","description":"Slack first line: 🎯 SQ週ブリーフ: <一言> (売買の方向は書かない)"},
+                "scenarios":{"type":"array","minItems":2,"maxItems":3,"items":{
+                  "type":"object","additionalProperties":false,
+                  "required":["name","likelihood","trigger","path"],
+                  "properties":{
+                    "name":{"type":"string","description":"シナリオ名 (上振れ / 下振れ / 膠着 / SQ通過後の剥落 など)"},
+                    "likelihood":{"type":"string","enum":["高","中","低"]},
+                    "trigger":{"type":"string","description":"きっかけ (入力にある数値・イベント)"},
+                    "path":{"type":"string","description":"SQ日から SQ明けまでの値動きの経路"}
+                  }}},
+                "sensitivity":{"type":"array","items":{"type":"string"},"maxItems":5,"description":"銘柄ごとの SQ連動度の読み (倍率付き、1 行 1 論点)"},
+                "watch":{"type":"array","items":{"type":"string"},"maxItems":3,"description":"今日確かめる事実"}
+              }
+            }'
+
+      # 構造化出力を Slack に投稿する。第2引数 = LLM に渡したのと同じ sqctx。post-sq.sh が 📐 数値
+      # (SQ日・今週リターン・SQ連動度) を sqctx の実在値から組んで親に貼る。
+      - name: Post sq-brief to Slack
+        run: |
+          printf '%s' "$SQ_JSON" > "$RUNNER_TEMP/sq.json"
+          bash scripts/post-sq.sh "$RUNNER_TEMP/sq.json" "$RUNNER_TEMP/sqctx.json"
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          SQ_JSON: ${{ steps.brief.outputs.structured_output }}

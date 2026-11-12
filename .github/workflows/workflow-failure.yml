@@ -1,0 +1,47 @@
+# 監視対象の workflow が失敗したら Slack (SLACK_WEBHOOK_URL、収集異常の警告と同じチャンネル) に 1 行で警告する。
+# workflow_run で完了を受け、conclusion が failure / timed_out の run だけ通知する (concurrency による
+# cancelled は対象外)。失敗した job / step は Actions API から引いて添える。整形と投稿は notify-failure.sh。
+#
+# 必要な設定 (Settings → Secrets and variables → Actions):
+#   secret   SLACK_WEBHOOK_URL  … 警告の送り先 (未設定なら通知スキップ)
+
+name: workflow-failure
+
+on:
+  workflow_run:
+    workflows:
+      - market-brief
+      - sq-brief
+      - context-builder
+      - ticker-brief
+      - crash-scenario
+      - slack-reply
+      - position-report
+      - deploy-worker
+    types: [completed]
+
+permissions:
+  actions: read
+
+jobs:
+  notify:
+    if: contains(fromJSON('["failure","timed_out"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Notify Slack
+        run: |
+          # shellcheck disable=SC2016  # $j は jq の変数
+          STEPS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs" --jq '
+            .jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .name as $j
+            | ([.steps[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "\($j) / \(.name)"]
+               | if length == 0 then ["\($j)"] else . end)[]' || true)"
+          bash scripts/notify-failure.sh "$WF_NAME" "$RUN_TITLE" "$RUN_URL" "$STEPS"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          WF_NAME: ${{ github.event.workflow_run.name }}
+          RUN_TITLE: ${{ github.event.workflow_run.display_title }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}

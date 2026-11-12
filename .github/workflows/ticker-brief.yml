@@ -24,6 +24,7 @@
 # 発火元 (context-builder) は github.token (GITHUB_TOKEN) で repos/.../dispatches を叩く。
 
 name: ticker-brief
+run-name: ticker-brief ${{ github.event.client_payload.ticker || inputs.ticker }}
 
 on:
   # context-builder がコンテキストを更新した (新着材料があった) あとに銘柄ごとに叩く。

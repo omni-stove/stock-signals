@@ -41,7 +41,7 @@ flowchart LR
 
 ### Slack に流れてくるもの (自動)
 
-ユーザーが何もせず自動で Slack に届く出力は次の7種類。材料ブリーフ・マーケットブリーフ・SQ週ブリーフ・暴落プリモーテム・
+ユーザーが何もせず自動で Slack に届く出力は次の8種類。材料ブリーフ・マーケットブリーフ・SQ週ブリーフ・暴落プリモーテム・
 コンテキスト更新は、チャンネルには太字見出しのサマリーだけを流し、詳細はそのスレッドにぶら下げる。
 
 - **材料ブリーフ**: 新着 IR/ニュースがあった銘柄について、新着材料の見出し、強気材料/弱気材料
@@ -85,6 +85,9 @@ flowchart LR
   専用チャンネルに分けることもできる (未設定ならブリーフと同じチャンネル)。
 - **収集異常の警告**: 収集元ページが取得できているのに記事一覧が 0 件しかパースできない状態
   (= サイト側の構造変更で収集が静かに止まっている疑い) を検知すると、朝夕の収集時に警告を1本流す。
+- **Actions 失敗の警告**: ブリーフ・コンテキスト更新・スレッド返信・ポジション事実レポート・Worker デプロイの
+  GitHub Actions が失敗 (タイムアウト含む) すると、対象 (銘柄コード付き)・失敗したステップ・ログへのリンクを
+  1 本流す。収集異常の警告と同じチャンネルに届く。
 
 ### Slack からの能動操作
 
@@ -145,7 +148,7 @@ GitHub Actions の position-report、ユーザーは直列)。
 | パス | 中身 |
 | ---- | ---- |
 | `worker/`            | Cloudflare Worker (収集) |
-| `.github/workflows/` | LLMリサーチの Actions(market-brief / sq-brief / context-builder / ticker-brief / crash-scenario / slack-reply / position-report)・CI・デプロイ。リサーチのルールは各ワークフローの prompt にベタ書きし、数値コンテキストは `@` でファイルから取り込む |
+| `.github/workflows/` | LLMリサーチの Actions(market-brief / sq-brief / context-builder / ticker-brief / crash-scenario / slack-reply / position-report)・失敗の警告 (workflow-failure)・CI・デプロイ。リサーチのルールは各ワークフローの prompt にベタ書きし、数値コンテキストは `@` でファイルから取り込む |
 | `agents/skills/`     | 手動運用の Claude Code skill(`update-tickers`。`.claude/skills/` は symlink) |
 | `scripts/`           | Slack 投稿整形・ブリーフ dispatch・手動ツール・品質ゲート(`verify.sh` 等) |
 | `config/`            | sources / events / peers の人間向け設定。銘柄一覧の真ソースは `worker/src/lib/watchlist.ts` の `TICKERS` |

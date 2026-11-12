@@ -20,6 +20,7 @@
 #   GitHub App 認証 (GH_APP_*) は ticker-brief の dispatch と共用。
 
 name: slack-reply
+run-name: slack-reply ${{ github.event.client_payload.ticker }}
 
 on:
   # Slack スレッド返信 → Worker /slack/events が repository_dispatch で起動する。

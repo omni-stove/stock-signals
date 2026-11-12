@@ -22,6 +22,7 @@
 #   GitHub App 認証 (GH_APP_*) は ticker-brief の dispatch と共用。
 
 name: crash-scenario
+run-name: crash-scenario ${{ github.event.client_payload.ticker }}
 
 on:
   # Slack /crash → Worker が repository_dispatch で起動する。

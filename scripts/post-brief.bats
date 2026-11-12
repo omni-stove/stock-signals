@@ -25,7 +25,7 @@ setup() {
 # 単純な brief-file (headline + 材料 1 件・分析 1 行) を書く。
 write_brief() {
   jq -n --arg h "$1" --arg t "$2" --arg a "$3" \
-    '{status:"brief",headline:$h,materials:[{title:$t,analysis:[$a]}],bull:[],bear:[],watch:[]}'
+    '{status:"brief",headline:$h,materials:[$t],bull:[$a],bear:[],watch:[]}'
 }
 
 # dryrun で post-brief.sh を実行 (brief-file のみ)。stderr も取り込む。
@@ -120,7 +120,7 @@ payload_for() {
 # emoji はセクション見出しに 1 回だけ出し、項目は ・ で並ぶ
 @test "payload: emoji headings group items into one section each" {
   jq -n '{status:"brief",headline:"HEAD",
-          materials:[{title:"2026-08-05 topic",analysis:["path one"]},{title:"2026-08-04 other",analysis:["path two"]}],
+          materials:["2026-08-05 topic","2026-08-04 other"],
           technical:["tape read"],
           bull:["strong point","second point"],bear:["risk point"],watch:["next earnings"]}' \
     > "$BATS_TEST_TMPDIR/b.json"
@@ -129,7 +129,7 @@ payload_for() {
   local p; p="$(payload_for "/slack/post")"
   # 新着 + テクニカル + 強気 + 弱気 + 注視 = 5 blocks
   [ "$(printf '%s' "$p" | jq -r '.details.blocks | length')" -eq 5 ]
-  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🆕 *新着*\n・2026-08-05 topic\n　→ path one\n・2026-08-04 other\n　→ path two')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🆕 *新着*\n・2026-08-05 topic\n・2026-08-04 other')" ]
   [ "$(printf '%s' "$p" | jq -r '.details.blocks[1].text.text')" = "$(printf '📈 *テクニカル*\n・tape read')" ]
   [ "$(printf '%s' "$p" | jq -r '.details.blocks[2].text.text')" = "$(printf '🐂 *強気*\n・strong point\n・second point')" ]
   [ "$(printf '%s' "$p" | jq -r '.details.blocks[3].text.text')" = "$(printf '🐻 *弱気*\n・risk point')" ]

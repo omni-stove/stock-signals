@@ -6,7 +6,7 @@
 #
 # 起動後はブリーフのルールを prompt にベタ書きした Claude Code Action が対象銘柄の数値コンテキスト
 # (context-builder が育てたコンテキスト本文 + Worker /judge-context の価格/日足/市場ブリーフ/決算日/信用残)
-# を @ で読み、新着材料の要約と背景・影響分析・テクニカルの読み・強気/弱気材料を structured_output で返す。
+# を @ で読み、新着材料の見出し・テクニカルの読み・強気/弱気材料 (新着材料の背景・影響分析を含む) を structured_output で返す。
 # 売買判断 (buy/sell・指値・損切り) は出さない — 判断は読み手 (人間) が行い、ここは判断材料を
 # 並べる係。投稿は後続ステップ (post-brief.sh)。**このワークフローはコンテキストを一切書き換えない**
 # (出力は Slack のみ)。context-builder がコンテキストを書き、ticker-brief が Slack を書く、という
@@ -124,10 +124,9 @@ jobs:
             # ticker-brief — 対象銘柄 ${{ github.event.client_payload.ticker || inputs.ticker }}
 
             Produce a **材料ブリーフ** — a research digest for a human to make their own trading decision.
-            Summarize the fresh materials on this name, explain **why each matters** (the transmission path
-            into 業績/株価, precedents when you know one), and lay out the standing 強気/弱気 case. **Never
-            output a trading call**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs (買い/売り/
-            利確/増し玉/様子見). Price levels and indicator values belong to the posting step, which appends
+            Headline the fresh materials on this name and lay out the 強気/弱気 case. **Never output a trading
+            call**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs (買い/売り/利確/増し玉/様子見).
+            Price levels and indicator values belong to the posting step, which appends
             the real ones (現値/MA/レンジ/ATR, MA25乖離/RSI/出来高倍率/OBV/CMF, MA75/52週高値・安値/TOPIX比/予想PER)
             deterministically — do not restate numeric levels or indicator values in your text. You may —
             and should — describe what the tape did (急伸/出来高急増/セクタ内で劣後 など) as fact.
@@ -151,21 +150,22 @@ jobs:
               is older than 14 days and there is no fresh earnings or guidance, forced-flow reading, or notable
               tape move. When in doubt, brief. On `no_update`, leave `headline` null and every array empty.
             - `headline`: exact format, verbatim: `📰 <ticker> <name>: <one-phrase summary of the fresh materials>`.
-            - `materials`: the fresh items, newest first; merge items on one theme. `title`:
-              `YYYY-MM-DD <what happened>`. `analysis`: why it matters, the concrete path into earnings or
-              price, and a precedent or first market reaction when known.
+            - `materials`: the fresh items, newest first; merge items on one theme. Each is
+              `YYYY-MM-DD <what happened>` only — no effect or analysis.
             - `technical`: whether trend and money flow confirm or diverge from the fresh materials. Do not
               restate indicators one by one, forecast, or name a level to act on. Empty when `daily` is skipped.
-            - `bull` / `bear`: the strongest standing points on earnings and supply-demand, as
-              facts and their weight. Either side may be empty when the materials lean one way.
+            - `bull` / `bear`: the strongest points on earnings and supply-demand, fresh materials first, as
+              facts and their weight. For a fresh material, give why it matters: the concrete path into
+              earnings or price, and a precedent or first market reaction when known. Either side may be empty
+              when the materials lean one way.
             - `watch`: the next verifiable fact that would change the picture, leading with its date when known.
 
             ## Web research (supplementary)
 
             The collected data (`numctx.json` + `context_body`) is primary. You may use WebSearch/WebFetch
-            to enrich `materials` — 一次情報 (会社 IR/取引所/当局), 海外報道, アナリスト見解 — under these
+            to enrich `bull` / `bear` — 一次情報 (会社 IR/取引所/当局), 海外報道, アナリスト見解 — under these
             rules: at most 4 search+fetch calls total; only to corroborate or deepen a material you already
-            see in the inputs, not to hunt for unrelated stories; cite the source inline in `analysis`
+            see in the inputs, not to hunt for unrelated stories; cite the source inline in `bull` / `bear`
             (媒体名, 日付); if you find nothing solid, write nothing — never invent a source or a fact.
 
             ## Inputs
@@ -264,7 +264,7 @@ jobs:
               "properties":{
                 "status":{"enum":["brief","no_update"]},
                 "headline":{"type":["string","null"],"maxLength":70},
-                "materials":{"type":"array","maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["title","analysis"],"properties":{"title":{"type":"string","maxLength":50},"analysis":{"type":"array","items":{"type":"string","maxLength":80},"minItems":1,"maxItems":3}}}},
+                "materials":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":50}},
                 "technical":{"type":"array","items":{"type":"string","maxLength":80},"maxItems":2},
                 "bull":{"type":"array","items":{"type":"string","maxLength":60},"maxItems":4},
                 "bear":{"type":"array","items":{"type":"string","maxLength":60},"maxItems":4},

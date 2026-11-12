@@ -61,12 +61,12 @@ HEADLINE="$(printf '%s' "$BRIEF_JSON" | jq -r '.headline // ""')"
 [[ -n "$HEADLINE" && "$HEADLINE" != "null" ]] || {
   echo "post-brief.sh: empty headline in $BRIEF_FILE" >&2; exit 1; }
 
-# 本文を emoji 見出しのセクションごとの文字列に組む: 🆕 新着 (・タイトル + →分析行) / 📈 テクニカル /
+# 本文を emoji 見出しのセクションごとの文字列に組む: 🆕 新着 (見出しのみ) / 📈 テクニカル /
 # 🐂 強気 / 🐻 弱気 / 👀 注視。項目が無いセクションは出さず、1 セクション 1 section block になる。
 SECTIONS_JSON="$(printf '%s' "$BRIEF_JSON" | jq -c '
   def group($heading): if length == 0 then empty else ([$heading] + .) | join("\n") end;
   def bullets: map("・" + .);
-  [ ([ (.materials // [])[] | (["・" + .title] + ((.analysis // []) | map("　→ " + .))) ] | flatten | group("🆕 *新着*")),
+  [ ((.materials // []) | bullets | group("🆕 *新着*")),
     ((.technical // []) | bullets | group("📈 *テクニカル*")),
     ((.bull // []) | bullets | group("🐂 *強気*")),
     ((.bear // []) | bullets | group("🐻 *弱気*")),

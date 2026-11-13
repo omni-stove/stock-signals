@@ -13,6 +13,8 @@
 //     長いので専用の長い窓 (INDEX_CHANGE_LEAD) で出す。投入方法は config/events.yaml 参照。
 //   - 全て UTC 正午アンカーで日付計算する。
 
+import { addDays } from "./utils";
+
 // macro_events の 1 行 (D1 macroEvents の select 結果と同じキー)。
 export interface MacroEventRow {
 	date: string;
@@ -42,19 +44,12 @@ const INDEX_CHANGE_AFTER = 2;
 function d(ymd: string): Date {
 	return new Date(`${ymd}T12:00:00Z`);
 }
-// Date を YYYY-MM-DD にする。
-function ymd(date: Date): string {
-	return date.toISOString().slice(0, 10);
-}
 // ISO 曜日 (1=月..7=日)。
 function isoDow(date: Date): number {
 	const w = date.getUTCDay();
 	return w === 0 ? 7 : w;
 }
 // n 日加算した YYYY-MM-DD。sq-week も使う。
-function addDays(ymdStr: string, n: number): string {
-	return ymd(new Date(d(ymdStr).getTime() + n * 86400_000));
-}
 export const addDaysYmd = addDays;
 // 2 つの YYYY-MM-DD の暦日差 (b - a)。event-reminder も使う。
 export function daysDiff(a: string, b: string): number {

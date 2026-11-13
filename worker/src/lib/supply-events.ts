@@ -4,6 +4,7 @@
 // EDINET の大量保有報告書・変更報告書 (large-holdings.ts で絞ったもの) も同じ items に並べる。
 
 import { holdingItems, type LargeHoldingRow } from "./large-holdings";
+import { addDays } from "./utils";
 
 export interface SupplyArticle {
 	date: string; // 発表日 YYYY-MM-DD
@@ -30,12 +31,6 @@ const LOCKUP_KINDS = new Set([
 	"third_party_allotment",
 ]);
 const LOOKBACK_DAYS = 400;
-
-function addDays(date: string, days: number): string {
-	const d = new Date(`${date}T00:00:00Z`);
-	d.setUTCDate(d.getUTCDate() + days);
-	return d.toISOString().slice(0, 10);
-}
 
 function daysBetween(from: string, to: string): number {
 	return Math.round(

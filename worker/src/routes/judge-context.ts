@@ -191,7 +191,10 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 			: [],
 	);
 
-	const shortInterest = await readShortInterest(env.DB, code);
+	const [shortInterest, largeHoldingRows] = await Promise.all([
+		readShortInterest(env.DB, code),
+		readLargeHoldings(env, code, today),
+	]);
 
 	// latest.ts の prices select と完全に揃える (row 全体)。
 	const priceRows = (await db(env.DB)
@@ -379,11 +382,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 				lending: buildLending(shortInterest.lending),
 				positions: buildShortPositions(shortInterest.positions, today),
 			},
-			supply: buildSupply(
-				officialArticles,
-				today,
-				await readLargeHoldings(env, code, today),
-			),
+			supply: buildSupply(officialArticles, today, largeHoldingRows),
 			forced: buildForced(forcedRow ?? null),
 		}),
 	);

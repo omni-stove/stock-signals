@@ -25,6 +25,7 @@ import {
 	notifyParseFailure,
 } from "./slack";
 import { collectTimeseries, DAILY_CODES, WATCHLIST } from "./timeseries";
+import { jstDate } from "./utils";
 
 // 銘柄ニュース + 市場テーマニュースの新着を Slack (SLACK_NEWS_WEBHOOK_URL) に通知する。
 // IR(notifySlack) と別チャンネルに分離する。webhook 未設定/新着 0 なら no-op。best-effort。
@@ -112,13 +113,6 @@ function isJstWeekend(scheduledTime: number): boolean {
 	const jst = new Date(scheduledTime + 9 * 60 * 60 * 1000);
 	const day = jst.getUTCDay(); // JST に +9h した値の UTC 曜日 = JST 曜日
 	return day === 0 || day === 6;
-}
-
-// 発火予定時刻を JST の暦日 (YYYY-MM-DD) にする。
-function jstDate(scheduledTime: number): string {
-	return new Date(scheduledTime + 9 * 60 * 60 * 1000)
-		.toISOString()
-		.slice(0, 10);
 }
 
 // 発火予定時刻 (JST) が月の最初の稼働日 (1〜3日のいずれか初回) かを判定する。マクロイベント

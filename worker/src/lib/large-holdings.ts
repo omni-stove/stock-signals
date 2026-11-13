@@ -1,24 +1,27 @@
 // Cloudflare Worker: EDINET の大量保有報告書・変更報告書の収集と、judge-context 用の絞り込み。
 //
-// 収集: EDINET API v2 の書類一覧 (documents.json, type=2) を直近 LOOKBACK_DAYS 日ぶん引き、
-// 対象会社 (subjectEdinetCode) が監視銘柄の docTypeCode 350 だけを拾う。保有割合は書類の CSV
-// (type=5, zip 内の XBRL_TO_CSV/jplvh*.csv、UTF-16 タブ区切り) から読み、取れなければ null で残す。
-// 取得済みの doc_id は CSV を取り直さない。LLM 不使用。
+// 収集: EDINET API v2 の書類一覧 (documents.json, type=2) を直近 LOOKBACK_DAYS 日ぶん日ごとに引き、
+// 対象会社 (subjectEdinetCode) が監視銘柄の docTypeCode 350 だけを拾って日ごとに保存する。保有割合は
+// 書類の CSV (type=5, zip 内の XBRL_TO_CSV/jplvh*.csv、UTF-16 タブ区切り) から読む。CSV の取得自体が
+// 失敗した書類は保存せず次の回に取り直し、CSV に保有割合が無い書類は null で残す。取得済みの
+// doc_id は CSV を取り直さない。書類一覧の取得に失敗した日があれば、他の日を保存したうえで投げる。
+// LLM 不使用。
 //
-// 絞り込み (holdingItems): 銘柄ブリーフの supply ブロックに足すので、提出者ごとの最新 1 件・
-// 直近 RECENT_DAYS 日・MAX_ITEMS 件までにし、特例報告 (機関投資家の定例報告) は保有割合が
-// 取れて 1pt 以上動いたものだけ残す。
+// 絞り込み (holdingItems): 銘柄ブリーフの supply ブロックに足すので、readLargeHoldings で直近
+// RECENT_DAYS 日に絞った行を提出者ごとの最新 1 件・MAX_ITEMS 件までにし、特例報告 (機関投資家の
+// 定例報告) は保有割合が取れて 1pt 以上動いたものだけ残す。
 
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { db } from "./db";
 import type { Env } from "./env";
 import { unzipBytes } from "./inflate";
 import { largeHoldings } from "./schema";
-import { sleep } from "./utils";
+import { addDays, jstDate, sleep } from "./utils";
 import { EDINET_TO_TICKER } from "./watchlist";
 
 const API = "https://api.edinet-fsa.go.jp/api/v2";
-const LOOKBACK_DAYS = 7;
+// 金曜夕方以降の提出を月曜の回で拾い、一時的な失敗を翌日に取り直せる幅。
+const LOOKBACK_DAYS = 4;
 const FETCH_TIMEOUT_MS = 20_000;
 
 type LargeHoldingsEnv = Pick<
@@ -86,11 +89,13 @@ function decodeCsv(bytes: Uint8Array): string {
 	return new TextDecoder("utf-8").decode(bytes);
 }
 
-const RATIO_ID = /:HoldingRatioOfShareCertificatesEtc$/;
-const PREV_RATIO_ID = /:HoldingRatioOfShareCertificatesEtcPerLastReport$/;
+const RATIO_ID = /:(Total)?HoldingRatioOfShareCertificatesEtc$/;
+const PREV_RATIO_ID =
+	/:(Total)?HoldingRatioOfShareCertificatesEtcPerLastReport$/;
 
 // XBRL_TO_CSV の行 (要素ID / コンテキストID / 値) から保有割合 (%) とその前回報告値を引く。
-// 共同保有で複数行あるときは要素 ID に Total を含む行、次に FilingDateInstant の行を採る。
+// 共同保有で複数行あるときは要素 ID に Total を含む行 (合算)、次に FilingDateInstant の行を採る。
+// どちらも無く行が複数なら、個別の保有者の値しか無いので null にする。
 // 値が 1 以下なら比率 (0.0512) とみなして % に直す。
 function parseHoldingRatios(csv: string): {
 	ratio: number | null;
@@ -112,7 +117,7 @@ function parseHoldingRatios(csv: string): {
 		const best =
 			hits.find((r) => /Total/.test(r[idCol])) ??
 			hits.find((r) => r[ctxCol] === "FilingDateInstant") ??
-			hits[0];
+			(hits.length === 1 ? hits[0] : undefined);
 		const n = Number(best?.[valCol]);
 		if (!best || best[valCol] === "" || !Number.isFinite(n)) return null;
 		return Math.round((n <= 1 ? n * 100 : n) * 100) / 100;
@@ -138,14 +143,37 @@ async function edinetGet(
 	return res;
 }
 
-function jstToday(): string {
-	return new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+// 書類一覧の 1 日分。results が無い応答 (認証エラー・メンテナンス等) は投げる。
+async function listDocuments(
+	date: string,
+	env: LargeHoldingsEnv,
+): Promise<EdinetDoc[]> {
+	const res = await edinetGet("/documents.json", { date, type: "2" }, env);
+	const body = (await res.json()) as {
+		results?: EdinetDoc[];
+		metadata?: { status?: string; message?: string };
+		statusCode?: number;
+		message?: string;
+	};
+	if (!Array.isArray(body.results))
+		throw new Error(
+			`EDINET documents.json ${date}: status ${body.metadata?.status ?? body.statusCode ?? "?"} ${body.metadata?.message ?? body.message ?? ""}`.trim(),
+		);
+	return body.results;
 }
 
-function addDays(date: string, days: number): string {
-	const d = new Date(`${date}T00:00:00Z`);
-	d.setUTCDate(d.getUTCDate() + days);
-	return d.toISOString().slice(0, 10);
+// 書類の保有割合。CSV の取得・展開に失敗したら投げる (呼び出し側で次の回に回す)。
+async function fetchRatios(
+	docId: string,
+	env: LargeHoldingsEnv,
+): Promise<{ ratio: number | null; prevRatio: number | null }> {
+	const res = await edinetGet(`/documents/${docId}`, { type: "5" }, env);
+	const csv = await unzipBytes(new Uint8Array(await res.arrayBuffer()), (n) =>
+		/XBRL_TO_CSV\/jplvh[^/]*\.csv$/.test(n),
+	);
+	return csv
+		? parseHoldingRatios(decodeCsv(csv))
+		: { ratio: null, prevRatio: null };
 }
 
 export async function collectLargeHoldings(
@@ -153,82 +181,93 @@ export async function collectLargeHoldings(
 ): Promise<Record<string, unknown>> {
 	if (!env.EDINET_API_KEY) return { skipped: "EDINET_API_KEY unset" };
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
-	const today = jstToday();
-	const reports: HoldingReport[] = [];
-	for (let i = LOOKBACK_DAYS - 1; i >= 0; i--) {
-		const date = addDays(today, -i);
-		const res = await edinetGet("/documents.json", { date, type: "2" }, env);
-		const body = (await res.json()) as { results?: EdinetDoc[] };
-		reports.push(...pickHoldingReports(body.results ?? [], EDINET_TO_TICKER));
-		await sleep(interval);
-	}
+	const today = jstDate(Date.now());
 	const d = db(env.DB);
-	const known = new Set(
-		reports.length === 0
-			? []
-			: (
-					await d
-						.select({ docId: largeHoldings.docId })
-						.from(largeHoldings)
-						.where(
-							inArray(
-								largeHoldings.docId,
-								reports.map((r) => r.docId),
-							),
-						)
-						.all()
-				).map((r) => r.docId),
-	);
+	const failedDays: string[] = [];
+	let matched = 0;
 	let inserted = 0;
 	let ratioMissing = 0;
-	for (const r of reports.filter((x) => !known.has(x.docId))) {
-		let ratios = {
-			ratio: null as number | null,
-			prevRatio: null as number | null,
-		};
-		if (r.csv) {
-			try {
-				const res = await edinetGet(
-					`/documents/${r.docId}`,
-					{ type: "5" },
-					env,
-				);
-				const csv = await unzipBytes(
-					new Uint8Array(await res.arrayBuffer()),
-					(n) => /XBRL_TO_CSV\/jplvh[^/]*\.csv$/.test(n),
-				);
-				if (csv) ratios = parseHoldingRatios(decodeCsv(csv));
-			} catch (e) {
-				console.error(
-					`large-holdings [${r.docId}] csv: ${(e as Error).message}`,
-				);
-			}
-			await sleep(interval);
+	let csvRetry = 0;
+	for (let i = LOOKBACK_DAYS - 1; i >= 0; i--) {
+		const date = addDays(today, -i);
+		let reports: HoldingReport[];
+		try {
+			reports = pickHoldingReports(
+				await listDocuments(date, env),
+				EDINET_TO_TICKER,
+			);
+		} catch (e) {
+			console.error(`large-holdings [${date}]: ${(e as Error).message}`);
+			failedDays.push(date);
+			continue;
+		} finally {
+			if (i > 0) await sleep(interval);
 		}
-		if (ratios.ratio == null) ratioMissing++;
-		await d
-			.insert(largeHoldings)
-			.values({
-				docId: r.docId,
-				ticker: r.ticker,
-				filer: r.filer,
-				reportKind: r.reportKind,
-				special: r.special,
-				submitDate: r.submitDate,
-				ratio: ratios.ratio,
-				prevRatio: ratios.prevRatio,
-				fetchedAt: new Date().toISOString(),
-			})
-			.onConflictDoNothing()
-			.run();
-		inserted++;
+		matched += reports.length;
+		if (reports.length === 0) continue;
+		const known = new Set(
+			(
+				await d
+					.select({ docId: largeHoldings.docId })
+					.from(largeHoldings)
+					.where(
+						inArray(
+							largeHoldings.docId,
+							reports.map((r) => r.docId),
+						),
+					)
+					.all()
+			).map((r) => r.docId),
+		);
+		for (const r of reports.filter((x) => !known.has(x.docId))) {
+			let ratios = {
+				ratio: null as number | null,
+				prevRatio: null as number | null,
+			};
+			if (r.csv) {
+				try {
+					ratios = await fetchRatios(r.docId, env);
+				} catch (e) {
+					console.error(
+						`large-holdings [${r.docId}] csv: ${(e as Error).message}`,
+					);
+					csvRetry++;
+					continue;
+				} finally {
+					await sleep(interval);
+				}
+			}
+			if (ratios.ratio == null) ratioMissing++;
+			await d
+				.insert(largeHoldings)
+				.values({
+					docId: r.docId,
+					ticker: r.ticker,
+					filer: r.filer,
+					reportKind: r.reportKind,
+					special: r.special,
+					submitDate: r.submitDate,
+					ratio: ratios.ratio,
+					prevRatio: ratios.prevRatio,
+					fetchedAt: new Date().toISOString(),
+				})
+				.onConflictDoNothing()
+				.run();
+			inserted++;
+		}
 	}
-	return {
+	const result = {
 		days: LOOKBACK_DAYS,
-		matched: reports.length,
+		matched,
 		inserted,
 		ratioMissing,
+		csvRetry,
 	};
+	if (failedDays.length > 0)
+		throw new Error(
+			`EDINET 書類一覧の取得失敗: ${failedDays.join(", ")} ${JSON.stringify(result)}`,
+		);
+	return result;
 }
 
 // ── judge-context 用 ─────────────────────────────────────────────────────────
@@ -270,15 +309,13 @@ export async function readLargeHoldings(
 		.all();
 }
 
-// supply.items に足す形にする。rows は submit_date DESC。
+// supply.items に足す形にする。rows は readLargeHoldings の結果 (直近 RECENT_DAYS 日、submit_date DESC)。
 export function holdingItems(
 	rows: LargeHoldingRow[],
 	today: string,
 ): Record<string, unknown>[] {
-	const since = addDays(today, -RECENT_DAYS);
 	const seen = new Set<string>();
 	return rows
-		.filter((r) => r.submit_date >= since && r.submit_date <= today)
 		.filter((r) => {
 			if (seen.has(r.filer)) return false;
 			seen.add(r.filer);
@@ -435,6 +472,37 @@ if (import.meta.vitest) {
 			expect(parseHoldingRatios(csv).ratio).toBe(7);
 		});
 
+		it("共同保有の合算 (Total) を個別の保有者より優先し、個別しか無ければ null", () => {
+			const joint = [
+				header,
+				row(
+					"jplvh_cor:HoldingRatioOfShareCertificatesEtc",
+					"FilingDateInstant_Row1Member",
+					"0.021",
+				),
+				row(
+					"jplvh_cor:TotalHoldingRatioOfShareCertificatesEtc",
+					"FilingDateInstant_TotalMember",
+					"0.063",
+				),
+			];
+			expect(parseHoldingRatios(joint.join("\n")).ratio).toBe(6.3);
+			const holdersOnly = [
+				header,
+				row(
+					"jplvh_cor:HoldingRatioOfShareCertificatesEtc",
+					"FilingDateInstant_Row1Member",
+					"0.021",
+				),
+				row(
+					"jplvh_cor:HoldingRatioOfShareCertificatesEtc",
+					"FilingDateInstant_Row2Member",
+					"0.042",
+				),
+			];
+			expect(parseHoldingRatios(holdersOnly.join("\n")).ratio).toBeNull();
+		});
+
 		it("該当行が無ければ null", () => {
 			expect(parseHoldingRatios(header)).toEqual({
 				ratio: null,
@@ -493,14 +561,13 @@ if (import.meta.vitest) {
 			]);
 		});
 
-		it("新規報告は割合が取れなくても残し、90 日より前と上限超えは落とす", () => {
+		it("新規報告は割合が取れなくても残し、上限超えは落とす", () => {
 			const out = holdingItems(
 				[
 					r({ filer: "N", report_kind: "new", ratio: null, prev_ratio: null }),
 					r({ filer: "B" }),
 					r({ filer: "C" }),
 					r({ filer: "D" }),
-					r({ filer: "Old", submit_date: "2026-07-01" }),
 				],
 				TODAY,
 			);

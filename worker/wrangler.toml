@@ -23,26 +23,23 @@ account_id = "020120735d111b7d06111196719171c1"  # admin@omnistove.com
 #   例外: 寄り前 intake `30 23 * * *` は UTC 日曜 23:30 = JST 月曜 08:30 に発火するため
 #   JST 曜日では月曜扱いとなり残る (日本の日曜夜=米国の月曜朝の地合いを反映する)。
 #
-#   intake (寄り前/引け後): JST 08:30/20:00 = UTC 23:30(前日)/11:00。IR+ニュース収集
+#   intake (寄り前/引け後): JST 08:30/18:00 = UTC 23:30(前日)/09:00。IR+ニュース収集
 #                            (寄り前 08:30 のみ地合い=米国指数+日経先物も先に取得し、
 #                             その直後に market-brief ワークフローを dispatch する。市場全体の
 #                             事実サマリーなので個別 ticker-brief より先に発火させる)
-#                            引け後は 20:00。決算・適時開示は19時台以降に出ることもあり、その夜のうちに
-#                            (寝る前/翌朝より早く) 拾えるよう遅めに置く。早い適時開示(15:30〜)は
-#                            場中ループ尾の prices + 12:30 相当の IR intake である程度カバーされる。
+#                            引け後 18:00 は先に flows (空売り需給 + 投資部門別 + 大量保有報告書 (EDINET))
+#                            を収集し、信用残も相乗りさせる。18:00 以降の開示は翌朝 08:30 の intake で拾う。
 #   prices (場中5分毎):      JST 09:00-15:00 = UTC 00:00-06:00 を5分毎。prices+ニュース速報。
 #                            さらに JST 12:30 相当 (UTC 03:30) のスロットでは IR intake も相乗りさせる
 #                            (event.scheduledTime の時刻で判定。下記 scheduled() 参照)。
 #   eod (引け後1回):         JST 16:00 = UTC 07:00 で daily + fundamentals + 決算予定日推定
-#   flows (夕方1回):         JST 18:00 = UTC 09:00 で空売り需給 + 投資部門別 + 大量保有報告書 (EDINET)
-# ※Cloudflare の cron trigger 上限は5個で、5個とも使っている。新しい収集は既存 cron に相乗りさせる。
+# ※Cloudflare の cron trigger 上限は5個。
 [triggers]
 crons = [
   "30 23 * * *",    # JST 08:30 寄り前 IR + ニュース + 地合い (+ market-brief を dispatch)
-  "0 11 * * *",     # JST 20:00 引け後 IR + ニュース
   "*/5 0-6 * * *",  # JST 09:00-15:00 5分毎  prices + ニュース速報 (12:30 相当スロットで IR intake も)
   "0 7 * * *",      # JST 16:00 引け後  daily + fundamentals + earnings (eod)
-  "0 9 * * *",      # JST 18:00 空売り需給 + 投資部門別 + 大量保有報告書 (flows)
+  "0 9 * * *",      # JST 18:00 引け後 flows (空売り需給 + 投資部門別 + 大量保有) → IR + ニュース + 信用残
 ]
 
 # 自分自身への service binding。cron が重い収集を /run に 1 ジョブずつ投げ、別 invocation として
@@ -67,7 +64,7 @@ bucket_name = "stock-signals-articles"
 
 [vars]
 USER_AGENT = "stock-signals-bot/0.1 (personal research; contact: admin@omnistove.com)"
-# kabutan への連続アクセス間隔 (記事ごとの fetch 直前に待つ)。引け後 (20:00) intake は全収集を
+# kabutan への連続アクセス間隔 (記事ごとの fetch 直前に待つ)。引け後 (18:00) intake は全収集を
 # 直列に回すため、この値が大きいと待ち時間が積み上がり (ratings だけで sleep×8 ≒ 40 秒)、収集全体が
 # 80 秒級になっていた。礼儀の範囲で 2 秒に抑え、intake 全体のウォールクロックを圧縮する。
 MIN_INTERVAL_MS = "2000"

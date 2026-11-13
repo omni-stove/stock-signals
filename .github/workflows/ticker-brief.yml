@@ -2,7 +2,8 @@
 #
 # 2段アーキテクチャの後段。前段 context-builder が銘柄の持続コンテキストを更新したあと、
 # repository_dispatch (event_type=ticker-brief、client_payload.ticker に単一銘柄) でこのワークフローを
-# 起動する。手動でも実行できる。
+# 起動する。手動でも実行できる。client_payload.fresh=false (新着材料なしの定時ブリーフ) の回は簡易版
+# (routine モード: 項目数を絞り Web 調査なし、effort を下げる) を出す。それ以外は通常版 (full)。
 #
 # 起動後はブリーフのルールを prompt にベタ書きした Claude Code Action が対象銘柄の数値コンテキスト
 # (context-builder が育てたコンテキスト本文 + Worker /judge-context の価格/日足/市場ブリーフ/決算日/信用残)
@@ -27,7 +28,7 @@ name: ticker-brief
 run-name: ticker-brief ${{ github.event.client_payload.ticker || inputs.ticker }}
 
 on:
-  # context-builder がコンテキストを更新した (新着材料があった) あとに銘柄ごとに叩く。
+  # context-builder が銘柄ごとに叩く。新着材料があった回と、intake の定時の回 (新着なしは fresh=false)。
   repository_dispatch:
     types: [ticker-brief]
   workflow_dispatch:       # 手動実行 (検証用)。対象銘柄を選んで実行する。
@@ -106,6 +107,15 @@ jobs:
           # payload/inputs 由来の ticker は run へ生展開せず env 経由で渡す。
           TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}
 
+      # 簡易版か通常版かを決める。payload は prompt に生展開せず、ここで固定値 (routine / full) に正規化する。
+      - name: Brief mode
+        id: mode
+        env:
+          FRESH: ${{ github.event.client_payload.fresh }}
+        run: |
+          if [ "$FRESH" = "false" ]; then mode=routine; else mode=full; fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
       - name: Run ticker-brief
         id: brief
         uses: anthropics/claude-code-action@v1
@@ -140,6 +150,15 @@ jobs:
 
             Do not post to Slack; do not run any script; do not write any file — return structured output
             and stop.
+
+            ## Run mode: ${{ steps.mode.outputs.mode }}
+
+            - `full`: follow every rule below.
+            - `routine`: a scheduled brief with no new IR/news since the last context update. Keep it to a short
+              status check: `headline` is `📊 <ticker> <name>: <one-phrase summary of where the name stands now>`;
+              `materials` empty; `technical` at most 1 line; `bull` / `bear` at most 2 each, only points the
+              current tape, `event_context`, `earnings`, `forced`, or `supply` makes live now; `watch` at most 1.
+              Skip Web research. Never present a topic from 直近の重大トピック as new.
 
             ## Inputs
 
@@ -254,7 +273,8 @@ jobs:
           # 検証済み JSON は steps.brief.outputs.structured_output で受ける。skill には curl/sh を
           # 叩かせない (投稿/保存は次ステップ): Bash は渡さず Read + WebSearch/WebFetch (追加取材) のみ許可。
           claude_args: >-
-            --model opus --effort high --allowedTools Read,WebSearch,WebFetch --max-turns 50
+            --model opus --effort ${{ steps.mode.outputs.mode == 'routine' && 'medium' || 'high' }}
+            --allowedTools Read,WebSearch,WebFetch --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
               "required":["status","headline","materials","technical","bull","bear","watch"],

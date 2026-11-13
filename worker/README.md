@@ -22,15 +22,14 @@ HTTP 層は `src/routes/` に分かれる。各ルートと用途はファイル
 
 ## Cron 割り当て (wrangler.toml [triggers], UTC基準)
 
-Cloudflare の cron trigger 上限は **5個** で、5個とも使っている。新しい収集は既存 cron に
-相乗りさせる。発火した cron 式を `scheduled()` 内で
+Cloudflare の cron trigger 上限は **5個**。発火した cron 式を `scheduled()` 内で
 `event.cron` により判別し種別を振り分ける (`CRON_KIND`)。昼(12:30)の IR intake は
 専用 cron を持たず prices ループに相乗りさせている (`event.scheduledTime` で昼スロットを判定)。
 
 cron 式と JST の対応は `wrangler.toml [triggers]` のコメントに、種別ごとの収集内容は
 `cron.ts` (`CRON_KIND` の振り分け) に書く。intake (寄り前/引け後)・prices (場中5分毎)・
-eod (引け後)・flows (夕方) の4種で、寄り前は地合い、引け後は信用残や決算予定推定などを相乗りさせる。
-eod と flows は重いので、ジョブを自分自身 (service binding `SELF`) の `/run` に 1 つずつ投げ、
+eod (引け後) の3種で、寄り前は地合い、夕方の引け後 intake は空売り需給・信用残などを相乗りさせる。
+eod と夕方の需給 (flows) は重いので、ジョブを自分自身 (service binding `SELF`) の `/run` に 1 つずつ投げ、
 別 invocation として CPU 上限を個別に受けさせる (`fan-out.ts`)。
 
 ## 本番デプロイ

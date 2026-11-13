@@ -1,6 +1,6 @@
 # 新規IR/ニュース → Claude Code Action で「銘柄コンテキスト(D1)」を更新 → ticker-brief を起動。
 #
-# 2段アーキテクチャの前段。Worker (Cloudflare) が IR(寄り前 8:30 / 昼 12:30 / 引け後 20:00) と
+# 2段アーキテクチャの前段。Worker (Cloudflare) が IR(寄り前 8:30 / 昼 12:30 / 引け後 18:00) と
 # per_ticker ニュース(IR時刻 + 場中5分毎)を取得し、repository_dispatch (event_type=signal-update) で
 # このワークフローを起動する (1銘柄=1 dispatch、client_payload.ticker に単一銘柄)。寄り前・引け後・
 # 引け前 15:00 は全銘柄、それ以外の場中は新規があった銘柄だけ。
@@ -12,6 +12,7 @@
 # (post-context.sh) が D1 (Worker /context) を更新し全文を Slack (SLACK_CONTEXT_CHANNEL) に投稿、
 # 別ステップが status=ok (新着材料あり) のとき、または client_payload.brief=true (寄り前・引け後 intake の
 # 定時ブリーフ) のときに repository_dispatch (event_type=ticker-brief) で後段の材料ブリーフを起動する。
+# 新着が無い定時ブリーフは fresh=false を載せ、ticker-brief が簡易版にする。
 #
 # 材料ブリーフは ticker-brief.yml が担う(D1 コンテキスト+価格/市場ブリーフを読み Slackに通知)。
 # コンテキストにはブリーフを書かないので、brief → context の編集ループは物理的に発生しない。
@@ -29,7 +30,7 @@ name: context-builder
 run-name: context-builder ${{ github.event.client_payload.ticker || inputs.ticker }}
 
 on:
-  # Worker が新規IR/ニュース取得時に銘柄ごとに叩く。client_payload.ticker に対象銘柄が入る。
+  # Worker が銘柄ごとに叩く。client_payload.ticker に対象銘柄、定時の回は client_payload.brief=true が入る。
   repository_dispatch:
     types: [signal-update]
   workflow_dispatch:       # 手動実行 (検証用)。対象銘柄を選んで実行する。
@@ -224,14 +225,17 @@ jobs:
           SLACK_CONTEXT_CHANNEL: ${{ vars.SLACK_CONTEXT_CHANNEL }}
           CONTEXT_JSON: ${{ steps.builder.outputs.structured_output }}
 
-      # 新着材料があった (status=ok = コンテキストを再生成した) とき、または Worker の intake が
-      # client_payload.brief=true を載せた定時の回に ticker-brief を発火する。場中の no-update は発火しない。
-      # 手動の force 再生成 (workflow_dispatch) は新規 0 でも status=ok になるので必ずブリーフが続く。
+      # 新着材料があった (status=ok = コンテキストを再生成した) ときは通常のブリーフ、Worker の intake が
+      # client_payload.brief=true を載せた定時の回で no-update なら簡易ブリーフ (fresh=false) を発火する。
+      # 場中の no-update は発火しない。手動の force 再生成 (workflow_dispatch) は新規 0 でも status=ok に
+      # なるので必ず通常のブリーフが続く。
       - name: Dispatch ticker-brief
         run: |
           status="$(printf '%s' "$CONTEXT_JSON" | jq -r '.status // empty' 2>/dev/null || true)"
-          if [ "$status" = "ok" ] || [ "$BRIEF" = "true" ]; then
+          if [ "$status" = "ok" ]; then
             bash scripts/dispatch-brief.sh "$TICKER"
+          elif [ "$BRIEF" = "true" ]; then
+            bash scripts/dispatch-brief.sh "$TICKER" --no-fresh
           else
             echo "ticker-brief skipped (status=${status:-unreadable})"
           fi

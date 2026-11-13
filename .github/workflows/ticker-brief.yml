@@ -122,15 +122,13 @@ jobs:
           # だけを @ でファイルから取り込む (外部由来 JSON を ${{ }} で prompt に生展開せず YAML 破壊・
           # prompt インジェクションを防ぐ)。ticker は Validate 済みなので prose に展開してよい。
           prompt: |
-            # ticker-brief — 対象銘柄 ${{ github.event.client_payload.ticker || inputs.ticker }}
+            # ticker-brief — ticker ${{ github.event.client_payload.ticker || inputs.ticker }}
 
             Produce a **材料ブリーフ** — a research digest for a human to make their own trading decision.
             Headline the fresh materials on this name and lay out the 強気/弱気 case. **Never output a trading
             call**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs (買い/売り/利確/増し玉/様子見).
-            Price levels and indicator values belong to the posting step, which appends
-            the real ones (現値/MA/レンジ/ATR, MA25乖離/RSI/出来高倍率/OBV/CMF, MA75/52週高値・安値/TOPIX比/予想PER)
-            deterministically — do not restate numeric levels or indicator values in your text. You may —
-            and should — describe what the tape did (急伸/出来高急増/セクタ内で劣後 など) as fact.
+            Never restate a price level or an indicator value in your text; the posting step appends them.
+            Describe what the tape did as fact.
 
             The reader holds swing positions of several days to about three weeks. Weigh each material by how
             it plays out over that horizon: lead on what moves earnings or supply-demand within it, and demote
@@ -140,7 +138,95 @@ jobs:
             ("priced in", "unexplained" volume, a top being "in"). Ground every claim in a material,
             a number, or a sourced find; write nothing you cannot attribute.
 
-            ## Output shape
+            Do not post to Slack; do not run any script; do not write any file — return structured output
+            and stop.
+
+            ## Inputs
+
+            A block with nothing to report is left out; an absent block means no data — do not mention it.
+
+            - **`context_body`** carries two layers: 直近の重大トピック (freshest) and older structural context.
+              Absent → brief on price/tape facts alone.
+            - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary. Background
+              only — never a material of this name. `date` before today → an earlier morning's backdrop; do not
+              present it as today's.
+            - **`market_phase`** (JST trading-day position) says what to lead on: `premarket` → lead on
+              `premarket`/context; `afternoon_session` with a live tape → lead on the live tape; `closed` →
+              describe the close. During the session (`morning_session`/`lunch_break`/`afternoon_session`)
+              `daily` holds the **prior** trading day's bar — read its `vol_x_20d` / `range_pct` / MA乖離 as
+              yesterday's, and take today's 出来高 from `daily.vol_x_20d_intraday` (null = too early to project).
+            - **`prices`**: `latest` is the last quote (`change_pct` 前日比). `quote_status: closed` → stale tape,
+              demote to backdrop. `live` adds `trajectory`: today's 前日比 at `from_quote_time` and its
+              high/low since then — the intraday path.
+            - **`daily`** (technicals on the latest confirmed bar): `ma_position` / `ma25_dev_pct` = trend and
+              stretch; `rsi_14` = momentum heat; `range_pct` = where price sits in the 20日レンジ;
+              `atr_vs_baseline` = volatility vs its own norm; `obv_trend` / `ad_trend` / `cmf_20d` = money flow —
+              a flow reading that diverges from price leads over price alone. `volume_quality` and
+              `momentum_state` are precomputed reads — take them as given (`na` → skip).
+              Technicals only confirm or contradict the materials; never a standalone call.
+            - **`trend`** (MA75 and 52週高値・安値): `ma75_dev_pct` = the medium-term stretch;
+              `from_high_52w_pct` / `from_low_52w_pct` = distance from the year's extremes — report a 52週高値・安値
+              within reach or just broken as a 需給 fact. `full_year: false` → the window starts at `window_start`.
+            - **`sector`**: this ticker within its watchlist sector — `rank` of `peers_n` by 相対強弱,
+              `rel_strength_pct` (5日リターン − セクタ平均 `avg_ret_5d_pct`), `change_pct`, `vol_ratio`. Lead on it
+              over SOX.
+            - **`relative`** (`returns[]` per 5/20/60 days, `excess_pct` vs TOPIX): with `sector`, separates a
+              name-specific move from the market's.
+            - **`premarket`** (prior NY session): `sox_change_pct` is the overnight external backdrop;
+              `nasdaq_change_pct` / `dow_change_pct` / `nikkei_futures_price` only confirm it. The macro channels:
+              `usdjpy_price` / `usdjpy_change` (円, 前日比) move exporters' earnings through the 為替前提;
+              `us10y_yield` / `us10y_change_bp` (bp, US date `us10y_date`) weigh on high-multiple semis when
+              they rise; `vix_price` / `vix_change_pct` is market-wide risk appetite. Report one only when its move
+              reaches this name through a channel `context_body` or `ticker_note` shows it is exposed to.
+              `status: stale` → backdrop only; `us_session: carried_over` → the prior JP session already traded
+              these numbers — not fresh overnight information.
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`. Weigh each event as a
+              driver of the tape before crediting a move to a material; never list it as a material. On an
+              SQ当日, state in `technical` that today's tape overlaps the SQ. A coming SQ or SQ明け goes in
+              `watch`. In an SQ week the string ends with `当銘柄のSQ連動度` (1倍 = moves as usual in SQ weeks):
+              the further above 1, the more weight the SQ gets as a driver; near 1, do not cite it.
+            - **`event_reactions`** (`items[]`, up to 3 newest): per recent disclosure/IR date, the excess return
+              over TOPIX across the 2 sessions from the prior close (`excess_2d_pct`) and since then to now
+              (`excess_to_date_pct`). Report how the market took a material — a good-news item that sold off or
+              faded is itself a fact. `partial: true` = the second session is not in yet.
+            - **`earnings`** (next date) is binary-event risk — report the date as a `watch` or `bear` fact.
+              **`earnings_result`** with `status: fresh`: report `verdict` (beat/miss/inline) as a material and
+              read the price reaction through **## 決算の特色・クセ** in `context_body`; any other status → skip.
+            - **`revisions`**: the current company forecast (`forecast`: 売上・経常・最終 in 億円, eps/dividend in 円,
+              `announced_at`) and `revisions[]` within a year (`kind` `up`/`down`/`mixed` = 修正の向き,
+              `unchanged` = 据え置き, `initial` = 期初予想; `*_chg_pct` = 修正幅). Nothing before `history_since`
+              is stored. No analyst consensus is collected — claim a gap to consensus only when a cited source
+              states it.
+            - **`valuation`**: 予想PER/PBR/利回り, the PER range over stored snapshots (`per_range` since its
+              date), and same-sector `peers` PER. Report the multiple as how much good news the price already
+              carries; never call it 割安/割高 on the number alone.
+            - **`forced`**: `summary` states the forced-flow timing (投げ/踏み, which session in how many
+              sessions, building = これから / exhausted = 出尽くし); take it as given and report it as a 需給 fact
+              on the side whose price it pushes, or in `watch` when it lands beyond the next session.
+            - **`margin`** (信用残): report a buildup that contradicts `context_body` as a 需給 fact.
+            - **`short_interest`**: `lending` = 日証金の逆日歩 (`fee` 円/株 on 申込日 `date`, `fee_streak_days`
+              consecutive days charged; `listed: false` = no 逆日歩) — a running 逆日歩 is short-squeeze fuel.
+              `positions` = institutional short reports of 0.5% or more (`total_ratio_pct`, change
+              `total_ratio_chg_pct` since `chg_since`); an old `calc_date` is weak evidence.
+            - **`supply`** (`items[]`): disclosures that add supply — 売出し/公募/第三者割当/CB/分売/自己株処分/
+              大株主の異動. `lockup_90d` / `lockup_180d` are rough dates counted from the announcement; state a
+              lock-up term only when the filing confirms it. A lock-up end or a pending offering inside the
+              holding horizon is a `bear` or `watch` fact. `large_holding_new` / `large_holding_change` are EDINET
+              大量保有報告書 / 変更報告書 by `filer` (`ratio_pct` after, `prev_ratio_pct` before; `special` = an
+              institution's routine 特例報告). Report a holder crossing 5%, or building or cutting a stake, as a
+              supply-demand fact; `ratio_pct: null` → name the filing without a direction. Older than a few weeks
+              (`days_since`) → background only.
+            - **`ticker_note`**: qualifies the other inputs; never a material of its own.
+            - The ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
+
+            ## Web research (supplementary)
+
+            The collected inputs are primary. You may use WebSearch/WebFetch to deepen `bull` / `bear` with
+            一次情報 (会社 IR/取引所/当局), 海外報道, or アナリスト見解: at most 4 search+fetch calls total; only to
+            corroborate or deepen a material already in the inputs; cite the source inline (媒体名, 日付); if
+            nothing solid turns up, write nothing — never invent a source or a fact.
+
+            ## Output
 
             Write in Japanese for a reader who sees only this post. Put each fact in one place only. Give each
             line one point in about 40 characters, in clipped note style: the fact, then its effect. Do not
@@ -150,111 +236,16 @@ jobs:
             - `status`: default `brief`. Return `no_update` only when the freshest entry in 直近の重大トピック
               is older than 14 days and there is no fresh earnings or guidance, forced-flow reading, or notable
               tape move. When in doubt, brief. On `no_update`, leave `headline` null and every array empty.
-            - `headline`: exact format, verbatim: `📰 <ticker> <name>: <one-phrase summary of the fresh materials>`.
+            - `headline`: `📰 <ticker> <name>: <one-phrase summary of the fresh materials>`.
             - `materials`: the fresh items, newest first; merge items on one theme. Each is
               `YYYY-MM-DD <what happened>` only — no effect or analysis.
             - `technical`: whether trend and money flow confirm or diverge from the fresh materials. Do not
               restate indicators one by one, forecast, or name a level to act on. Empty when `daily` is absent.
             - `bull` / `bear`: the strongest points on earnings and supply-demand, fresh materials first, as
-              facts and their weight. For a fresh material, give why it matters: the concrete path into
-              earnings or price, and a precedent or first market reaction when known. Either side may be empty
-              when the materials lean one way.
+              facts and their weight. For a fresh material, give the concrete path into earnings or price, and a
+              precedent or first market reaction when known. Either side may be empty when the materials lean
+              one way.
             - `watch`: the next verifiable fact that would change the picture, leading with its date when known.
-
-            ## Web research (supplementary)
-
-            The collected data (`numctx.json` + `context_body`) is primary. You may use WebSearch/WebFetch
-            to enrich `bull` / `bear` — 一次情報 (会社 IR/取引所/当局), 海外報道, アナリスト見解 — under these
-            rules: at most 4 search+fetch calls total; only to corroborate or deepen a material you already
-            see in the inputs, not to hunt for unrelated stories; cite the source inline in `bull` / `bear`
-            (媒体名, 日付); if you find nothing solid, write nothing — never invent a source or a fact.
-
-            ## Inputs
-
-            How to read the fields (what to lead on, what to ignore). A block with nothing to report is left
-            out; an absent block means no data — do not mention it.
-
-            - **`context_body`** carries two layers: 直近の重大トピック (freshest) and older structural context.
-              Absent → brief on price/tape facts alone.
-            - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary (前夜米市場・
-              先物・セクター・投資部門別・空売り比率・当日イベント). Use it to frame today's backdrop.
-            - **`prices`**: `latest` is the last quote (`change_pct` 前日比). `quote_status: closed` → stale tape,
-              demoted to backdrop. `live` adds `trajectory`: today's 前日比 at `from_quote_time` and its
-              high/low since then — the intraday path.
-            - **`market_phase`** (JST trading-day position) says what to lead on: `premarket` → lead on
-              `premarket`/context (digesting overnight NY); `afternoon_session` with a live tape → lead on the
-              live tape; `closed` → describe the close.
-              - **During the session** (`morning_session`/`lunch_break`/`afternoon_session`) `daily` has no
-                confirmed bar for today yet, so `daily.latest_date` is the **prior** trading day and `vol_x_20d` /
-                `range_pct` / MA乖離 are all on that prior bar — do not read them as today's. For 出来高 use
-                `daily.vol_x_20d_intraday` (today's cumulative volume pace-projected to a full day ÷ 20日平均);
-                null near the open means too little has traded to project. After `closed`, `vol_x_20d` is the
-                confirmed value again and `vol_x_20d_intraday` is null.
-            - **`daily`** (technicals on the latest confirmed bar): `ma_position` / `ma25_dev_pct` = trend and
-              stretch; `rsi_14` = momentum heat; `range_pct` = where price sits in the 20日レンジ;
-              `atr_vs_baseline` = volatility vs its own norm; `obv_trend` / `ad_trend` / `cmf_20d` = money flow —
-              a flow reading that diverges from price leads over price alone. `volume_quality` and
-              `momentum_state` are precomputed reads — take them as given (`na` = not applicable, skip).
-              Weigh technicals as confirmation of or divergence from the materials, not as a standalone call.
-            - **`premarket`** (prior NY session): `sox_change_pct` is the overnight external backdrop —
-              `sector` leads over it; `nasdaq_change_pct` / `dow_change_pct` / `nikkei_futures_price` only confirm.
-              The macro channels: `usdjpy_price` / `usdjpy_change` (円, 前日比) moves exporters' earnings through the
-              為替前提; `us10y_yield` / `us10y_change_bp` (bp, US date `us10y_date`) weighs on high-multiple semis
-              when it rises; `vix_price` / `vix_change_pct` is market-wide risk appetite. Report one as a fact only
-              when its move bears on this name through a channel the context or `ticker_note` shows it is exposed to.
-              `us_session: carried_over` = the US was closed overnight (休場明け) and these numbers are the prior
-              close (printed `us_close_jst_date`) that the previous JP session already traded on — treat as no new
-              overnight information, don't report it as fresh.
-            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`. Weigh each event
-              as a driver of the tape before crediting a move to a material; never list it as a material.
-              On an SQ当日, state in `technical` that today's tape overlaps the SQ. A coming SQ or SQ明け goes in
-              `watch`. In an SQ week the string ends with `当銘柄のSQ連動度` (1倍 = moves as usual in SQ weeks):
-              the further above 1, the more weight the SQ gets as a driver; near 1, do not cite it.
-            - **`sector`**: this ticker within its watchlist sector — `rank` of `peers_n` by 相対強弱, its
-              `rel_strength_pct` (5日リターン − セクタ平均 `avg_ret_5d_pct`), `change_pct`, `vol_ratio`. This is the
-              sector read — lead on it over SOX.
-            - **`forced`**: `summary` already states the forced-flow timing
-              (投げ/踏み, ~何営業日後のどのセッション, building=これから / exhausted=出尽くし); take it as
-              given and report it as a 需給 fact (投げ pending is usually a `bear` line, 踏み上げ a `bull`
-              line, or a `watch` line).
-            - **Margin** (信用残): report a buildup contradicting the context as a 需給 fact.
-            - **`trend`** (MA75 and 52週高値・安値 from about a year of bars): `ma75_dev_pct` = the medium-term
-              stretch; `from_high_52w_pct` / `from_low_52w_pct` = how far price sits from the year's extremes —
-              report a 52週高値・安値 within reach or just broken as a 需給 fact. `full_year: false` → the window
-              starts at `window_start`, not a full year.
-            - **`relative`** (`returns[]` per 5/20/60 days: `ret_pct` − `topix_ret_pct` = `excess_pct`): strength
-              against the whole market. Use it with `sector` to separate a name-specific move from the market.
-            - **`event_reactions`** (`items[]`, up to 3 newest): for each recent disclosure/IR date, the
-              excess return over TOPIX across the 2 sessions from the prior close (`excess_2d_pct`) and since then
-              to now (`excess_to_date_pct`). Report how the market took a material — a good-news item that sold off
-              or faded is itself a fact. `partial: true` = the second session is not in yet.
-            - **`revisions`**: the current company forecast (`forecast`: 売上・経常・最終 in 億円, eps/dividend in 円,
-              announced `announced_at`) and `revisions[]` within a year (`kind` `up`/`down`/`mixed` = 修正の向き,
-              `unchanged` = 据え置き, `initial` = 期初予想; `*_chg_pct` = 修正幅). History before `history_since`
-              is not stored. No analyst consensus is collected — do not claim a gap to consensus unless a cited
-              source states it.
-            - **`valuation`**: 予想PER/PBR/利回り, the PER range over stored snapshots (`per_range` since its
-              date), and same-sector `peers` PER. Report the multiple as context for how much good news a price
-              already carries; never call it 割安/割高 on the number alone.
-            - **`short_interest`**: `lending` = 日証金の逆日歩 (`fee` 円/株 on 申込日 `date`, `fee_streak_days`
-              consecutive days charged; `listed: false` = not on the list, no 逆日歩) — a running 逆日歩 is
-              short-squeeze fuel. `positions` = institutional short reports of 0.5% or more (`total_ratio_pct`,
-              change `total_ratio_chg_pct` since `chg_since`; weigh each holder by its `calc_date`, an old report is
-              weak evidence).
-            - **`supply`** (`items[]`): disclosures that add supply — 売出し/公募/第三者割当/
-              CB/分売/自己株処分/大株主の異動. `lockup_90d` / `lockup_180d` are rough dates counted from the
-              announcement; the actual lock-up term and start are in the filing — state them only when confirmed.
-              A lock-up end or a pending offering inside the holding horizon is a `bear`/`watch` fact.
-              `large_holding_new` / `large_holding_change` are EDINET 大量保有報告書 / 変更報告書 by `filer`
-              (`ratio_pct` after, `prev_ratio_pct` before; `special` = an institution's routine 特例報告). Report a
-              holder crossing 5%, or building or cutting a stake, as a supply-demand fact; `ratio_pct: null` → name
-              the filing without a direction. Older than a few weeks (`days_since`) → background only.
-            - **Earnings near** (`earnings`) is binary-event risk — report the date as a `watch`/`bear` fact.
-              **Just out** (`earnings_result.status: fresh`): report `verdict` (beat/miss/inline) as a
-              material, and read the price reaction through **## 決算の特色・クセ** in `context_body` (the
-              name may move on a metric other than EPS).
-            - **`ticker_note`**: qualifies the other inputs.
-            - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
             ## 数値コンテキスト
 

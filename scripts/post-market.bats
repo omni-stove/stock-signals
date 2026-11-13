@@ -110,3 +110,47 @@ payload() {
   [ "$status" -eq 0 ]
   [ "$(payload | jq -r 'has("details")')" = "false" ]
 }
+
+# === 数値行 (marketctx から決定論で組む) =====================================
+
+# marketctx を書いて post-market.sh に第2引数で渡す。引数: $1=marketctx JSON。
+run_pm_ctx() {
+  local f="$BATS_TEST_TMPDIR/market.json" c="$BATS_TEST_TMPDIR/marketctx.json"
+  jq -n '{headline:"HEAD", body:["body"]}' > "$f"
+  printf '%s' "$1" > "$c"
+  run env WORKER_URL="http://test.invalid" POST_MARKET_DRYRUN=1 bash "$SCRIPT" "$f" "$c" 2>&1
+}
+
+@test "numbers: builds US, live, sector and flow lines as a context block under the headline" {
+  run_pm_ctx '{
+    "premarket":{"status":"ok","date":"2026-11-13","us_session":"fresh","sox_change_pct":-2.1,"nasdaq_change_pct":-0.8,
+      "dow_change_pct":0.2,"nikkei_futures_price":38500,"usdjpy_price":150.2,"usdjpy_change":-0.4,
+      "us10y_yield":4.3,"us10y_change_bp":5,"vix_price":18.5,"vix_change_pct":6.1},
+    "live_indexes":{"status":"ok","indexes":[{"key":"nikkei225","label":"日経225","status":"ok","price":38600,"change_pct":-1.2},
+      {"key":"kospi","label":"KOSPI","status":"stale","price":2500,"change_pct":0.5}]},
+    "sectors":{"status":"ok","sectors":[{"sector":"半導体","avg_change_pct":-1.5,"avg_ret_5d_pct":2.3}]},
+    "market_short_ratio":{"status":"ok","ratio_pct":42.1,"avg_5d_pct":39.8},
+    "investor_flows":{"status":"ok","week_start":"2026-11-02","week_end":"2026-11-06","net":{"foreigners":-1200},"foreigners_streak_weeks":-2}
+  }'
+  [ "$status" -eq 0 ]
+  local t; t="$(payload | jq -r '.blocks[1].elements[0].text')"
+  [ "$(payload | jq -r '.blocks[1].type')" = "context" ]
+  grep -qF '前夜米国（2026-11-13）: SOX -2.1% / NASDAQ -0.8% / Dow +0.2% / 日経先物 38500 / ドル円 150.2（-0.4） / 米10年 4.3%（+5bp） / VIX 18.5（+6.1%）' <<<"$t"
+  grep -qF '場中: 日経225 38600（-1.2%）' <<<"$t"
+  ! grep -qF 'KOSPI' <<<"$t"
+  grep -qF 'セクター平均: 半導体 前日比 -1.5%・5日 +2.3%' <<<"$t"
+  grep -qF '空売り比率 42.1%（5日平均 39.8%） / 海外投資家 -1200億円（2026-11-02〜2026-11-06・2週連続売り越し）' <<<"$t"
+}
+
+@test "numbers: carried-over and stale premarket are tagged next to the date" {
+  run_pm_ctx '{"premarket":{"status":"stale","date":"2026-11-12","us_session":"carried_over","sox_change_pct":1}}'
+  [ "$status" -eq 0 ]
+  payload | jq -r '.blocks[1].elements[0].text' | grep -qF '前夜米国（2026-11-12・休場明けの前回終値・stale）: SOX +1%'
+}
+
+@test "numbers: unavailable blocks add no context block" {
+  run_pm_ctx '{"premarket":{"status":"unavailable"},"live_indexes":{"status":"unavailable","indexes":[]},
+    "sectors":{"status":"unavailable","sectors":[]},"market_short_ratio":{"status":"unavailable"},"investor_flows":{"status":"unavailable"}}'
+  [ "$status" -eq 0 ]
+  [ "$(payload | jq -r '.blocks | length')" -eq 1 ]
+}

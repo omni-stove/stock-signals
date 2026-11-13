@@ -118,7 +118,7 @@ jobs:
           # 既定では Bot起動のワークフローを Action が弾くため。bot名は [bot] サフィックス付き。
           allowed_bots: "omnistove-internal-auth[bot]"
           prompt: |
-            # context-builder — 対象銘柄 ${{ github.event.client_payload.ticker || inputs.ticker }}
+            # context-builder — ticker ${{ github.event.client_payload.ticker || inputs.ticker }}
 
             Regenerate this ticker's *living context* for a SWING-trading horizon (several days to a few weeks).
 
@@ -197,7 +197,7 @@ jobs:
                           "summary":{"type":"string","maxLength":50,"description":"What happened."},
                           "effect":{"type":"string","maxLength":40,"description":"Its effect over the next few weeks."}
                         }}},
-                    "earnings_pattern":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 決算の特色・クセ. Structural reaction pattern to earnings for this name: focus metric, how guidance vs results moves the stock, peer linkage. When empty, research it once (web / past IR) and fill; otherwise revise only when fresh ir_items carry an earnings, revision, or guidance item, else carry it forward verbatim."},
+                    "earnings_pattern":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 決算の特色・クセ. Structural reaction pattern to earnings for this name: focus metric, how guidance vs results moves the stock, peer linkage. Revise only when fresh ir_items carry an earnings, revision, or guidance item, and only from what those items and the existing body show; otherwise carry it forward verbatim. Leave it empty rather than fill it from memory."},
                     "earnings":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 決算・ガイダンス. Latest own results vs expectations, current guidance, known next-earnings considerations; facts only. Never a recap of topics or peer/macro news."}
                   }},
                 "ir_cursor":{"type":["string","null"],"description":"cursors.ir.next verbatim."},

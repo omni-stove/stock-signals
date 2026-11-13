@@ -81,74 +81,74 @@ jobs:
             Produce the morning **マーケットブリーフ** — a factual digest of last night and today's setup for
             a human to make their own decisions. Report what moved, how broadly, and what is on today's
             calendar. **Never output a verdict**: no regime label (リスクオン/リスクオフ), no 売買可否
-            (拾い場/様子見/守り), no advice verbs. Point at which numbers matter most today and why; leave
-            the conclusion to the reader.
+            (拾い場/様子見/守り), no advice verbs. Point at which moves matter most today; leave the conclusion
+            to the reader. Never write a figure (%, price, yield, bp, 億円); the posting step appends them.
+
+            Report only what these inputs show now; never hindsight or a later result.
 
             Do not post to Slack; do not run any script; do not write any file — return structured output
-            and stop. Report only what these inputs show now; never hindsight or a later result. When every
-            field is stale or unavailable, say so in one body line and keep the rest empty.
+            and stop.
 
             ## Inputs
 
-            How to read the fields (what leads, what confirms):
+            What leads, what only confirms, what to skip:
 
-            - **`premarket`** is last night's NY session — the primary pre-open input. `sox_change_pct` matters
-              most for this semis-heavy watchlist; `nasdaq_change_pct` / `dow_change_pct` give breadth,
-              `nikkei_futures_price` the home tape's own gap. The macro backdrop: `usdjpy_price` / `usdjpy_change`
-              (円, 前日比; 円安 lifts exporters), `us10y_yield` / `us10y_change_bp` (米10年債, bp; a rise weighs on
-              high-multiple semis), `vix_price` / `vix_change_pct` (risk appetite). `status: stale` → demote it; `unavailable`
-              → report from `sectors` + event alone. `us_session: carried_over` = 米国休場明け — the numbers are
-              the prior close (`date`) that the last JP session already traded on; say so and don't report them
-              as fresh overnight news.
+            - **`market_phase`** (JST trading-day position) frames every other field: `premarket` → the gap
+              isn't in yet; 場中 → `sectors` and `live_indexes` are live, read breadth directly; `closed` → report
+              today's close plus tonight's NY setup.
+            - **`premarket`** is last night's NY session — the primary pre-open input. `sox_change_pct` leads;
+              `nasdaq_change_pct` / `dow_change_pct` give breadth, `nikkei_futures_price` the home tape's own gap.
+              The macro backdrop: `usdjpy_price` / `usdjpy_change` (円安 lifts exporters), `us10y_yield` /
+              `us10y_change_bp` (a rise weighs on high-multiple semis), `vix_price` / `vix_change_pct` (risk
+              appetite). `status: stale` → demote it; `unavailable` → report from `sectors` and `event_context`
+              alone. `us_session: carried_over` = 米国休場明け — the numbers are the prior close (`date`) the last
+              JP session already traded on; say so and do not report them as fresh overnight news.
             - **`us_peers`** (`peers[]`: `ticker`, `role`, `change_pct` for the US session `us_date`) explains
               what drove SOX. Name a peer only when it carries `earnings` or splits from SOX (opposite sign, or a
-              much larger move); otherwise skip — never list them all. `earnings: after_this_close` = the peer
-              reported after this close, so `change_pct` does not include the result and the reaction comes in
-              today's session; `in_close` = the close already reflects it. `unavailable` → skip.
-            - **`live_indexes`** is Asia trading live in the same session. Each entry: `key` (`nikkei225` =
-              Tokyo's own live tape / `kospi` = semis-heavy Korea, Samsung / SK hynix), `price`, `change_pct`,
-              `status` (`ok` / `stale` = older than 1h → demote). Pre-open (`market_phase: premarket`) they
-              haven't opened → expect stale, skip.
-            - **`sectors`** is how the watchlist itself moved. Per sector: `tone` (SOX-derived backdrop),
-              `avg_change_pct` (直近営業日のセクター平均前日比), `avg_ret_5d_pct` (5日のトレンド); per-name
-              `rel_strength_pct` (relative strength vs sector avg) and `vol_ratio` (出来高の盛り上がり).
-              Missing or empty → skip.
+              much larger move); never list them all. `earnings: after_this_close` → the result is not in
+              `change_pct` and the reaction comes in today's session; `in_close` → the close already reflects it.
+              `unavailable` → skip.
+            - **`live_indexes`**: Asia trading live in the same session — `key` (`nikkei225` = Tokyo's own live
+              tape / `kospi` = semis-heavy Korea), `price`, `change_pct`, `status`. `stale` → demote; pre-open
+              they are always stale → skip.
+            - **`sectors`** is how the watchlist itself moved. Per sector: `backdrop.tone` (SOX-derived),
+              `avg_change_pct` (直近営業日のセクター平均前日比), `avg_ret_5d_pct` (5日のトレンド); per name
+              `rel_strength_pct` (vs sector avg) and `vol_ratio` (出来高の盛り上がり). `unavailable` → skip.
             - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>` (SQ当日 / SQ週 / SQ明け /
-              FOMC / 日銀 近接); a `特になし` tail means no event fired — ignore it.
-            - **`market_news`**: recent market-wide theme headlines not tied to a watchlist name, each with
-              `title` / `topic` (`semi`/`ai`/`rates`/`us`/`market`) / `published_at`. Pick the 1-2 that bear on
-              today's tape; ignore the rest. Empty array → ignore.
-            - **`investor_flows`** (weekly 投資部門別, 東証プライム, 億円, `net` 買い越し=正, covering
-              `week_start`–`week_end`): who drove the market last week. `foreigners_streak_weeks` (正 = 連続買い越し,
-              負 = 連続売り越し). Report it on the morning it is new or when the streak flips; otherwise skip.
-            - **`market_short_ratio`** (東証全体の空売り比率, `ratio_pct` on `date`, `avg_5d_pct`): a level well
-              above its 5-day average marks heavy hedging/bearish positioning (and squeeze fuel). `unavailable` → skip.
-            - **`market_phase`** (JST trading-day position) frames what the numbers mean: `premarket` (the gap
-              isn't in yet), 場中 (`sectors` is live, read breadth directly), `closed` (report today's close
-              plus tonight's NY setup).
+              FOMC / 日銀 近接); a `特になし` tail → ignore.
+            - **`market_news`**: recent market-wide theme headlines (`title` / `topic` / `published_at`). Pick
+              the 1–2 that bear on today's tape; ignore the rest. Empty → ignore.
+            - **`investor_flows`** (weekly 投資部門別, 東証プライム, `net` 買い越し = 正, `week_start`–`week_end`):
+              who drove the market last week; `foreigners_streak_weeks` (正 = 連続買い越し, 負 = 連続売り越し).
+              Report it only on the morning it is new or when the streak flips. `unavailable` → skip.
+            - **`market_short_ratio`** (東証全体の空売り比率 `ratio_pct` on `date`, `avg_5d_pct`): well above its
+              5-day average marks heavy hedging and squeeze fuel. `unavailable` → skip.
 
-            ## Writing the body
+            ## Output
 
-            Lead with the strongest fact of the morning. Note whether the moves agree across SOX / NASDAQ /
-            日経先物 / live Asia / セクター平均 (breadth) or split — a split tape is worth saying plainly.
-            Give real numbers (% moves), not adjectives alone. One line for today's calendar when an event
-            fired. Close with the single number or event most worth watching today — as a fact to watch,
-            not an instruction.
+            Japanese, facts only, no figures.
+
+            - `headline`: `🌅 マーケットブリーフ: <one-phrase summary of last night and today>`.
+            - `body`: 3–6 lines. Lead with the strongest fact of the morning. Say whether SOX / NASDAQ /
+              日経先物 / live Asia / セクター平均 agree or split — a split tape is worth saying plainly. One line for
+              today's calendar when an event fired. Close with the single move or event most worth watching
+              today, as a fact to watch, not an instruction. When every input is stale or unavailable, return
+              one line saying so instead.
 
             ## 数値コンテキスト
 
             @${{ runner.temp }}/marketctx.json
           # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず Read のみ許可。
           # --json-schema で出力の形を縛る (= market-brief の構造化スキーマの唯一の定義場所)。
-          # headline は自由文 (Worker はパースせず briefs にそのまま保存する)。body = Slack 本文 3〜6 行。
+          # headline は自由文 (Worker はパースせず briefs にそのまま保存する)。出力の中身は prompt の ## Output が定義する。
           claude_args: >-
             --model opus --effort high --allowedTools Read --max-turns 30
             --json-schema '{
               "type":"object","additionalProperties":false,
               "required":["headline","body"],
               "properties":{
-                "headline":{"type":"string","description":"Slack first line: 🌅 マーケットブリーフ: <前夜と今日の一言サマリー> (自由文。ラベルや売買可否は書かない)"},
-                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":6,"description":"Slack 本文 3〜6 行 (日本語、事実のみ): 前夜米市場の実数 (SOX/NASDAQ/Dow/日経先物)、ドル円・米10年債利回り・VIX、場中なら live 日経225/KOSPI、セクター・監視銘柄の動きと breadth、当日イベント、今日効く数字 1 行"}
+                "headline":{"type":"string"},
+                "body":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":6}
               }
             }'
         env:
@@ -158,10 +158,12 @@ jobs:
 
       # skill の構造化出力 (structured_output) を Slack に投稿する (curl/jq/フォールバックは script が持つ)。
       # /slack/post が kind=market-brief を見て briefs (ticker='market') に upsert する。
+      # 第2引数 = LLM に渡したのと同じ marketctx。post-market.sh が 📐 数値 (前夜米国・為替・金利・VIX・
+      # 場中指数・空売り比率・投資部門別) を実在値から決定論で組む (LLM は数値を出さない)。
       - name: Post market-brief to Slack
         run: |
           printf '%s' "$MARKET_JSON" > "$RUNNER_TEMP/market.json"
-          bash scripts/post-market.sh "$RUNNER_TEMP/market.json"
+          bash scripts/post-market.sh "$RUNNER_TEMP/market.json" "$RUNNER_TEMP/marketctx.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}

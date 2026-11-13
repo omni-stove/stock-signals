@@ -87,95 +87,103 @@ jobs:
           # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
           prompt: |
-            # crash-scenario — 対象銘柄 ${{ github.event.client_payload.ticker }}
+            # crash-scenario — ticker ${{ github.event.client_payload.ticker }}
 
-            A **pre-mortem** on this ticker: the position is dead six months out — what killed it? Not a buy/sell
-            call; map the downside.
+            A **pre-mortem** on this ticker: the stock has broken down six months out — what broke it? Map the
+            downside paths only. Never output a trading call or a position action: no buy/sell, no 指値/損切り,
+            no hedge or defense to take, no advice verbs. Never write a price level, a drop size, or any other
+            figure of your own.
+
+            Judge only on what these inputs show now; never on hindsight or a later result.
+
+            Do not post to Slack; do not run any script; do not write any file — return the scenario blocks as
+            structured output and stop.
 
             ## Inputs
 
-            The numeric context JSON is embedded inline below. Do not post to Slack; do not run any script; do not write any file —
-            return the scenario blocks as structured output and stop. Judge only on what these inputs show now;
-            never on hindsight or a later result.
+            A block with nothing to report is left out; an absent block means no data — do not mention it.
 
             **Primary — where the fault lines come from:**
 
-            - **Living context (`context_body`), read it in full.** Mine it for the *fault lines*, not the bull
-              case. The **直近の重大トピック** list is what the market is currently pricing — the most likely thing
-              to disappoint. Absent → say `context: unavailable` and build from price + sector backdrop + the
-              generic fault lines for this 業種.
+            - **`context_body`**, read in full. Mine it for fault lines, not the bull case. **直近の重大トピック**
+              is what the market is pricing now — the most likely thing to disappoint. Absent → say
+              `context: unavailable` and build from price, the sector backdrop, and the generic fault lines of
+              this 業種.
 
-            **Secondary — what raises 確度 or sets the channel, never invents 銘柄固有 risk:**
+            **Secondary — raises 確度 or sets the channel; never invents 銘柄固有 risk:**
 
-            - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary. A backdrop
-              of broad weakness in it raises the 確度 of the macro scenarios and shortens their trigger horizon.
-              It also carries the market-wide 投資部門別 and 空売り比率.
-            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>` (SQ + 指数リバランス +
-              nearby macro/peer).
-            - **`ticker_note`**: qualifies the other inputs, not a scenario of its own.
+            - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary, including
+              投資部門別 and 空売り比率. Broad weakness in it raises the 確度 of the macro scenarios and shortens
+              their trigger horizon. `date` before today → an earlier morning's backdrop; weigh it lightly.
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>` (SQ, 指数リバランス,
+              nearby macro or peer earnings). An event inside the next few sessions is a trigger candidate; a
+              `当銘柄のSQ連動度` well above 1 makes the SQ one; `特になし` → ignore.
+            - **`ticker_note`**: qualifies the other inputs; never a scenario of its own.
             - **Metadata** (this ticker in `worker/src/lib/watchlist.ts`: `name`/`sector`/`sector_role`):
               `sector`/`sector_role` set the systematic exposure and which part of the cycle hits first.
-            - **Numeric context** — a block with nothing to report is left out; an absent block means no data,
-              do not mention it. Read the run-up for fragility: `daily.range_pct` (0 = bottom, 100 = top),
-              `ma25_dev_pct`/`ma5_dev_pct`, `vol_x_20d`, `margin.ratio` + WoW `long_chg`/`short_chg`;
-              `earnings.days_to_earnings` and `premarket.sox_change_pct` each flag a scheduled catalyst;
-              `premarket.us10y_change_bp` (米金利上昇), `usdjpy_change` (円高), and `vix_price` (risk-off) each
-              flag a macro channel;
-              on `premarket.us_session: carried_over` the print is a prior close the last JP session already
-              traded on — not a fresh overnight sign.
-              `market_phase=premarket` makes a tonight→open gap-down its own scenario; in-session, `daily` is
-              the prior bar, so read `daily.vol_x_20d_intraday` for today's 出来高.
-              Medium-term fragility: `trend.ma75_dev_pct` and `trend.from_low_52w_pct` (how much gain holders
+            - **Run-up fragility**: `daily.range_pct` (0 = bottom, 100 = top), `ma25_dev_pct`/`ma5_dev_pct`,
+              `vol_x_20d`, `margin.ratio` with WoW `long_chg`/`short_chg`. In-session (`market_phase` other than
+              `premarket`/`closed`), `daily` is the prior bar — read `daily.vol_x_20d_intraday` for today's 出来高.
+              `prices.quote_status: closed` → the tape is not live; do not read a move into it.
+            - **Medium-term fragility**: `trend.ma75_dev_pct` and `trend.from_low_52w_pct` (how much gain holders
               could give back), `relative.returns[].excess_pct` (vs TOPIX), `event_reactions.items[]` (a good-news
               disclosure that sold off on `excess_2d_pct` shows exhausted buyers), `valuation.per` against
               `per_range`/`peers` (how much good news the price carries), `revisions.revisions[]` (a `down`
-              revision or a forecast left unchanged into a strong cycle). Supply shocks: `supply.items[]`
-              (売出し/公募/CB/大株主の異動, `lockup_90d`/`lockup_180d` are rough dates from the announcement; a
-              `large_holding_change` with `ratio_pct` below `prev_ratio_pct` = a large holder selling down) and
-              `short_interest` (`positions.total_ratio_pct` rising = institutions building shorts; a running
-              `lending.fee` = squeeze fuel, not a crash path). `sector.rel_strength_pct` / `rank` of `peers_n`
-              separates a name-specific run-up from the sector's.
+              revision, or a forecast left unchanged into a strong cycle). `sector.rel_strength_pct` / `rank` of
+              `peers_n` separates a name-specific run-up from the sector's.
+            - **Supply shocks**: `supply.items[]` (売出し/公募/CB/大株主の異動; `lockup_90d`/`lockup_180d` are
+              rough dates from the announcement; a `large_holding_change` with `ratio_pct` below `prev_ratio_pct`
+              = a large holder selling down) and `short_interest` (`positions.total_ratio_pct` rising =
+              institutions building shorts; a running `lending.fee` = squeeze fuel, not a crash path).
+              `forced` with a pending 投げ is a supply shock in its stated session.
+            - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings`; `premarket.sox_change_pct`
+              (overnight semis), `premarket.us10y_change_bp` (米金利上昇), `usdjpy_change` (円高), `vix_price`
+              (risk-off). `premarket.status: stale` → weigh lightly; `us_session: carried_over` → a prior close
+              the last JP session already traded on, not a fresh sign. `market_phase: premarket` makes a
+              tonight→open gap-down its own scenario.
 
             ## Building the scenarios
 
             Produce **3–5 scenarios**, ordered most → least pressing (likelihood × severity), covering both
-            **銘柄固有** (what breaks *this* business or stock) and **マクロ** (what drags it down regardless of
+            **銘柄固有** (what breaks this business or stock) and **マクロ** (what drags it down regardless of
             fundamentals). Read the inputs for fragility, not direction, and tie every scenario to a concrete
-            input or the living context. Each carries きっかけ (a concrete trigger, not a conditional), 先行サイン
-            (what shows *before/as* it breaks, in inputs you can watch), 想定下落 (a rough band), and 防御 (one
-            line). Close with a 総括: which 1–2 scenarios dominate now, and the single indicator to watch.
+            input or `context_body`. Each carries きっかけ (a concrete trigger, not a conditional) and 先行サイン
+            (what shows before or as it breaks, in inputs the reader can watch). Close with a 総括: which 1–2
+            scenarios dominate now, and the single indicator to watch.
 
-            Calibration:
-
-            - Reserve `確度:高` for a risk with a fresh trigger or near-term catalyst; mark tail risks `低`.
-            - Scale 想定下落 by how far it's run (`range_pct`, `ma25_dev_pct`, a structural break), not
+            - Reserve `確度:高` for a risk with a fresh trigger or a near-term catalyst; mark tail risks `低`.
+            - Rank severity by how far the stock has run (`range_pct`, `ma25_dev_pct`, a structural break), not
               by how alarming the headline reads.
             - For semiconductor names, name which channel the `sector_role` makes break first.
-            - A メジャーSQ unwind, a near macro print, or a near 海外SOX系ピア決算 each stands up as its own macro
+            - A メジャーSQ unwind, a near macro print, or a near 海外SOX系ピア決算 each stands as its own macro
               scenario, with `premarket.sox_change_pct` as a leading sign.
 
             ## Web research (supplementary)
 
-            The collected data is primary. You may use WebSearch/WebFetch to firm up a scenario — a fresh
-            一次情報 (会社 IR/取引所/当局), 海外報道, or アナリスト見解 that sharpens a trigger or 先行サイン —
-            under these rules: at most 4 search+fetch calls total; only to corroborate a fault line you
-            already see in the inputs; cite the source (媒体名, 日付) in the scenario line; if you find
-            nothing solid, write nothing — never invent a source.
+            The collected inputs are primary. You may use WebSearch/WebFetch to firm up a trigger or 先行サイン
+            with 一次情報 (会社 IR/取引所/当局), 海外報道, or アナリスト見解: at most 4 search+fetch calls total; only
+            to corroborate a fault line already in the inputs; cite the source (媒体名, 日付) in the scenario
+            line; if nothing solid turns up, write nothing — never invent a source.
 
             ## Output
 
-            Return the scenarios as structured output and stop; the schema fixes the shape.
+            Japanese. Each block is one Slack section; the posting step adds the header and bolds each block's
+            first line, so do not add `*`.
+
+            - One block per scenario. First line: `<rank>. <name> [<固有 or マクロ>] 確度:<高, 中, or 低>`; then a
+              きっかけ line and a 先行サイン line.
+            - The last block's first line is exactly `総括`; its body starts on the second line.
           # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず
           # Read + WebSearch/WebFetch (追加取材) のみ許可。
-          # --json-schema で出力の形を縛る。blocks = scenario + 総括 の Slack section 配列
-          # (ヘッダブロックは post-reply.sh が前置する)。
+          # --json-schema で出力の形を縛る。blocks = scenario + 総括 の Slack section 配列 (各ブロックの中身は prompt の
+          # ## Output が定義する。ヘッダブロックは post-reply.sh が前置する)。
           claude_args: >-
             --model opus --effort high --allowedTools Read,WebSearch,WebFetch --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
               "required":["blocks"],
               "properties":{
-                "blocks":{"type":"array","minItems":2,"description":"scenario + 総括 の Slack section 配列。1 ブロック=1 scenario、総括ブロックを最後に。ヘッダブロックは含めない。各ブロックの 1 行目は見出しで、投稿時に太字になるので * を付けない。総括ブロックの 1 行目は 総括 だけにし、本文は 2 行目から。各 scenario ブロックは次の行で始める (verbatim、[固有/マクロ] と 確度:<高/中/低> は exact token): <順位>. <名前> [固有/マクロ] 確度:<高/中/低> — 続けて きっかけ / 先行サイン / 想定下落 / 防御 の行",
+                "blocks":{"type":"array","minItems":2,
                   "items":{"type":"object","additionalProperties":false,"required":["type","text"],
                     "properties":{
                       "type":{"const":"section"},

@@ -112,81 +112,85 @@ jobs:
           # その App の Bot になるため許可する。OAuth 経由の claude / 手動の github-actions[bot] も併記。
           allowed_bots: "omnistove-internal-auth,claude,github-actions[bot]"
           prompt: |
-            # slack-reply — 対象銘柄 ${{ github.event.client_payload.ticker }}
+            # slack-reply — ticker ${{ github.event.client_payload.ticker }}
 
-            A user replied in-thread to your earlier analysis for this ticker. Match the user's language (usually 日本語).
+            A user replied in-thread to an earlier analysis of this ticker. Answer their question with research
+            and facts. **Never output a trading call or a position action**: do not tell the user to buy, sell,
+            利確, 損切り, hedge, or size a position — even when asked "should I"; say plainly that the decision is
+            theirs. Quote a figure only as the inputs or a cited source state it; never compute or estimate one.
+
+            Answer only on what these inputs show now; never on hindsight or a later result.
+
+            Do not post to Slack; do not run any script; do not write any file — return your reply as
+            structured output and stop.
 
             ## Inputs
 
-            Two JSON inputs are embedded inline below. Do not post to Slack; do not run any script; do not write
-            any file — return your reply as structured output and stop. Answer only on what these inputs show
-            now; never on hindsight or a later result.
+            **Thread JSON** `{ channel, thread_ts, kind, replies, positions, profile }`:
 
-            The **thread JSON** is `{ channel, thread_ts, kind, replies: [...], positions }`. `replies` is
-            `[{ user, text, ts }, ...]`; `kind` (`ticker-brief` / `crash-scenario`, older threads may carry
-            `signal-judge` — treat as `ticker-brief`) is what the user is replying to; the last `replies` entry is the
-            question to answer, the earlier ones the original analysis and any back-and-forth. Empty `replies` →
-            ask what they want to know, in one line, and stop.
+            - **`replies`** (`[{ user, text, ts }, ...]`): the last entry is the question to answer; the earlier
+              ones are the original analysis and any back-and-forth. Empty → ask in one line what they want to
+              know, and stop.
+            - **`kind`**: what the user is replying to — `crash-scenario` = a crash pre-mortem; any other value =
+              a 材料ブリーフ.
+            - **`positions`** (`{ status, ref_price, positions: [{ account, side, avg_price, qty, pnl_pct }] }`):
+              the user's own holdings in this ticker. `status: none` → no holdings. `pnl_pct` is against
+              `ref_price`; null = no price.
+            - **`profile`** (`{ status, risk_tolerance, hold_style, max_position_pct, note }`): the user's own
+              preferences. `status: none` → not set; any field may be null. `risk_tolerance` `low`/`mid`/`high`,
+              `hold_style` `swing`/`day`/`mid_long`, `max_position_pct` the user's own per-name size cap (%), `note`
+              free-text 特記事項. Never turn `max_position_pct` into a size, a quantity, or an add/trim.
 
-            `positions` is the user's own holdings for this ticker: `{ status, ref_price, positions: [{ account,
-            side, avg_price, qty, pnl_pct }, ...] }`. `status: none` → no holdings. `pnl_pct` is from
-            `ref_price`; null when no price was available.
+            **Numeric context** — a block with nothing to report is left out; an absent block means no data:
 
-            `profile` is the user's own trading preferences, set via `/profile`: `{ status, risk_tolerance,
-            hold_style, max_position_pct, note }`. `status: none` → not set. `risk_tolerance` is `low`/`mid`/`high`,
-            `hold_style` is `swing`/`day`/`mid_long` (玉の持ち方の基本), `max_position_pct` a per-name size cap (%),
-            `note` free-text 特記事項. Any field may be null.
-
-            The other JSON is the **numeric context** — `prices`/`premarket`/`margin` are current values,
-            `context_body` is the fixed accumulated context. A block with nothing to report is left out; an
-            absent block means no data:
-
-            - **`context_body`** is your primary fundamental input, lead on it; 直近の重大トピック is freshest.
-              Absent → say `context: unavailable` and answer on price + backdrop alone.
-            - **`ticker_note`**: qualifies the other inputs, never leads.
-            - **`prices` / `premarket` / `margin`** confirm the fundamental read with the current tape; don't let
-              them flip it. `premarket.us_session: carried_over` = the US was closed and those numbers are a
-              carried-over prior close, not a fresh overnight move. Pair **`market_phase`** with
-              `prices.quote_status`: a `closed`/stale tape is about to
-              open (premarket) vs already closed — demote a stale tape, don't read a fresh move into it.
-              In-session, `daily` is the prior confirmed bar (so `vol_x_20d` is yesterday's); for today's 出来高
-              read `daily.vol_x_20d_intraday`.
-            - **Medium-term and supply-demand blocks** answer questions about position and flows: `trend` (MA75,
+            - **`context_body`** leads on fundamentals; 直近の重大トピック is freshest. Absent → say
+              `context: unavailable` and answer on price and backdrop alone.
+            - **`ticker_note`**: qualifies the other inputs; never leads.
+            - **`market_phase`** with **`prices.quote_status`**: `closed` → the tape is not live; do not read a
+              fresh move into it. In-session, `daily` is the prior confirmed bar — today's 出来高 is
+              `daily.vol_x_20d_intraday`.
+            - **`prices` / `daily` / `margin` / `premarket`** confirm or contradict the fundamental read; never
+              let them flip it alone. `premarket.status: stale` → backdrop only; `us_session: carried_over` → a
+              prior close the last JP session already traded on, not a fresh overnight move.
+            - **`market_brief`** (`{ headline, body, date }`): market-wide backdrop, including 投資部門別 and
+              空売り比率; never a material of this name. `date` before today → an earlier morning's backdrop.
+            - **`event_context`** (`需給イベント(<date>): <…>`): an event-driven tape factor (SQ, rebalance, macro,
+              peer earnings); weigh it before crediting a move to a material. `特になし` → ignore.
+            - **`earnings`** (next date) and **`earnings_result`** (`status: fresh` → `verdict` beat/miss/inline;
+              other statuses → skip).
+            - **`forced`**: `summary` states the forced-flow timing; take it as given.
+            - **Medium-term and supply-demand blocks** answer questions on positioning and flows: `trend` (MA75,
               52週高値・安値), `relative` (excess return vs TOPIX over 5/20/60 days), `event_reactions` (how each
-              recent disclosure traded vs TOPIX), `revisions` (company forecast and its 修正; no analyst consensus is
-              collected), `valuation` (予想PER/PBR, own range, sector peers), `short_interest` (逆日歩, institutional
-              short reports by `calc_date`), `sector` (this ticker's `rank` of `peers_n` and `rel_strength_pct`
-              in its sector), `supply` (売出し/公募/CB/大株主の異動; `lockup_*` are rough dates from the
-              announcement; `large_holding_*` = EDINET 大量保有・変更報告書 with `ratio_pct` / `prev_ratio_pct`). Market-wide flows (投資部門別・空売り比率) are in `market_brief` when present.
-            - the ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
+              recent disclosure traded vs TOPIX), `revisions` (company forecast and its 修正; no analyst consensus
+              is collected), `valuation` (予想PER/PBR, own range, sector peers; never 割安/割高 on the number
+              alone), `short_interest` (逆日歩; institutional short reports — an old `calc_date` is weak evidence),
+              `sector` (`rank` of `peers_n`, `rel_strength_pct`), `supply` (売出し/公募/CB/大株主の異動; `lockup_*` are
+              rough dates from the announcement; `large_holding_*` = EDINET 大量保有・変更報告書 with `ratio_pct` /
+              `prev_ratio_pct`).
+            - The ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
-            ## What to do
+            ## Answering
 
-            - Answer the user's actual question; don't re-run the whole analysis unless asked. If they push
-              back on a reading, weigh their point against the data honestly — concede where they're right,
-              hold where the data holds, and say which.
-            - **You provide research and facts, not trading calls.** Do not tell the user to buy, sell, 利確,
-              損切り, or size a position — even when asked "should I". Lay out the materials, numbers, and
-              risks that bear on their question and leave the decision to them; say so plainly when they ask
-              for a verdict.
-            - When holdings are present, relate the facts to the user's own entry, size, and unrealized
-              P&L. Don't assume holdings beyond what's registered.
-            - When `profile` is set, frame the answer to the user's risk tolerance, hold style, size cap, and
-              特記事項. Don't override the data — surface where their preference and the data diverge.
-            - Stay consistent with the original `kind`: a ticker-brief thread is about the materials and
-              their impact; a crash-scenario thread is about the crash paths, triggers, and defenses. Don't
-              silently switch frames.
-            - Keep it to a few sentences unless they asked for depth; no preamble.
+            - Answer the actual question; re-run the whole analysis only when asked. When they push back on a
+              reading, weigh their point against the data — concede where they are right, hold where the data
+              holds, and say which.
+            - With holdings, relate the facts to the user's own entry and unrealized P&L; assume no holdings
+              beyond what is registered.
+            - With a `profile`, frame the answer to their risk tolerance, hold style, and 特記事項; where their
+              preference and the data diverge, say so rather than bend the data.
+            - Stay in the thread's frame: a 材料ブリーフ thread is about the materials and their impact; a
+              crash-scenario thread is about the crash paths, triggers, and leading signs.
 
             ## Web research (supplementary)
 
-            The collected data is primary. You may use WebSearch/WebFetch when the user's question needs a
-            fact the inputs don't carry — at most 4 search+fetch calls total; cite the source (媒体名, 日付);
-            if you find nothing solid, say so — never invent a source.
+            The collected inputs are primary. You may use WebSearch/WebFetch only to corroborate or deepen
+            something already in the inputs or the thread: at most 4 search+fetch calls total; cite the source
+            (媒体名, 日付); if nothing solid turns up, say so — never invent a source.
 
             ## Output
 
-            Return your reply as structured output and stop; the schema fixes the shape.
+            `reply`: the reply body only, in the user's language (usually 日本語) — no heading, no JSON, no
+            preamble; a few sentences unless they asked for depth.
 
             ## スレッド文脈
 
@@ -204,7 +208,7 @@ jobs:
               "type":"object","additionalProperties":false,
               "required":["reply"],
               "properties":{
-                "reply":{"type":"string","description":"同スレッドへ貼る返信本文。見出し・JSON なしの本文のみ"}
+                "reply":{"type":"string"}
               }
             }'
         env:

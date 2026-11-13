@@ -53,7 +53,7 @@ export interface SqEvent {
 	tags?: SqTags;
 }
 
-export interface SqTags {
+interface SqTags {
 	trend: "up" | "down" | "range" | null;
 	earnings: "sq_week" | "post_week" | "none" | "unknown" | null;
 	macro: string[];

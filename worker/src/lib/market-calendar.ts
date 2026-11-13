@@ -88,7 +88,7 @@ function jpHolidays(y: number): Set<string> {
 	return all;
 }
 
-export function isTseHoliday(date: string): boolean {
+function isTseHoliday(date: string): boolean {
 	const { y, m, d } = parts(date);
 	if ((m === 12 && d === 31) || (m === 1 && d <= 3)) return true;
 	return isWeekend(date) || jpHolidays(y).has(date);
@@ -158,7 +158,7 @@ function nyseHolidays(y: number): Set<string> {
 	return set;
 }
 
-export function isNyseHoliday(date: string): boolean {
+function isNyseHoliday(date: string): boolean {
 	return isWeekend(date) || nyseHolidays(parts(date).y).has(date);
 }
 

@@ -184,22 +184,21 @@ export async function runScheduled(
 				console.error("event-reminder failed:", e),
 			);
 		}
-		// intake (寄り前 8:30 / 引け後 20:00) は新規の有無によらず全銘柄を signal-update する。
-		// fresh だけを撃つと、出来高/話題の薄い銘柄 (例: 6857 が数日ニュース 0) のコンテキストが
-		// 一度も再生成されず取り残されるため。ticker-brief は新着材料があった銘柄だけ発火する
-		// (context-builder.yml の dispatch ステップが status=ok のときだけ撃つ)。場中
-		// (prices, 5分毎) は LLM コストを抑えるため新規ベース (下の分岐)。
+		// intake (寄り前 8:30 / 引け後 20:00) は新規の有無によらず全銘柄を signal-update し、
+		// 収集後の 2) で全銘柄の ticker-brief まで出す (定時ブリーフ)。場中 (prices, 5分毎) は
+		// LLM コストを抑えるため新規ベース (下の分岐) で、ticker-brief は新着材料があった銘柄だけ。
 		//
 		// dispatch は 2 段で撃つ:
 		//   1) ここ (収集より先): 全銘柄無条件の保険。収集 (IR/ニュース等の全銘柄フル取得) は重く、
 		//      引け後 (20:00) は market_news まで相乗りして CPU 時間上限に達しうる。収集後にだけ
 		//      dispatch を置くと、収集が上限超過で打ち切られた回に dispatch ごと飛んで再発火が
-		//      止まる。先に撃てば収集が途中で力尽きても判定だけは必ず発火する。
-		//   2) 収集後 (下の fresh 再dispatch): この回の収集で入った新規 IR/ニュースを「同じ回」の
-		//      context-builder に乗せる。1) だけだと context-builder が /context-input を引く時点で
-		//      新規がまだ articles に無く、反映が次の intake (半日後) にずれる (cron → 収集 →
-		//      context → brief の順序保証)。concurrency (cancel-in-progress) が銘柄単位なので、
-		//      1) の走行中ジョブは 2) が上書きし二重 LLM にはならない。
+		//      止まる。先に撃てば収集が途中で力尽きても判定だけは必ず発火する。ここは brief を
+		//      載せない (ブリーフは新着材料があったときだけ)。
+		//   2) 収集後 (下の全銘柄 brief 付き再dispatch): この回の収集で入った新規 IR/ニュースを
+		//      「同じ回」の context-builder に乗せ、そのあと全銘柄の ticker-brief を出す。1) だけだと
+		//      context-builder が /context-input を引く時点で新規がまだ articles に無く、反映が次の
+		//      intake (半日後) にずれる (cron → 収集 → context → brief の順序保証)。concurrency
+		//      (cancel-in-progress) が銘柄単位なので、1) の走行中ジョブは 2) が上書きし二重 LLM にはならない。
 		// 寄り前 (8:30) の market-brief dispatch は上で既に撃ち終えており、順序
 		// (市場全体→個別) も保たれる。
 		await dispatchSignalUpdate(env, WATCHLIST);
@@ -254,9 +253,9 @@ export async function runScheduled(
 			"fresh:",
 			fresh.join(","),
 		);
-		// 上記 2 段 dispatch の 2)。この回の収集で新規が出た銘柄だけ再dispatch し、入ったばかりの
-		// IR/ニュースを同じ回の context-builder に読ませる (新規なしなら no-op)。
-		await dispatchSignalUpdate(env, fresh);
+		// 上記 2 段 dispatch の 2)。全銘柄を brief 付きで再dispatch し、入ったばかりの IR/ニュースを
+		// 同じ回の context-builder に読ませてから、新着の有無によらず ticker-brief を出す。
+		await dispatchSignalUpdate(env, WATCHLIST, { brief: true });
 		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
 		await notifyFreshNews(env, news, mnews);
 		// 「HTTP 200 なのに一覧パース0件」= ソースサイトの DOM 変更で収集が静かに止まっている疑い。
@@ -329,7 +328,7 @@ export async function runScheduled(
 			return;
 		}
 		// 場中の通常スロットは同一銘柄の短時間連発を抑える (デバウンス)。intake (上の分岐) は抑えない。
-		await dispatchSignalUpdate(env, fresh, true);
+		await dispatchSignalUpdate(env, fresh, { debounce: true });
 		return;
 	}
 	if (kind === "eod") {

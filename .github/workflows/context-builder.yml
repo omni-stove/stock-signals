@@ -1,17 +1,17 @@
 # 新規IR/ニュース → Claude Code Action で「銘柄コンテキスト(D1)」を更新 → ticker-brief を起動。
 #
 # 2段アーキテクチャの前段。Worker (Cloudflare) が IR(寄り前 8:30 / 昼 12:30 / 引け後 20:00) と
-# per_ticker ニュース(IR時刻 + 場中5分毎)を取得し、どちらかに新規があった銘柄ごとに
-# repository_dispatch (event_type=signal-update) でこのワークフローを起動する (1銘柄=1 dispatch、
-# client_payload.ticker に単一銘柄)。新規が無い時刻は起動しないので、LLM は新規があるときしか動かない。
+# per_ticker ニュース(IR時刻 + 場中5分毎)を取得し、repository_dispatch (event_type=signal-update) で
+# このワークフローを起動する (1銘柄=1 dispatch、client_payload.ticker に単一銘柄)。寄り前・引け後・
+# 引け前 15:00 は全銘柄、それ以外の場中は新規があった銘柄だけ。
 #
 # 起動後は step が Worker /context-input を 1 call で引き(既存コンテキスト本文 + 2カーソル以降の
 # 新規 IR/ニュースを正規化済み JSON で同梱)、再生成ルールを prompt にベタ書きした Claude Code Action
 # がそれを @ で読んで銘柄の持続コンテキスト(経営判断/商品ラインナップ/技術ロードマップ + 直近の重大
 # トピック要約)を structured_output で返す。売買判断はここでは出さない。後続ステップ
 # (post-context.sh) が D1 (Worker /context) を更新し全文を Slack (SLACK_CONTEXT_CHANNEL) に投稿、
-# 別ステップが status=ok (新着材料あり) のときだけ repository_dispatch (event_type=ticker-brief) で
-# 後段の材料ブリーフを起動する。
+# 別ステップが status=ok (新着材料あり) のとき、または client_payload.brief=true (寄り前・引け後 intake の
+# 定時ブリーフ) のときに repository_dispatch (event_type=ticker-brief) で後段の材料ブリーフを起動する。
 #
 # 材料ブリーフは ticker-brief.yml が担う(D1 コンテキスト+価格/市場ブリーフを読み Slackに通知)。
 # コンテキストにはブリーフを書かないので、brief → context の編集ループは物理的に発生しない。
@@ -224,18 +224,19 @@ jobs:
           SLACK_CONTEXT_CHANNEL: ${{ vars.SLACK_CONTEXT_CHANNEL }}
           CONTEXT_JSON: ${{ steps.builder.outputs.structured_output }}
 
-      # 新着材料があった (status=ok = コンテキストを再生成した) ときだけ ticker-brief を発火する。
-      # 材料ブリーフは新着材料の解説なので、no-update (新規 0) の回は出すものが無く発火しない。
+      # 新着材料があった (status=ok = コンテキストを再生成した) とき、または Worker の intake が
+      # client_payload.brief=true を載せた定時の回に ticker-brief を発火する。場中の no-update は発火しない。
       # 手動の force 再生成 (workflow_dispatch) は新規 0 でも status=ok になるので必ずブリーフが続く。
-      - name: Dispatch ticker-brief (on new material)
+      - name: Dispatch ticker-brief
         run: |
           status="$(printf '%s' "$CONTEXT_JSON" | jq -r '.status // empty' 2>/dev/null || true)"
-          if [ "$status" = "ok" ]; then
+          if [ "$status" = "ok" ] || [ "$BRIEF" = "true" ]; then
             bash scripts/dispatch-brief.sh "$TICKER"
           else
             echo "ticker-brief skipped (status=${status:-unreadable})"
           fi
         env:
+          BRIEF: ${{ github.event.client_payload.brief }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           TICKER: ${{ github.event.client_payload.ticker || inputs.ticker }}

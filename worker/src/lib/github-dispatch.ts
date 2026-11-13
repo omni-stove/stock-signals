@@ -163,11 +163,16 @@ function selectDebounceTargets(
 export async function dispatchSignalUpdate(
 	env: Env,
 	tickers: string[],
-	// 場中 (prices cron) からの呼び出しでは true。intraday_dispatch を参照して
-	// デバウンス窓以内の銘柄を間引き、実際に撃った銘柄だけ last_dispatch_at を更新する。
-	// intake (寄り前/引け後) からは false (常に全銘柄撃つ重要判定)。
-	debounce = false,
+	opts: {
+		// 場中 (prices cron) からの呼び出しでは true。intraday_dispatch を参照して
+		// デバウンス窓以内の銘柄を間引き、実際に撃った銘柄だけ last_dispatch_at を更新する。
+		debounce?: boolean;
+		// true なら client_payload.brief=true を載せ、context-builder が新着の有無によらず
+		// ticker-brief を発火する (寄り前・引け後 intake の定時ブリーフ)。
+		brief?: boolean;
+	} = {},
 ): Promise<void> {
+	const { debounce = false, brief = false } = opts;
 	if (tickers.length === 0) return;
 	if (!env.GH_APP_ID || !env.GH_APP_PRIVATE_KEY || !env.GH_APP_INSTALL_ID)
 		return;
@@ -213,7 +218,7 @@ export async function dispatchSignalUpdate(
 					// event_type は workflow の on.repository_dispatch.types と一致させる。
 					body: JSON.stringify({
 						event_type: "signal-update",
-						client_payload: { ticker },
+						client_payload: brief ? { ticker, brief: true } : { ticker },
 					}),
 				},
 			);

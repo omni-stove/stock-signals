@@ -3,8 +3,8 @@
 # 単一銘柄の ticker-brief ワークフローを repository_dispatch で発火するだけの小物。
 #
 # 設計の意図:
-#   材料ブリーフは新着材料の解説なので、context-builder が status=ok (新規 IR/ニュースを取り込んで
-#   コンテキストを再生成した) を返した回だけ発火する。呼び出し条件の判定 (status の分岐) は
+#   context-builder が status=ok (新規 IR/ニュースを取り込んでコンテキストを再生成した) を返した回と、
+#   Worker の intake が brief=true を載せた定時の回に発火する。呼び出し条件の判定は
 #   context-builder ワークフローの dispatch ステップが行い、ここは発火だけを担う。
 #   post-context.sh には発火を置かない (発火経路をここに一本化)。
 #

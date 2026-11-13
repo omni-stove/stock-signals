@@ -205,7 +205,11 @@ jobs:
               `us_session: carried_over` = the US was closed overnight (休場明け) and these numbers are the prior
               close (printed `us_close_jst_date`) that the previous JP session already traded on — treat as no new
               overnight information, don't report it as fresh.
-            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`.
+            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`. Weigh each event
+              as a driver of the tape before crediting a move to a material; never list it as a material.
+              On an SQ当日, state in `technical` that today's tape overlaps the SQ. A coming SQ or SQ明け goes in
+              `watch`. In an SQ week the string ends with `当銘柄のSQ連動度` (1倍 = moves as usual in SQ weeks):
+              the further above 1, the more weight the SQ gets as a driver; near 1, do not cite it.
             - **`sector`**: this ticker within its watchlist sector — `rank` of `peers_n` by 相対強弱, its
               `rel_strength_pct` (5日リターン − セクタ平均 `avg_ret_5d_pct`), `change_pct`, `vol_ratio`. This is the
               sector read — lead on it over SOX.

@@ -12,7 +12,7 @@
 //     relative, event_reactions, prices, margin, short_interest, supply, forced }
 // sector は同一セクタ内での対象銘柄の順位・相対強弱とセクタ平均。trend / relative /
 // event_reactions は約1年分の日足と TOPIX から、supply は適時開示・公式 IR の見出しと EDINET の
-// 大量保有報告書から組む。
+// 大量保有報告書から組む。event_context は日本SQ週なら当銘柄の SQ連動度 (lib/sq-week) を末尾に持つ。
 // 市場全体の需給 (投資部門別・東証全体の空売り比率) は market-brief 側に任せて載せない。
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
@@ -73,6 +73,7 @@ import {
 	buildShortPositions,
 	readShortInterest,
 } from "../lib/short-interest";
+import { withSqSensitivity } from "../lib/sq-week";
 import { buildSupply } from "../lib/supply-events";
 import { BENCHMARK_CODE } from "../lib/timeseries";
 import { TICKERS, WATCHLIST_META } from "../lib/watchlist";
@@ -357,7 +358,12 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 							date: marketBriefDate,
 						}
 					: null,
-			event_context: buildEventContext(today, macroRows, marketPhase),
+			// 日本SQ週は当銘柄の SQ連動度を末尾に足す (ブロックは増やさない)。
+			event_context: withSqSensitivity(
+				buildEventContext(today, macroRows, marketPhase),
+				dailyLong,
+				today,
+			),
 			// 当該銘柄分の固定注記だけ同梱 (watchlist は静的、note 未設定なら null)。
 			ticker_note: TICKERS.find((t) => t.code === code)?.note ?? null,
 			context_body: contextRow?.body ?? null,

@@ -1,6 +1,6 @@
 // sq-brief 用: 日足から過去の日本SQ週の値動きと SQ連動度、今週の途中経過を決定論で組む。
 //
-// 1 回の SQ について見る値 (SQ日は暦上の第2金曜を、その週で実在する最後の足に解決する):
+// 1 回の SQ について見る値 (SQ日は第2金曜 (東証の休業日なら前営業日) を、その週で実在する最後の足に解決する):
 //   - pre_ret   : 前週末の終値 → SQ前日の終値 (SQ週の月〜SQ前日の建玉調整)
 //   - week_ret  : 前週末の終値 → SQ日の終値
 //   - sq_gap    : SQ前日の終値 → SQ日の始値 (SQ値は寄りで決まる)
@@ -26,6 +26,7 @@ import {
 	addDaysYmd,
 	type JpSq,
 	jpSqDates,
+	jpSqWeek,
 	type MacroEventRow,
 } from "./event-context";
 
@@ -445,6 +446,29 @@ export function buildSqHistory(
 	};
 }
 
+// 日本SQ週なら、event_context の末尾に当銘柄の SQ連動度 (過去の SQ週の振れ ÷ 平常時) を足す。
+// SQ週以外・足が足りない・値が全部出ないときは eventContext をそのまま返す。
+export function withSqSensitivity(
+	eventContext: string,
+	rowsDesc: SqBar[],
+	today: string,
+): string {
+	const week = jpSqWeek(today);
+	if (!week) return eventContext;
+	const h = buildSqHistory(rowsDesc, week.week_start);
+	if (h.status !== "ok" || !h.events) return eventContext;
+	const s = h.sensitivity as Record<string, number | null>;
+	const parts = [
+		s.sq_gap_abs_x != null && `SQ日寄りギャップ 平常比${s.sq_gap_abs_x}倍`,
+		s.sq_week_abs_x != null && `SQ週値幅 平常比${s.sq_week_abs_x}倍`,
+		s.sq_vol_x != null && `SQ日出来高 20日平均比${s.sq_vol_x}倍`,
+		s.reversal_rate != null &&
+			`SQ明けの反転 ${Math.round(s.reversal_rate * 100)}%`,
+	].filter((x): x is string => typeof x === "string");
+	if (!parts.length) return eventContext;
+	return `${eventContext}; 当銘柄のSQ連動度(過去${h.events.length}回, 1倍=平常どおり): ${parts.join("・")}`;
+}
+
 // NT倍率 (日経225 ÷ TOPIX) の最新値・前週末の値・20 日平均。SQ前後に日経225 側だけが買われて/売られて
 // いるかを見る。両方に足がある日だけで組む。
 export function buildNtRatio(
@@ -675,6 +699,34 @@ if (import.meta.vitest) {
 					"2026-07-06",
 				).status,
 			).toBe("insufficient");
+		});
+	});
+
+	describe("withSqSensitivity", () => {
+		const rows = series(dates, (date) => {
+			if (date === "2026-06-12") return { open: 104, close: 103, volume: 3000 };
+			if (date >= "2026-06-15" && date <= "2026-06-19") return { close: 101 };
+			return {};
+		});
+		it("SQ週なら当銘柄の SQ連動度を足す", () => {
+			const out = withSqSensitivity(
+				"需給イベント(2026-07-08): X",
+				rows,
+				"2026-07-08",
+			);
+			expect(
+				out.startsWith("需給イベント(2026-07-08): X; 当銘柄のSQ連動度(過去1回"),
+			).toBe(true);
+			expect(out).toContain("SQ日出来高 20日平均比3倍");
+			expect(out).toContain("SQ明けの反転 100%");
+		});
+		it("SQ週以外はそのまま返す", () => {
+			expect(withSqSensitivity("ctx", rows, "2026-07-14")).toBe("ctx");
+		});
+		it("足が足りなければそのまま返す", () => {
+			expect(withSqSensitivity("ctx", rows.slice(0, 10), "2026-07-08")).toBe(
+				"ctx",
+			);
 		});
 	});
 

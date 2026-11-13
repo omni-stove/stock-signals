@@ -1,8 +1,10 @@
 // 需給イベント文脈を 1 行に組み立てる純粋関数。ticker-brief / crash-scenario / market-brief が読む。
 //
 // 設計:
-//   - SQ は日付計算で出る: 日本SQ=各月 第2金曜 / 米SQ=各月 第3金曜 / 3・6・9・12月=メジャーSQ。
+//   - SQ は日付計算で出る: 日本SQ=各月 第2金曜 (東証の休業日なら前営業日) / 米SQ=各月 第3金曜 /
+//     3・6・9・12月=メジャーSQ。
 //     2 窓を出す: 「SQ週 (当日を含む月〜金)」= 建玉調整で歪む / 「SQ明け (翌週)」= 清算が抜け実勢。
+//     SQ週は SQ までの日数を添え、SQ日そのものは「SQ当日」(寄りで SQ値が決まる) として出す。
 //   - 指数リバランスも日付計算 (MSCI=2/5/8/11月末, FTSE=3/6/9/12月第3金曜, 日経=4/10月初, TOPIX=10月末)。
 //   - 入替「銘柄発表」の接近窓も日付計算 (日経225=3・9月上旬公表 / MSCI=実施の約2週間前公表)。
 //     発表日そのものは事前確定しないので窓で語る。FTSE の発表窓は影響が小さいので出さない。
@@ -13,6 +15,10 @@
 //     長いので専用の長い窓 (INDEX_CHANGE_LEAD) で出す。投入方法は config/events.yaml 参照。
 //   - 全て UTC 正午アンカーで日付計算する。
 
+import {
+	latestTseBusinessDay,
+	tseBusinessDaysBetween,
+} from "./market-calendar";
 import { addDays } from "./utils";
 
 // macro_events の 1 行 (D1 macroEvents の select 結果と同じキー)。
@@ -68,6 +74,11 @@ function nextYm(ym: string): string {
 	return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
 }
 
+// 当該月の日本SQ日 (第2金曜。東証の休業日なら前営業日に繰り上げ)。
+function jpSqDate(ym: string): string {
+	return latestTseBusinessDay(nthFriday(ym, 2));
+}
+
 // 当該月 (YYYY-MM) の「第 N 金曜」。月初の曜日から最初の金曜(5)までのオフセットで求める。
 function nthFriday(ym: string, n: number): string {
 	const first = `${ym}-01`;
@@ -117,6 +128,25 @@ function sqPhase(
 	return "";
 }
 
+// 日本SQ週の文脈断片。SQ日当日は寄りで SQ値が決まり、寄りと寄り後の値動きに清算・裁定解消の売買が混ざる。
+function jpSqWeekNote(
+	today: string,
+	sq: string,
+	sqMonth: number,
+	isMajor: boolean,
+): string {
+	const limit = isMajor ? `${sqMonth}月限` : `${sqMonth}月限オプションのみ`;
+	if (today === sq) {
+		return isMajor
+			? `日本メジャーSQ当日(${limit}, SQ=本日${sq}/寄りでSQ値算出・先物とオプションの清算売買で寄りと寄り後の値動きが歪む)`
+			: `日本SQ当日(${limit}, SQ=本日${sq}/寄りでSQ値算出・オプション清算の売買で寄りと寄り後の値動きが歪む)`;
+	}
+	const days = tseBusinessDaysBetween(today, sq);
+	return isMajor
+		? `日本メジャーSQ週(${limit}, SQ=${sq}/${days}営業日後・直接需給イベント・建玉調整で値動きが歪む)`
+		: `日本SQ週(${limit}, SQ=${sq}/${days}営業日後・需給やや歪み)`;
+}
+
 // today が属する週に SQ が入る/翌週かを判定し、文脈断片の配列を返す。
 function checkSq(today: string): string[] {
 	const notes: string[] = [];
@@ -129,8 +159,8 @@ function checkSq(today: string): string[] {
 
 	// 当月・前月の 日本SQ(第2金) / 米SQ(第3金) を列挙。SQ 日の「月」でメジャー判定。
 	const candidates: { sq: string; mkt: "jp" | "us" }[] = [
-		{ sq: nthFriday(thisYm, 2), mkt: "jp" },
-		{ sq: nthFriday(prevM, 2), mkt: "jp" },
+		{ sq: jpSqDate(thisYm), mkt: "jp" },
+		{ sq: jpSqDate(prevM), mkt: "jp" },
 		{ sq: nthFriday(thisYm, 3), mkt: "us" },
 		{ sq: nthFriday(prevM, 3), mkt: "us" },
 	];
@@ -143,11 +173,7 @@ function checkSq(today: string): string[] {
 
 		if (mkt === "jp") {
 			if (phase === "week") {
-				notes.push(
-					isMajor
-						? `日本メジャーSQ週(${sqMonth}月限, SQ=${sq}/直接需給イベント・建玉清算で寄り値歪み)`
-						: `日本SQ週(${sqMonth}月限オプションのみ, SQ=${sq}/需給やや歪み)`,
-				);
+				notes.push(jpSqWeekNote(today, sq, sqMonth, isMajor));
 			} else if (isMajor) {
 				// 明け: メジャーのみ積む (マイナーSQ明けは波及無視)。
 				notes.push(
@@ -168,7 +194,7 @@ function checkSq(today: string): string[] {
 }
 
 // --- 日本SQ の日付 (sq-week 用) ----------------------------------------------
-// 暦上の日本SQ日 (第2金曜)。祝日による前倒しは呼び出し側が実在する足で解決する。
+// 日本SQ日 (第2金曜。東証の休業日なら前営業日)。
 export interface JpSq {
 	date: string;
 	month: number;
@@ -178,7 +204,7 @@ export interface JpSq {
 function jpSqOf(ym: string): JpSq {
 	const month = Number(ym.slice(5, 7));
 	return {
-		date: nthFriday(ym, 2),
+		date: jpSqDate(ym),
 		month,
 		major: [3, 6, 9, 12].includes(month),
 	};
@@ -301,7 +327,7 @@ export function upcomingCalendarEvents(
 		const m = Number(ym.slice(5, 7));
 		const isMajor = [3, 6, 9, 12].includes(m);
 		add(
-			nthFriday(ym, 2),
+			jpSqDate(ym),
 			isMajor ? `日本メジャーSQ (${m}月限)` : `日本SQ (${m}月限オプションのみ)`,
 		);
 		if (isMajor) {
@@ -479,12 +505,36 @@ if (import.meta.vitest) {
 	});
 
 	describe("buildEventContext (出力整形)", () => {
-		it("日本メジャーSQ当日 (2026-06-12) はメジャーSQ週", () => {
+		it("日本メジャーSQ当日 (2026-06-12) は SQ当日と出す", () => {
 			const out = buildEventContext("2026-06-12");
-			expect(out).toContain("日本メジャーSQ週(6月限");
-			expect(out).toContain("SQ=2026-06-12");
+			expect(out).toContain("日本メジャーSQ当日(6月限");
+			expect(out).toContain("SQ=本日2026-06-12");
+			expect(out).not.toContain("日本メジャーSQ週");
 			expect(out.startsWith("需給イベント(2026-06-12):")).toBe(true);
 			expect(out).not.toContain("\n");
+		});
+		it("マイナーSQ当日 (2026-11-13) は SQ当日と出す", () => {
+			const out = buildEventContext("2026-11-13");
+			expect(out).toContain(
+				"日本SQ当日(11月限オプションのみ, SQ=本日2026-11-13",
+			);
+			expect(out).toContain("寄りでSQ値算出");
+		});
+		it("SQ週の SQ前 (2026-11-11) は SQ までの日数を出す", () => {
+			const out = buildEventContext("2026-11-11");
+			expect(out).toContain(
+				"日本SQ週(11月限オプションのみ, SQ=2026-11-13/2営業日後・需給やや歪み)",
+			);
+		});
+		it("第2金曜が祝日なら前営業日を SQ にする (2022-02-11 建国記念の日 → 02-10)", () => {
+			expect(jpSqWeek("2022-02-07")?.date).toBe("2022-02-10");
+			expect(jpSqDates("2022-02-01", "2022-02-28")[0].date).toBe("2022-02-10");
+			expect(buildEventContext("2022-02-10")).toContain(
+				"日本SQ当日(2月限オプションのみ, SQ=本日2022-02-10",
+			);
+			expect(buildEventContext("2022-02-08")).toContain(
+				"SQ=2022-02-10/2営業日後",
+			);
 		});
 		it("SQ明け週 (2026-06-19) は JP明け/US週/FTSE", () => {
 			const out = buildEventContext("2026-06-19");

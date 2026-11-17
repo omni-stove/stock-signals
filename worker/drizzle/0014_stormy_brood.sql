@@ -1,0 +1,1 @@
+ALTER TABLE `premarket_backdrop` ADD `us_peers_json` text;

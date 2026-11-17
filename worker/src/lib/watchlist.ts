@@ -19,6 +19,7 @@
 //      - list_url  : パーサが実際に取得・解析する一覧ページ/RSS の URL。ir_url とは目的が違い、
 //          パーサが期待する構造のページを指す。
 //  - news_url    : 銘柄ページのニュース一覧 (Worker がスクレイプし D1 articles に保存)。
+//  - edinet_code : EDINET コード (E+5桁)。大量保有報告書の対象会社を引き当てる (large-holdings.ts)。
 //  - next_earnings_date : 次回決算発表予定日 (YYYY-MM-DD、未確定なら null)。
 //      公式日程が未開示の時期は前年同期日付ベースの推定値。実行時の値は eod cron が D1 earnings に
 //      自動更新するので手動更新は原則不要 (ここの値は人間向けの記録)。過去日が残ると制約なし扱いになる。
@@ -42,6 +43,7 @@ export interface Ticker {
 	ir_url: string;
 	ir?: IrSource;
 	news_url: string;
+	edinet_code: string;
 	next_earnings_date: string | null;
 	note?: string;
 }
@@ -57,6 +59,7 @@ export const TICKERS: Ticker[] = [
 		ir_url: "https://www.kioxia.com/ja-jp/about/news.html",
 		ir: { site: "kioxia", list_url: "https://www.kioxia.com/ja-jp/news.html" },
 		news_url: "https://kabutan.jp/stock/news?code=285A",
+		edinet_code: "E35948",
 		// 1Q (2027/3期): 公式未公表、前年Q1=2025-08-08 ベースの推定。公式日程が出たら上書き。
 		next_earnings_date: "2026-08-08",
 		// 半導体メモリ。予想EPS未開示時期は逆算スキップ。市況依存が大きく仮に20倍。
@@ -74,6 +77,7 @@ export const TICKERS: Ticker[] = [
 		ir_url: "https://www.advantest.com/ja/news",
 		ir: { site: "advantest", list_url: "https://www.advantest.com/ja/news/" },
 		news_url: "https://kabutan.jp/stock/news?code=6857",
+		edinet_code: "E01950",
 		// 1Q (2027/3期): 公式は「7月」表示のみ、過去3年Q1=7/29,7/31,7/26 から推定。
 		next_earnings_date: "2026-07-29",
 		// 半導体テスター。現在予想PER ~40倍。高成長テスターとして仮に30倍。
@@ -88,6 +92,7 @@ export const TICKERS: Ticker[] = [
 		ir_url: "https://www.lasertec.co.jp/news/",
 		ir: { site: "lasertec", list_url: "https://www.lasertec.co.jp/news/" },
 		news_url: "https://kabutan.jp/stock/news?code=6920",
+		edinet_code: "E01991",
 		// 通期 (2026/6期 本決算): 公式は「8月」表示のみ、過去3年通期=8/7 から推定。
 		next_earnings_date: "2026-08-07",
 		// EUVマスク検査。現在予想PER ~52倍。独占的地位を加味し仮に35倍。
@@ -109,6 +114,7 @@ export const TICKERS: Ticker[] = [
 		ir_url: "https://www.yuden.co.jp/ir/",
 		// IR一覧パーサ (ir-sources.ts) に太陽誘電用がないため ir 省略 = IR スクレイプ対象外。
 		news_url: "https://kabutan.jp/stock/news?code=6976",
+		edinet_code: "E01824",
 		// 1Q (2027/3期): 公式未公表、過去数年Q1=8月上旬 (前年Q1=2025-08-05) ベースの推定。公式日程が出たら上書き。
 		next_earnings_date: "2026-08-05",
 		// 電子部品(MLCC)大手。利益回復途上で現在予想PER ~130倍と高いが、ピア村田と揃え仮に30倍。
@@ -135,6 +141,7 @@ export const TICKERS: Ticker[] = [
 				"https://corporate.murata.com/ja-jp/newsroom/news/irnews/irnews/rssfeed",
 		},
 		news_url: "https://kabutan.jp/stock/news?code=6981",
+		edinet_code: "E01914",
 		// 1Q (2027/3期): 公式未公表、前年Q1(25.04-06)=2025-07-30 ベースの推定。公式日程が出たら上書き。
 		next_earnings_date: "2026-07-30",
 		// 電子部品(MLCC)大手。現在予想PER ~67倍。高収益部品株として仮に30倍。
@@ -188,6 +195,11 @@ export interface IrSourceEntry {
 export const IR_SOURCES: IrSourceEntry[] = TICKERS.filter(
 	(t): t is Ticker & { ir: IrSource } => t.ir !== undefined,
 ).map((t) => ({ code: t.code, site: t.ir.site, list_url: t.ir.list_url }));
+
+// EDINET コード → 証券コード。
+export const EDINET_TO_TICKER: Record<string, string> = Object.fromEntries(
+	TICKERS.map((t) => [t.edinet_code, t.code]),
+);
 
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;

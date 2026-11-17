@@ -4,6 +4,9 @@
 export interface Env {
 	DB: D1Database;
 	ARTICLES: R2Bucket;
+	// 自分自身への service binding (wrangler.toml [[services]])。cron が重い収集を /run に
+	// 1 ジョブずつ投げ、別 invocation として CPU 上限を個別に受けさせる (fan-out.ts)。
+	SELF?: Fetcher;
 	USER_AGENT: string;
 	MIN_INTERVAL_MS: string;
 	// Slack Incoming Webhook URL (Secret)。未設定なら通知をスキップ (取得自体は動く)。
@@ -59,6 +62,9 @@ export interface Env {
 	GH_APP_ID?: string;
 	GH_APP_PRIVATE_KEY?: string;
 	GH_APP_INSTALL_ID?: string;
+	// EDINET API v2 の Subscription-Key (Secret)。未設定なら大量保有報告書の収集をスキップする。
+	//   設定: npx wrangler secret put EDINET_API_KEY
+	EDINET_API_KEY?: string;
 	// 発火先リポジトリ (owner/repo)。未設定なら下記デフォルトを使う。
 	GITHUB_REPO?: string;
 }

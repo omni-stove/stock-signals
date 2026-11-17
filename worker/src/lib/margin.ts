@@ -128,7 +128,7 @@ async function collectMarginOne(
 // watchlist 全銘柄 (codeFilter 指定時はその1銘柄) の信用残を収集し D1 margin に保存。
 // 1銘柄が落ちても他は続行 (timeseries の collectTimeseries と同じ流儀)。
 // freshTickers = 今回「新しい週次行が書けた」銘柄 (written > 0)。週1更新なので新しい集計
-// 基準日が公表された夜だけ乗り、20:00 intake で他の収集と束ねて1回 dispatch される。
+// 基準日が公表された夜だけ乗り、18:00 の引け後 intake で他の収集と一緒に取られる。
 export async function collectMargin(
 	env: MarginEnv,
 	codeFilter: string | null,

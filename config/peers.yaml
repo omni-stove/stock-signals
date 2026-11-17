@@ -21,29 +21,37 @@
 # - ticker: Nasdaq のティッカー (US 上場 / 非US は ADR。例: TSMC=TSM, ASML=ASML)
 # - name:   prompt に出す日本語通称
 # - role:   セクター内での位置づけ (メモリ/前工程装置/検査装置/露光装置/ファウンドリ/GPU)
+# - release: 決算の発表タイミング (after_close = 米国の引け後 / before_open = 米国の寄り前)
 
 peers:
   - ticker: "MU"
     name: "マイクロン"
     role: "メモリ"
+    release: "after_close"
   - ticker: "NVDA"
     name: "エヌビディア"
     role: "GPU"
+    release: "after_close"
   - ticker: "AMAT"
     name: "アプライド"
     role: "前工程装置"
+    release: "after_close"
   - ticker: "LRCX"
     name: "ラムリサーチ"
     role: "前工程装置"
+    release: "after_close"
   - ticker: "KLAC"
     name: "KLA"
     role: "検査装置"
+    release: "after_close"
   - ticker: "ASML"
     name: "ASML"
     role: "露光装置"
+    release: "before_open"
   - ticker: "TSM"
     name: "TSMC"
     role: "ファウンドリ"
+    release: "before_open"
 
 # 国内ピア (watchlist 外の東証銘柄)。決算は引け後発表が大半で、翌営業日に同業の watchlist 銘柄へ
 # 連想で波及する (装置株→6857/6920、電子部品→6976/6981、セクター地合い全般)。

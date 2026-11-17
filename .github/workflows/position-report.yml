@@ -103,52 +103,50 @@ jobs:
           # 数値コンテキストだけを @ でファイルから取り込む。skill には curl/sh を叩かせない (投稿は次ステップ):
           # Bash は渡さず Read のみ許可、ファイルも書かせない。
           prompt: |
-            # position-report — 1 ユーザーの保有ポジション事実レポート
+            # position-report — one user's position fact report
 
-            You read one user's holdings, each tagged with that name's latest 材料ブリーフ, its standing
-            context, and the day's close, and return the **facts that bear on each position** — the fresh materials and standing
-            risks a holder of this name should know tonight. **Never output an action or a verdict**: no
-            利確/損切り/増し玉/継続, no urgency grade, no "should". The deterministic facts (建値, 現値,
-            含み損益) are rendered by the posting step — do not restate them; add only what the numbers
-            alone don't say.
+            Read one user's holdings, each tagged with that name's latest 材料ブリーフ, its standing context,
+            and the day's close, and return the **facts that bear on each position** — the fresh materials and
+            standing risks a holder of this name should know tonight. **Never output an action or a verdict**:
+            no 利確/損切り/増し玉/継続, no urgency grade, no "should". Never write a figure (price, %, count); the
+            posting step renders 建値・現値・含み損益 — add only what the numbers alone don't say.
 
-            Report on what you can see now — the brief, 含み損益, account type — never hindsight. Do not
-            invent a market view; when a position has neither `brief` nor `context`, give it an empty
-            `notes`.
+            Report on what you can see now — the brief, the context, the position row — never hindsight, and
+            never a market view the inputs do not carry.
+
+            Do not post to Slack; do not run any script; do not write any file — return structured output and
+            stop.
 
             ## Inputs
 
-            The position context JSON is embedded inline below. Do not post to Slack; do not run any
-            script; do not write any file — return structured output and stop.
+            Each position row:
 
-            How to read each position row:
+            - **`ticker`** / **`name`**; **`side`** (`long` = 買建, `short` = 売建); **`account`** (`cash` = 現物,
+              `margin` = 信用); **`avgPrice`** 建値; **`price`** the day's close (null = unknown); **`pnlPct`**
+              含み損益% (positive = in profit for either side; null = not computable). These only set how a
+              material bears on the position.
+            - **`brief`** (null when none): `headline` + `body` = that name's latest 材料ブリーフ, `briefedAt` =
+              when it was saved. Lead on it. A `briefedAt` days back → the materials may predate today's tape;
+              say so rather than presenting them as fresh.
+            - **`context`** (null when none): that name's standing context. Use it for standing risks and drivers
+              `brief` does not cover; never present it as fresh.
 
-            - **`side`** (long=買建 / short=売建), **`account`** (cash=現物 / margin=信用), **`avgPrice`** 建値,
-              **`price`** 参照現値 (当日 close; null なら現値不明), **`pnlPct`** 含み損益%
-              (long は上昇で益 / short は下落で益; null なら算出不可).
-            - **`brief`** (null when none): `headline` + `body` = that name's latest 材料ブリーフ (新着材料の
-              要約と影響分析), `briefedAt` = when it was saved. Lead on it for `notes`; an old `briefedAt`
-              (days back) means the materials may predate today's tape — say so rather than presenting them
-              as fresh.
-            - **`context`** (null when none): that name's standing context. Use it for standing risks and
-              drivers `brief` does not cover; never present it as fresh.
+            ## Output
 
-            ## Writing `notes` (per position)
+            Japanese, facts and their relevance only.
 
-            0–3 lines per holding: which fresh material in `brief` or standing risk in `context` bears on *this* 建玉 and how
-            it relates to the position's situation (信用 with a loss makes a 需給 risk more relevant; a
-            large 含み益 makes a fading driver worth naming). Facts and their relevance only. A position
-            whose `brief` and `context` add nothing get an empty array — do not pad.
-
-            ## Writing `portfolio` (one string)
-
-            One factual Japanese line across all positions: セクター/方向の偏り, 含み損益の傾き, how many
-            names have fresh materials tonight. No recommendation.
+            - `positions`: one entry per input position, `ticker` matching the input. `notes` = 0–3 lines on
+              which fresh material in `brief` or standing risk in `context` bears on this 建玉 and how it meets
+              the position's situation (信用 with a loss makes a 需給 risk weigh more; a large 含み益 makes a
+              fading driver worth naming). Empty when `brief` and `context` add nothing or are both null — do
+              not pad.
+            - `portfolio`: one line across all positions — the material or risk several positions share, or
+              that their drivers do not overlap. No recommendation.
 
             ## ポジションコンテキスト
 
             @${{ runner.temp }}/posctx.json
-          # --json-schema で出力の形を縛る。portfolio=事実 1 行、positions[]=建玉ごとの材料メモ。
+          # --json-schema で出力の形を縛る。portfolio=事実 1 行、positions[]=建玉ごとの材料メモ (中身は prompt の ## Output)。
           # 検証済み JSON は steps.report.outputs.structured_output で受ける。skill には curl/sh を
           # 叩かせない (投稿は次ステップ): Bash は渡さず Read のみ許可、ファイルも書かせない。
           claude_args: >-
@@ -157,13 +155,13 @@ jobs:
               "type":"object","additionalProperties":false,
               "required":["portfolio","positions"],
               "properties":{
-                "portfolio":{"type":"string","description":"ポートフォリオ全体の事実 1 行 (日本語)。偏り・含み損益の傾き・新着材料のある銘柄数。推奨は書かない"},
+                "portfolio":{"type":"string"},
                 "positions":{"type":"array","minItems":1,"items":{
                   "type":"object","additionalProperties":false,
                   "required":["ticker","notes"],
                   "properties":{
-                    "ticker":{"type":"string","description":"銘柄コード (入力と一致。全建玉分を必ず出す)"},
-                    "notes":{"type":"array","items":{"type":"string"},"maxItems":3,"description":"この建玉に関係する新着材料・リスク要因 0〜3 行 (日本語、事実のみ)。無ければ空配列"}
+                    "ticker":{"type":"string"},
+                    "notes":{"type":"array","items":{"type":"string"},"maxItems":3}
                   }
                 }}
               }

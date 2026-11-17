@@ -390,8 +390,8 @@ export function buildPrices(
 	epochNow: number,
 ): Record<string, unknown> {
 	if (!rows || rows.length === 0) return { status: "unavailable" };
-	const latest = rows[0];
-	const fetchedAt = (latest as { fetched_at?: string }).fetched_at;
+	const head = rows[0];
+	const fetchedAt = (head as { fetched_at?: string }).fetched_at;
 	let quoteStatus: "live" | "closed" | "unavailable";
 	let ageH = 0;
 	if (fetchedAt) {
@@ -400,18 +400,37 @@ export function buildPrices(
 	} else {
 		quoteStatus = "unavailable";
 	}
-	return {
+	const latest = {
+		slot: head.slot ?? null,
+		price: (head.price as number | null | undefined) ?? null,
+		change: (head.change as number | null | undefined) ?? null,
+		change_pct: head.change_pct ?? null,
+		volume: head.volume ?? null,
+		quote_time: head.quote_time ?? null,
+	};
+	const out = {
 		status: "ok",
 		quote_status: quoteStatus,
 		age_hours: ageH,
-		rows_n: rows.length,
 		latest,
-		series: rows.map((r) => ({
-			slot: r.slot ?? null,
-			change_pct: r.change_pct ?? null,
-			volume: r.volume ?? null,
-			quote_time: r.quote_time ?? null,
-		})),
+	};
+	if (quoteStatus !== "live") return out;
+	// 場中は直近の推移 (rows は新しい順) を当日分だけ起点・高値・安値の前日比に要約する。
+	const day = (r: PriceRow) => (r.quote_time ?? r.slot ?? "").slice(0, 10);
+	const sameDay = rows.filter(
+		(r) => day(r) === day(head) && r.change_pct != null,
+	);
+	if (sameDay.length < 2) return out;
+	const pcts = sameDay.map((r) => r.change_pct as number);
+	const first = sameDay[sameDay.length - 1];
+	return {
+		...out,
+		trajectory: {
+			from_quote_time: first.quote_time ?? null,
+			from_change_pct: first.change_pct,
+			high_change_pct: Math.max(...pcts),
+			low_change_pct: Math.min(...pcts),
+		},
 	};
 }
 
@@ -551,9 +570,141 @@ export function buildRevisions(
 	};
 }
 
+// --- compact: LLM に渡す前に中身の無いブロックを落とす ------------------------------
+// judge-context が返すブロック。足すときは既存ブロックへの統合か、別ブロックの削除と引き換えにする。
+const JUDGE_BLOCKS = [
+	"ticker",
+	"today",
+	"market_phase",
+	"market_brief",
+	"event_context",
+	"ticker_note",
+	"context_body",
+	"earnings",
+	"earnings_result",
+	"revisions",
+	"valuation",
+	"premarket",
+	"sector",
+	"daily",
+	"trend",
+	"relative",
+	"event_reactions",
+	"prices",
+	"margin",
+	"short_interest",
+	"supply",
+	"forced",
+] as const;
+export type JudgeBlock = (typeof JUDGE_BLOCKS)[number];
+const MAX_JUDGE_BLOCKS = 22;
+
+// 読むべき中身が無いことを示す status。
+const EMPTY_STATUSES = new Set([
+	"none",
+	"unavailable",
+	"insufficient",
+	"stale",
+	"unknown",
+]);
+
+function isEmptyBlock(v: unknown): boolean {
+	if (v == null) return true;
+	if (typeof v === "string") return v === "" || v.endsWith(": 特になし");
+	if (typeof v !== "object" || Array.isArray(v)) return false;
+	const status = (v as { status?: unknown }).status;
+	return typeof status === "string" && EMPTY_STATUSES.has(status);
+}
+
+// null・空 status のブロックと、特になしの event_context を落とす。status を持たない入れ子
+// (short_interest) は子ごとに落とし、子が全部落ちたら親も落とす。
+export function compactJudgeContext(
+	bundle: Record<JudgeBlock, unknown>,
+): Partial<Record<JudgeBlock, unknown>> {
+	const out: Partial<Record<JudgeBlock, unknown>> = {};
+	for (const key of JUDGE_BLOCKS) {
+		let v = bundle[key];
+		if (
+			v &&
+			typeof v === "object" &&
+			!Array.isArray(v) &&
+			!("status" in v) &&
+			Object.values(v).every((c) => c && typeof c === "object")
+		) {
+			const kept = Object.fromEntries(
+				Object.entries(v).filter(([, c]) => !isEmptyBlock(c)),
+			);
+			v = Object.keys(kept).length > 0 ? kept : null;
+		}
+		if (!isEmptyBlock(v)) out[key] = v;
+	}
+	return out;
+}
+
 // in-source tests。
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
+
+	describe("compactJudgeContext", () => {
+		const base = Object.fromEntries(
+			JUDGE_BLOCKS.map((k) => [k, { status: "ok" }]),
+		) as Record<JudgeBlock, unknown>;
+		it("null・空 status・特になしを落とし、中身のあるブロックは残す", () => {
+			const out = compactJudgeContext({
+				...base,
+				market_brief: null,
+				event_context: "需給イベント(2026-06-20): 特になし",
+				earnings: { status: "unknown", next_date: null },
+				forced: { status: "none" },
+				daily: { status: "stale", rows_n: 3 },
+				relative: { status: "insufficient" },
+				prices: { status: "ok", latest: {} },
+			});
+			for (const k of [
+				"market_brief",
+				"event_context",
+				"earnings",
+				"forced",
+				"daily",
+				"relative",
+			])
+				expect(out).not.toHaveProperty(k);
+			expect(out.prices).toEqual({ status: "ok", latest: {} });
+		});
+		it("short_interest は子ごとに落とし、全部空なら親も落とす", () => {
+			const partial = compactJudgeContext({
+				...base,
+				short_interest: {
+					lending: { status: "unavailable" },
+					positions: { status: "ok", holders: [] },
+				},
+			});
+			expect(partial.short_interest).toEqual({
+				positions: { status: "ok", holders: [] },
+			});
+			const empty = compactJudgeContext({
+				...base,
+				short_interest: {
+					lending: { status: "unavailable" },
+					positions: { status: "none" },
+				},
+			});
+			expect(empty).not.toHaveProperty("short_interest");
+		});
+		it("文字列・数値のブロックはそのまま残す", () => {
+			const out = compactJudgeContext({
+				...base,
+				ticker: "6857",
+				context_body: "## 直近の重大トピック",
+				event_context: "需給イベント(2026-06-20): 日本SQ週",
+			});
+			expect(out.ticker).toBe("6857");
+			expect(out.event_context).toBe("需給イベント(2026-06-20): 日本SQ週");
+		});
+		it(`ブロックは ${MAX_JUDGE_BLOCKS} 個まで (足すなら統合するか別のものを外す)`, () => {
+			expect(JUDGE_BLOCKS.length).toBeLessThanOrEqual(MAX_JUDGE_BLOCKS);
+		});
+	});
 
 	describe("buildEarnings", () => {
 		it("next_date があれば暦日差を出す", () => {
@@ -1088,21 +1239,59 @@ if (import.meta.vitest) {
 			expect(out.quote_status).toBe("closed");
 			expect(out.status).toBe("ok");
 		});
-		it("1時間前は live、series を整形", () => {
+		it("closed は最新値だけで pts_price を含めない", () => {
 			const out = buildPrices(
 				[
 					{
-						slot: "regular",
+						slot: "2026-06-19T15:30",
+						price: 1000,
 						change_pct: 1.2,
 						volume: 100,
-						quote_time: "t",
-						fetched_at: new Date(now - 3600_000).toISOString(),
+						quote_time: "2026-06-19T15:30+09:00",
+						pts_price: 999,
+						fetched_at: new Date(now - 3 * 3600_000).toISOString(),
 					},
 				],
 				now,
 			);
+			expect(out).toEqual({
+				status: "ok",
+				quote_status: "closed",
+				age_hours: 3,
+				latest: {
+					slot: "2026-06-19T15:30",
+					price: 1000,
+					change: null,
+					change_pct: 1.2,
+					volume: 100,
+					quote_time: "2026-06-19T15:30+09:00",
+				},
+			});
+		});
+		it("live は当日分の推移を起点・高値・安値に要約する", () => {
+			const at = (t: string, pct: number) => ({
+				slot: `2026-06-20T${t}`,
+				change_pct: pct,
+				volume: 100,
+				quote_time: `2026-06-20T${t}+09:00`,
+				fetched_at: new Date(now - 3600_000).toISOString(),
+			});
+			const out = buildPrices(
+				[
+					at("13:10", 1.5),
+					at("13:05", 2.4),
+					at("13:00", -0.3),
+					{ ...at("12:55", 0.8), quote_time: "2026-06-19T15:30+09:00" },
+				],
+				now,
+			);
 			expect(out.quote_status).toBe("live");
-			expect((out.series as unknown[]).length).toBe(1);
+			expect(out.trajectory).toEqual({
+				from_quote_time: "2026-06-20T13:00+09:00",
+				from_change_pct: -0.3,
+				high_change_pct: 2.4,
+				low_change_pct: -0.3,
+			});
 		});
 		it("行なしは unavailable", () => {
 			expect(buildPrices([], now)).toEqual({ status: "unavailable" });

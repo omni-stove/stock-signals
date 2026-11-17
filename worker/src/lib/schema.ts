@@ -170,6 +170,8 @@ export const premarketBackdrop = sqliteTable("premarket_backdrop", {
 	us10yChangeBp: real("us10y_change_bp"),
 	us10yDate: text("us10y_date"),
 	usIndexesJson: text("us_indexes_json"),
+	// 海外ピア (peer-earnings.ts の SOX_PEERS) の前夜の騰落。[{ticker, change_pct, jst_time}] の JSON。
+	usPeersJson: text("us_peers_json"),
 });
 
 // ── earnings (次回決算発表予定日。PK = ticker) ──────────────────────────────
@@ -312,6 +314,30 @@ export const forcedLiquidation = sqliteTable(
 		index("idx_forced_liquidation_ticker_date").on(
 			t.ticker,
 			sql`${t.date} DESC`,
+		),
+	],
+);
+
+// ── large_holdings (EDINET の大量保有報告書・変更報告書。PK = doc_id) ──────────
+// 監視銘柄を対象会社とする報告だけを持つ (large-holdings.ts)。ratio / prev_ratio は株券等保有割合 (%)
+// とその前回報告値で、取れなければ null。special = 特例対象株券等 (機関投資家の特例報告)。
+export const largeHoldings = sqliteTable(
+	"large_holdings",
+	{
+		docId: text("doc_id").primaryKey(),
+		ticker: text("ticker").notNull(),
+		filer: text("filer").notNull(),
+		reportKind: text("report_kind").notNull(), // new | change
+		special: integer("special", { mode: "boolean" }).notNull(),
+		submitDate: text("submit_date").notNull(), // YYYY-MM-DD
+		ratio: real("ratio"),
+		prevRatio: real("prev_ratio"),
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [
+		index("idx_large_holdings_ticker_date").on(
+			t.ticker,
+			sql`${t.submitDate} DESC`,
 		),
 	],
 );

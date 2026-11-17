@@ -1,19 +1,24 @@
-// Cloudflare Worker: 次回決算発表予定日の推定と四半期実績の収集
+// Cloudflare Worker: 次回決算発表予定日と四半期実績の収集
 //
 // kabutan finance ページ (https://kabutan.jp/stock/finance?code=<code>) の
 //   - 3ヵ月決算表: 四半期ごとの売上・営業益・経常益・最終益 (百万円) と発表日
 //   - 通期表の予想行: 今期会社予想 (百万円)
-// を読む。次回決算日は「直近実績の次四半期 = 前年同期の発表日 +1年」で推定する。
-// 推定日と通期予想は D1 の earnings に、四半期実績は earnings_quarters に保持する。
+// を読む。次回決算日は JPX 決算発表予定日一覧 (earnings-schedule.ts) に載っていればその公表日、
+// 無ければ「直近実績の次四半期 = 前年同期の発表日 +1年」の推定日とし、どちらかを earnings.estimated に残す。
+// 次回決算日と通期予想は D1 の earnings に、四半期実績は earnings_quarters に保持する。
 // judge-context はこれらから「決算が近い」(earnings) と「決算が出たばかり」(earnings_result) を組む。
 //
 // 全ソース UTF-8 なので TextDecoder で十分。
 
 import { db } from "./db";
+import {
+	type EarningsScheduleEnv,
+	fetchEarningsSchedule,
+} from "./earnings-schedule";
 import { type TableData as FinanceTable, scanTables } from "./html";
 import { earnings, earningsQuarters } from "./schema";
 import { toNumber, WATCHLIST } from "./timeseries";
-import { fetchHtml, sleep, sliceTables } from "./utils";
+import { fetchHtml, jstDate, sleep, sliceTables } from "./utils";
 
 export interface EarningsEnv {
 	DB: D1Database;
@@ -184,17 +189,36 @@ export async function estimateNextEarningsDate(html: string): Promise<{
 	return estimateFromRows(await extractQuarterRows(html));
 }
 
+/**
+ * 次回決算日を決める。JPX 一覧の公表日 (announced) があればそれを estimated=false で、無ければ推定日 (est) を
+ * estimated=true で返す。detail は推定の根拠に公表日を前置きしたもの。
+ * 国内ピア (peer-earnings.ts collectJpPeerEarnings) も使う。
+ */
+export function resolveNextDate(
+	announced: string | null | undefined,
+	est: string | null,
+	estDetail: string,
+): { date: string | null; estimated: boolean; detail: string } {
+	if (!announced) return { date: est, estimated: true, detail: estDetail };
+	return {
+		date: announced,
+		estimated: false,
+		// sq-context は detail の "(YYYY-MM-DD)" を過去の発表日として拾うので、予定日は括弧で囲まない。
+		detail: `jpx=${announced}; ${estDetail}`,
+	};
+}
+
 async function saveEarnings(
 	env: EarningsEnv,
 	ticker: string,
-	next_date: string | null,
-	detail: string,
+	next: { date: string | null; estimated: boolean; detail: string },
 	forecast: FullYearForecast | null,
 ): Promise<void> {
 	const fetched_at = new Date().toISOString();
 	const set = {
-		nextDate: next_date,
-		detail,
+		nextDate: next.date,
+		estimated: next.estimated,
+		detail: next.detail,
 		forecastPeriod: forecast?.period ?? null,
 		forecastSales: forecast?.sales ?? null,
 		forecastOperating: forecast?.operating ?? null,
@@ -239,25 +263,48 @@ async function saveQuarters(
 	await d.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]);
 }
 
-// watchlist 全銘柄 (codeFilter 指定時はその1銘柄) の次回決算予定日を推定し、通期予想・四半期実績と
-// 合わせて D1 に保存。
+/**
+ * JPX 決算発表予定日一覧を引く。一覧が取れなくても推定日で続けられるよう、失敗は例外にせず
+ * 空の Map と error を返す。summary は収集レスポンスに載せる診断。
+ */
+export async function loadEarningsSchedule(
+	env: EarningsScheduleEnv,
+	codes: readonly string[],
+): Promise<{ dates: Map<string, string>; summary: unknown }> {
+	try {
+		const { dates, files } = await fetchEarningsSchedule(
+			env,
+			codes,
+			jstDate(Date.now()),
+		);
+		return { dates, summary: { files } };
+	} catch (e) {
+		return { dates: new Map(), summary: { error: (e as Error).message } };
+	}
+}
+
+// watchlist 全銘柄 (codeFilter 指定時はその1銘柄) の次回決算予定日を JPX 一覧の公表日か推定日で決め、
+// 通期予想・四半期実績と合わせて D1 に保存。
 export async function collectEarnings(
 	env: EarningsEnv,
 	codeFilter: string | null,
 ): Promise<Record<string, unknown>> {
 	const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
-	const results: Record<string, unknown> = {};
+	const schedule = await loadEarningsSchedule(env, codes);
+	const results: Record<string, unknown> = { jpx_schedule: schedule.summary };
 	for (const code of codes) {
 		try {
 			const html = await fetchHtml(URL_FINANCE(code), env);
 			const { quarters, forecast } = await parseFinance(html);
 			const { est, detail } = estimateFromRows(quarters);
-			await saveEarnings(env, code, est, detail, forecast);
+			const next = resolveNextDate(schedule.dates.get(code), est, detail);
+			await saveEarnings(env, code, next, forecast);
 			await saveQuarters(env, code, quarters);
 			results[code] = {
-				next_date: est,
-				detail,
+				next_date: next.date,
+				estimated: next.estimated,
+				detail: next.detail,
 				quarters: quarters.length,
 				forecast_period: forecast?.period ?? null,
 			};
@@ -365,6 +412,30 @@ if (import.meta.vitest) {
 		});
 		it("予想行が無ければ forecast=null", async () => {
 			expect((await parseFinance(financeHtml([]))).forecast).toBeNull();
+		});
+	});
+
+	describe("resolveNextDate", () => {
+		it("JPX の公表日があれば推定より優先し estimated=false", () => {
+			expect(
+				resolveNextDate("2026-11-04", "2026-11-05", "prior=(2025-11-05)"),
+			).toEqual({
+				date: "2026-11-04",
+				estimated: false,
+				detail: "jpx=2026-11-04; prior=(2025-11-05)",
+			});
+		});
+		it("公表日が無ければ推定日を estimated=true で返す", () => {
+			expect(resolveNextDate(undefined, "2026-11-05", "d")).toEqual({
+				date: "2026-11-05",
+				estimated: true,
+				detail: "d",
+			});
+			expect(resolveNextDate(null, null, "d")).toEqual({
+				date: null,
+				estimated: true,
+				detail: "d",
+			});
 		});
 	});
 

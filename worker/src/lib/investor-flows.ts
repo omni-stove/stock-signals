@@ -6,9 +6,9 @@
 
 import { desc, inArray } from "drizzle-orm";
 import { db } from "./db";
-import { unzipText } from "./inflate";
 import { investorFlows } from "./schema";
 import { fetchHtml } from "./utils";
+import { readSheet, readXlsxFirstSheet, type SheetRows } from "./xlsx";
 
 export interface InvestorFlowsEnv {
 	DB: D1Database;
@@ -52,51 +52,8 @@ function parseInvestorLinks(
 	return out.sort((a, b) => (a.weekStart < b.weekStart ? 1 : -1));
 }
 
-// 列名 (A, B, …, AA) ⇄ 0 始まりの番号。
-function colIndex(col: string): number {
-	let n = 0;
-	for (const ch of col) n = n * 26 + (ch.charCodeAt(0) - 64);
-	return n - 1;
-}
-
-function decodeXml(s: string): string {
-	return s
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&apos;/g, "'")
-		.replace(/&amp;/g, "&");
-}
-
-// シートを行番号 → (列番号 → 値) に読む。共有文字列は解決済み、数値は文字列のまま。
-function readSheet(
-	sheetXml: string,
-	sharedXml: string,
-): Map<number, Map<number, string>> {
-	const shared = [...sharedXml.matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) =>
-		decodeXml(
-			[...m[1].matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map((t) => t[1]).join(""),
-		),
-	);
-	const rows = new Map<number, Map<number, string>>();
-	for (const m of sheetXml.matchAll(/<c\s([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
-		const ref = m[1].match(/\br="([A-Z]+)(\d+)"/);
-		const v = m[2]?.match(/<v>([^<]*)<\/v>/);
-		if (!ref || !v) continue;
-		const value = /\bt="s"/.test(m[1])
-			? (shared[Number(v[1])] ?? "")
-			: decodeXml(v[1]);
-		const r = Number(ref[2]);
-		if (!rows.has(r)) rows.set(r, new Map());
-		rows.get(r)?.set(colIndex(ref[1]), value);
-	}
-	return rows;
-}
-
 // 東証プライムの金額行から部門ごとの差引き (億円) を出す。読めなければ null。
-function parseInvestorSheet(
-	rows: Map<number, Map<number, string>>,
-): Record<string, number> | null {
+function parseInvestorSheet(rows: SheetRows): Record<string, number> | null {
 	const rowNums = [...rows.keys()].sort((a, b) => a - b);
 	const find = (pred: (cells: Map<number, string>) => boolean) =>
 		rowNums.find((r) => pred(rows.get(r) ?? new Map()));
@@ -172,11 +129,11 @@ export async function collectInvestorFlows(
 			signal: AbortSignal.timeout(15_000),
 		});
 		if (!res.ok) continue;
-		const zip = new Uint8Array(await res.arrayBuffer());
-		const sheet = await unzipText(zip, "xl/worksheets/sheet1.xml");
-		const shared = await unzipText(zip, "xl/sharedStrings.xml");
-		if (!sheet || !shared) continue;
-		const nets = parseInvestorSheet(readSheet(sheet, shared));
+		const sheet = await readXlsxFirstSheet(
+			new Uint8Array(await res.arrayBuffer()),
+		);
+		if (!sheet) continue;
+		const nets = parseInvestorSheet(sheet);
 		if (!nets) continue;
 		const fetchedAt = new Date().toISOString();
 		const stmts = Object.entries(nets).map(([investor, netValue]) =>

@@ -186,7 +186,8 @@ jobs:
               SQ gets; near 1, do not cite it.
             - **`event_reactions`**: report how the market took a material — a good-news item that sold off or faded
               is itself a fact. `partial: true` = the second session is not in yet.
-            - **`earnings`** → a `watch` or `bear` fact. **`earnings_result`** with `status: fresh`: lead on
+            - **`earnings`** → a `watch` or `bear` fact; `estimated: true` → a guess from last year's same quarter:
+              give it as a rough timing (`…頃の見込み`), never as 確定日. **`earnings_result`** with `status: fresh`: lead on
               `yoy_pct`; `qoq_pct` and `progress_pct` only confirm; `actual` / `year_ago` only show a 赤字・黒字
               turn where a `*_pct` is null. Say in words, without numbers, whether the quarter grew or shrank and
               whether progress runs ahead of or behind pace. `progress_pct: null` → do not speak of progress. Read

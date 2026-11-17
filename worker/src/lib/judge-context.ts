@@ -57,16 +57,24 @@ function intradayVolX(iv: IntradayVol): number | null {
 export interface EarningsBlock {
 	status: "ok" | "unknown";
 	next_date: string | null;
+	// true = 前年同期の発表日からの推定、false = JPX 決算発表予定日一覧の公表日。next_date 無しは null。
+	estimated: boolean | null;
 	days_to_earnings: number | null;
 }
 
-// next_date と today (YYYY-MM-DD) の暦日差。next_date が無ければ unknown。
+// next_date と today (YYYY-MM-DD) の暦日差と、その日付が推定か公表かを返す。next_date が無ければ unknown。
 export function buildEarnings(
 	nextDate: string | null | undefined,
+	estimated: boolean | null | undefined,
 	today: string,
 ): EarningsBlock {
 	if (!nextDate) {
-		return { status: "unknown", next_date: null, days_to_earnings: null };
+		return {
+			status: "unknown",
+			next_date: null,
+			estimated: null,
+			days_to_earnings: null,
+		};
 	}
 	const ms =
 		new Date(`${nextDate}T12:00:00Z`).getTime() -
@@ -74,6 +82,8 @@ export function buildEarnings(
 	return {
 		status: "ok",
 		next_date: nextDate,
+		// 列が無い・不明な行は公表日と取り違えないよう推定側に倒す。
+		estimated: estimated !== false,
 		days_to_earnings: Math.round(ms / 86400_000),
 	};
 }
@@ -780,17 +790,30 @@ if (import.meta.vitest) {
 	});
 
 	describe("buildEarnings", () => {
-		it("next_date があれば暦日差を出す", () => {
-			expect(buildEarnings("2026-06-30", "2026-06-20")).toEqual({
+		it("公表日なら estimated=false で暦日差を出す", () => {
+			expect(buildEarnings("2026-06-30", false, "2026-06-20")).toEqual({
 				status: "ok",
 				next_date: "2026-06-30",
+				estimated: false,
 				days_to_earnings: 10,
 			});
 		});
+		it("推定日は estimated=true", () => {
+			expect(buildEarnings("2026-06-30", true, "2026-06-20")).toMatchObject({
+				status: "ok",
+				estimated: true,
+			});
+		});
+		it("推定か公表か不明なら estimated=true に倒す", () => {
+			expect(buildEarnings("2026-06-30", null, "2026-06-20").estimated).toBe(
+				true,
+			);
+		});
 		it("next_date 無しは unknown/null", () => {
-			expect(buildEarnings(null, "2026-06-20")).toEqual({
+			expect(buildEarnings(null, false, "2026-06-20")).toEqual({
 				status: "unknown",
 				next_date: null,
+				estimated: null,
 				days_to_earnings: null,
 			});
 		});

@@ -129,7 +129,9 @@ jobs:
               large holder selling down), rising `short_interest.positions` (institutions building shorts; a running
               `lending.fee` is squeeze fuel, not a crash path), and `forced` with a pending 投げ in its stated
               session.
-            - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings`; `premarket` — build a macro
+            - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings` (`earnings.estimated: true` →
+              a guess from last year's same quarter: treat the timing as approximate, never as a 確定日);
+              `premarket` — build a macro
               scenario on each field `context_body`, `ticker_note` or `sector_role` shows this name is exposed to,
               most exposed first; none shown → general risk appetite only. `status: stale` → weigh lightly;
               `us_session: carried_over` → not a fresh sign. `market_phase: premarket` makes a tonight→open gap-down

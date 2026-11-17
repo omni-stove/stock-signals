@@ -86,6 +86,7 @@ latest.get("/", async (c) => {
 			.select({
 				ticker: earnings.ticker,
 				next_date: earnings.nextDate,
+				estimated: earnings.estimated,
 				detail: earnings.detail,
 				fetched_at: earnings.fetchedAt,
 			})

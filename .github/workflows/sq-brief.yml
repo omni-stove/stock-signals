@@ -109,8 +109,9 @@ jobs:
             - **`week_to_date`**: this week so far (return since 前週末, `excess_pct` vs TOPIX). A week that has
               already run hard into SQ is what `reversal_rate` speaks to.
             - **`premarket`**: per name, lead on the field its `sector_role` is most exposed to; the others only
-              confirm; none shown → general risk appetite. `status: stale` → demote; `us_session: carried_over` →
-              not fresh.
+              confirm; none shown → general risk appetite. `nikkei_futures_price` is the home gap into the SQ
+              print: lead on it for the market-wide scenarios, especially when `days_to_sq` is 0. `status: stale` →
+              demote; `us_session: carried_over` → not fresh.
             - **`live_indexes`** (場中の日経225/KOSPI): pre-open they are stale → skip.
             - **`market_short_ratio`** (空売り比率 vs its 5日平均): heavy hedging is squeeze fuel into SQ.
               **`investor_flows`** (weekly 海外投資家 net and its streak). `unavailable` → skip either.

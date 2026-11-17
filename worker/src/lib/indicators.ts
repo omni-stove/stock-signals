@@ -102,7 +102,7 @@ function rsi14(asc: DailyRow[]): number | null {
 	for (let i = 1; i < closes.length; i++) diffs.push(closes[i] - closes[i - 1]);
 	if (diffs.length < 14) return null;
 	const d14 = diffs.slice(-14);
-	const gain = d14.reduce((a, d) => a + (d > 0 ? d : 0), 0) / 14;
+	const gain = d14.reduce((a, d) => a + Math.max(d, 0), 0) / 14;
 	const loss = d14.reduce((a, d) => a + (d < 0 ? -d : 0), 0) / 14;
 	if (loss === 0) return 100;
 	return Math.floor(100 - 100 / (1 + gain / loss));

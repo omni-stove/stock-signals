@@ -10,6 +10,7 @@ export function nextCursor(
 ): string | null {
 	if (rows.length === 0) return current;
 	return rows.reduce(
+		// biome-ignore lint/complexity/useMathMinMax: compares ISO timestamp strings
 		(max, r) => (r.fetched_at > max ? r.fetched_at : max),
 		rows[0].fetched_at,
 	);

@@ -45,7 +45,6 @@ on:
           - "6857"  # アドバンテスト
           - "6920"  # レーザーテック
           - "6976"  # 太陽誘電
-          - "6981"  # 村田製作所
           # GEN:watchlist:end
 
 # 銘柄ごとに同時実行を1本に抑え、走行中に同じ銘柄の新しいブリーフ要求が来たら古いジョブをキャンセルする。
@@ -187,18 +186,20 @@ jobs:
               `from_high_52w_pct` / `from_low_52w_pct` = distance from the year's extremes — report a 52週高値・安値
               within reach or just broken as a 需給 fact. `full_year: false` → the window starts at `window_start`.
             - **`sector`**: this ticker within its watchlist sector — `rank` of `peers_n` by 相対強弱,
-              `rel_strength_pct` (5日リターン − セクタ平均 `avg_ret_5d_pct`), `change_pct`, `vol_ratio`. Lead on it
-              over SOX.
+              `rel_strength_pct` (5日リターン − セクタ平均 `avg_ret_5d_pct`), `change_pct`, `vol_ratio`.
             - **`relative`** (`returns[]` per 5/20/60 days, `excess_pct` vs TOPIX): with `sector`, separates a
               name-specific move from the market's.
-            - **`premarket`** (prior NY session): `sox_change_pct` is the overnight external backdrop;
-              `nasdaq_change_pct` / `dow_change_pct` / `nikkei_futures_price` only confirm it. The macro channels:
-              `usdjpy_price` / `usdjpy_change` (円, 前日比) move exporters' earnings through the 為替前提;
-              `us10y_yield` / `us10y_change_bp` (bp, US date `us10y_date`) weigh on high-multiple semis when
-              they rise; `vix_price` / `vix_change_pct` is market-wide risk appetite. Report one only when its move
-              reaches this name through a channel `context_body` or `ticker_note` shows it is exposed to.
-              `status: stale` → backdrop only; `us_session: carried_over` → the prior JP session already traded
-              these numbers — not fresh overnight information.
+            - **`premarket`** (prior NY session) is the overnight external backdrop. No field leads by default:
+              weigh each by how sensitive this name is to it, as `context_body` and `ticker_note` show.
+              `sox_change_pct` = US semiconductors; `nasdaq_change_pct` / `dow_change_pct` = US equities broadly;
+              `nikkei_futures_price` = where the JP open is priced; `usdjpy_price` / `usdjpy_change` (円, 前日比)
+              move exporters' earnings through the 為替前提; `us10y_yield` / `us10y_change_bp` (bp, US date
+              `us10y_date`) weigh on high-multiple names when they rise; `vix_price` / `vix_change_pct` is
+              market-wide risk appetite. Lead on the field this name is most exposed to; the rest only confirm.
+              Report one only when its move reaches this name through a channel `context_body` or `ticker_note`
+              shows it is exposed to. Neither shows an exposure → read `premarket` as general risk appetite and
+              credit no move to a single index. `status: stale` → backdrop only; `us_session: carried_over` → the
+              prior JP session already traded these numbers — not fresh overnight information.
             - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`. Weigh each event as a
               driver of the tape before crediting a move to a material; never list it as a material. On an
               SQ当日, state in `technical` that today's tape overlaps the SQ. A coming SQ or SQ明け goes in

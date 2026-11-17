@@ -100,7 +100,7 @@ export const TICKERS: Ticker[] = [
 	{
 		code: "6976",
 		name: "太陽誘電",
-		// 電子部品(MLCC)メーカー。村田同様スマホ/AI需要で半導体地合い(SOX)と連動しやすく semiconductor に含める。
+		// 電子部品(MLCC)メーカー。スマホ/AI需要で半導体地合い(SOX)と連動しやすく semiconductor に含める。
 		sector: "semiconductor",
 		sector_role: "components",
 		aliases: ["太陽誘電", "TAIYO YUDEN", "Taiyo Yuden"],
@@ -117,34 +117,7 @@ export const TICKERS: Ticker[] = [
 		edinet_code: "E01824",
 		// 1Q (2027/3期): 公式未公表、過去数年Q1=8月上旬 (前年Q1=2025-08-05) ベースの推定。公式日程が出たら上書き。
 		next_earnings_date: "2026-08-05",
-		// 電子部品(MLCC)大手。利益回復途上で現在予想PER ~130倍と高いが、ピア村田と揃え仮に30倍。
-	},
-	{
-		code: "6981",
-		name: "村田製作所",
-		// 厳密には電子部品だが、スマホ/AI需要で半導体地合い(SOX)と連動しやすいため semiconductor に含める。
-		sector: "semiconductor",
-		sector_role: "components",
-		aliases: ["村田製作所", "村田製", "Murata", "muRata"],
-		keywords: [
-			"MLCC",
-			"積層セラミックコンデンサ",
-			"電子部品",
-			"通信モジュール",
-			"スマホ部品",
-		],
-		ir_url: "https://corporate.murata.com/ja-jp/ir",
-		ir: {
-			site: "murata",
-			// IRニュース専用 RSS (link/title/pubDate を持ち最も堅牢)。
-			list_url:
-				"https://corporate.murata.com/ja-jp/newsroom/news/irnews/irnews/rssfeed",
-		},
-		news_url: "https://kabutan.jp/stock/news?code=6981",
-		edinet_code: "E01914",
-		// 1Q (2027/3期): 公式未公表、前年Q1(25.04-06)=2025-07-30 ベースの推定。公式日程が出たら上書き。
-		next_earnings_date: "2026-07-30",
-		// 電子部品(MLCC)大手。現在予想PER ~67倍。高収益部品株として仮に30倍。
+		// 電子部品(MLCC)大手。利益回復途上で現在予想PER ~130倍と高いが、高収益部品株として仮に30倍。
 	},
 ];
 
@@ -232,8 +205,14 @@ if (import.meta.vitest) {
 		it("keywords (製品・業界ワード) でも引き当てる", () => {
 			expect(matchTickers("SKハイニックス、HBM増産へ")).toEqual(["6857"]);
 		});
-		it("共通ワード (MLCC) は該当する複数銘柄を返す", () => {
-			expect(matchTickers("MLCC市況が回復")).toEqual(["6976", "6981"]);
+		it("製品ワード (MLCC) で電子部品銘柄を引き当てる", () => {
+			expect(matchTickers("MLCC市況が回復")).toEqual(["6976"]);
+		});
+		it("複数銘柄に当たる見出しはソース順で全て返す", () => {
+			expect(matchTickers("キオクシアとアドバンテストが上昇")).toEqual([
+				"285A",
+				"6857",
+			]);
 		});
 		it("言及がなければ空配列", () => {
 			expect(matchTickers("東京株式（前引け）＝反発")).toEqual([]);

@@ -68,15 +68,6 @@ ir:
     encoding: "utf-8"
     note: "当年ページのみ表示。見出しを本文として保存"
 
-  # 6981 村田製作所。
-  #  IRニュース専用 RSS。<item> ごとに link/title/pubDate (RFC822 JST 表記)。
-  #  pubDate は new Date() を経由すると暦日が UTC に1日ずれるので、文字列から JST 暦日を直接拾う。
-  - code: "6981"
-    site: "murata"
-    list_url: "https://corporate.murata.com/ja-jp/newsroom/news/irnews/irnews/rssfeed"
-    encoding: "utf-8"
-    note: "IRニュース RSS。pubDate は JST 暦日のまま正規化 (rfc822ToYmd)"
-
 # マクロ: 全銘柄横断のニュース。Worker が aliases/keywords で銘柄判定する。
 # 株探にRSSは存在しないので、こちらもHTML一覧をスクレイプする。
 macro_html:

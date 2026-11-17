@@ -96,11 +96,13 @@ jobs:
             - **`market_phase`** (JST trading-day position) frames every other field: `premarket` → the gap
               isn't in yet; 場中 → `sectors` and `live_indexes` are live, read breadth directly; `closed` → report
               today's close plus tonight's NY setup.
-            - **`premarket`** is last night's NY session — the primary pre-open input. `sox_change_pct` leads;
-              `nasdaq_change_pct` / `dow_change_pct` give breadth, `nikkei_futures_price` the home tape's own gap.
-              The macro backdrop: `usdjpy_price` / `usdjpy_change` (円安 lifts exporters), `us10y_yield` /
-              `us10y_change_bp` (a rise weighs on high-multiple semis), `vix_price` / `vix_change_pct` (risk
-              appetite); `vix_peak` (`peak` over `window_days`, `from_peak_pct` = the current level's distance
+            - **`premarket`** is last night's NY session — the primary pre-open input. No field leads by
+              default: weigh each by how sensitive the watchlist's sectors in `sectors` are to it, judged from
+              each sector and its names' `sector_role`, and lead on the field that reaches the most exposed
+              sector. `sox_change_pct` = US semiconductors; `nasdaq_change_pct` / `dow_change_pct` = US equities
+              broadly; `nikkei_futures_price` = the home tape's own gap. The macro backdrop: `usdjpy_price` /
+              `usdjpy_change` (円安 lifts exporters), `us10y_yield` / `us10y_change_bp` (a rise weighs on
+              high-multiple names), `vix_price` / `vix_change_pct` (risk appetite); `vix_peak` (`peak` over `window_days`, `from_peak_pct` = the current level's distance
               below it) tells a fear spike still building (at the high) from one already unwinding — state
               which, as a fact, never as a bottom or timing call. `status: stale` → demote it; `unavailable` →
               report from `sectors` and `event_context` alone. `us_session: carried_over` = 米国休場明け — the numbers are the prior close (`date`) the last
@@ -113,7 +115,8 @@ jobs:
             - **`live_indexes`**: Asia trading live in the same session — `key` (`nikkei225` = Tokyo's own live
               tape / `kospi` = semis-heavy Korea), `price`, `change_pct`, `status`. `stale` → demote; pre-open
               they are always stale → skip.
-            - **`sectors`** is how the watchlist itself moved. Per sector: `backdrop.tone` (SOX-derived),
+            - **`sectors`** is how the watchlist itself moved. Per sector: `backdrop.tone` (computed from SOX
+              alone — it describes a sector only as far as that sector tracks SOX; otherwise ignore it),
               `avg_change_pct` (直近営業日のセクター平均前日比), `avg_ret_5d_pct` (5日のトレンド); per name
               `rel_strength_pct` (vs sector avg) and `vol_ratio` (出来高の盛り上がり). `unavailable` → skip.
             - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>` (SQ当日 / SQ週 / SQ明け /
@@ -131,8 +134,8 @@ jobs:
             Japanese, facts only, no figures.
 
             - `headline`: `🌅 マーケットブリーフ: <one-phrase summary of last night and today>`.
-            - `body`: 3–6 lines. Lead with the strongest fact of the morning. Say whether SOX / NASDAQ /
-              日経先物 / live Asia / セクター平均 agree or split — a split tape is worth saying plainly. One line for
+            - `body`: 3–6 lines. Lead with the strongest fact of the morning. Say whether the overnight indices
+              that bear on the watchlist's sectors / 日経先物 / live Asia / セクター平均 agree or split — a split tape is worth saying plainly. One line for
               today's calendar when an event fired. Close with the single move or event most worth watching
               today, as a fact to watch, not an instruction. When every input is stale or unavailable, return
               one line saying so instead.

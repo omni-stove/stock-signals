@@ -45,9 +45,9 @@ setup() {
 
 # 末尾銘柄 (次の code: 境界が無い) もファイル終端まで切り出せる
 @test "last ticker in file parses to end" {
-  run bash "$SCRIPT" 6981
+  run bash "$SCRIPT" 6976
   [ "$status" -eq 0 ]
-  [ "$(printf '%s' "$output" | jq -r .name)" = "村田製作所" ]
+  [ "$(printf '%s' "$output" | jq -r .name)" = "太陽誘電" ]
 }
 
 # sector: null の銘柄はフィクスチャで検証する

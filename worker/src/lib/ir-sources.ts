@@ -1,7 +1,7 @@
 // Cloudflare Worker: 公式IRページの site 別一覧パーサ群。
 //
 // site ごとに一覧の構造が違うので parseList() で振り分ける。kioxia だけ記事本文HTMLが
-// 安定して取れるので本文取得する (collectOne の fetchBody 相当)。他3社の記事リンクは
+// 安定して取れるので本文取得する (collectOne の fetchBody 相当)。他2社の記事リンクは
 // IRカレンダー/PDFラッパーで本文HTMLが取れないため、disclosure.ts と同様「一覧のタイトル」を
 // 本文として保存する。適時開示はタイトルだけで「何が起きたか」は判定材料になる。
 //
@@ -9,7 +9,7 @@
 // ここからは re-export するだけ。新しい site を足すときは下記パーサを追加し、watchlist.ts の
 // ticker.ir.site をそのキーにする。
 
-import { firstText, parseXmlItems, queryAll, scanHtml } from "./html";
+import { firstText, queryAll, scanHtml } from "./html";
 import { IR_SOURCES, type IrSourceEntry } from "./watchlist";
 
 // 銘柄ごとの IR スクレイプ定義 (code/site/list_url)。collectOne の引数型に使う。
@@ -286,54 +286,7 @@ async function parseLasertecList(
 	return out;
 }
 
-// RFC822 日付 ("Thu, 11 Jun 2026 00:00:00 +0900") の暦日部分を YYYY-MM-DD にする。
-// new Date() を経由しないのでタイムゾーン補正で日付がずれない (RSS の表記日をそのまま使う)。
-const RFC822_MONTHS: Record<string, string> = {
-	Jan: "01",
-	Feb: "02",
-	Mar: "03",
-	Apr: "04",
-	May: "05",
-	Jun: "06",
-	Jul: "07",
-	Aug: "08",
-	Sep: "09",
-	Oct: "10",
-	Nov: "11",
-	Dec: "12",
-};
-function rfc822ToYmd(raw: string): string {
-	const m = raw.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
-	if (!m) return "";
-	const mon = RFC822_MONTHS[m[2]];
-	if (!mon) return "";
-	return `${m[3]}-${mon}-${m[1].padStart(2, "0")}`;
-}
-
-// 村田製作所 IRニュース RSS (rssfeed)。<item> ごとに link/title/pubDate。
-//   pubDate は RFC822 (JST 表記) → rfc822ToYmd で JST 暦日のまま YYYY-MM-DD に正規化。
-//   title 末尾の " (PDF: 241KB)" は残してよい (種別の手がかり)。カテゴリは IRニュース固定。
-//   XML は parseXmlItems (文字列走査) で読む。本文は取らない。
-function parseMurataRss(xml: string): ListItem[] {
-	const out: ListItem[] = [];
-	const seenUrl = new Set<string>();
-	for (const item of parseXmlItems(xml, ["link", "title", "pubDate"])) {
-		const url = item.link;
-		const title = item.title;
-		if (!url || !title) continue;
-		if (seenUrl.has(url)) continue;
-		// pubDate は RFC822 で JST 表記 ("Thu, 11 Jun 2026 00:00:00 +0900")。
-		// new Date() に通すと UTC に寄って暦日が1日ずれる (6/11 00:00 JST → 6/10 UTC) ため、
-		// 文字列から "DD Mon YYYY" を直接拾って JST の暦日を保つ。
-		const date = rfc822ToYmd(item.pubDate);
-		if (!date) continue;
-		seenUrl.add(url);
-		out.push({ url, title, date, category: "irnews" });
-	}
-	return out;
-}
-
-// site → 一覧パーサ。一覧HTML(/XML) から ListItem[] を返す。
+// site → 一覧パーサ。一覧HTML から ListItem[] を返す。
 export async function parseList(
 	site: string,
 	body: string,
@@ -346,8 +299,6 @@ export async function parseList(
 			return parseAdvantestList(body, baseUrl);
 		case "lasertec":
 			return parseLasertecList(body, baseUrl);
-		case "murata":
-			return parseMurataRss(body);
 		default:
 			return [];
 	}
@@ -411,19 +362,6 @@ if (import.meta.vitest) {
 		}
 	});
 
-	describe("rfc822ToYmd", () => {
-		it("RFC822 の暦日部分を JST 表記のまま YYYY-MM-DD にする", () => {
-			expect(rfc822ToYmd("Thu, 11 Jun 2026 00:00:00 +0900")).toBe("2026-06-11");
-		});
-		it("1桁日もゼロ埋めする", () => {
-			expect(rfc822ToYmd("Mon, 1 Sep 2025 00:00:00 +0900")).toBe("2025-09-01");
-		});
-		it("月名不正・形式不正は空文字", () => {
-			expect(rfc822ToYmd("11 Xxx 2026")).toBe("");
-			expect(rfc822ToYmd("invalid")).toBe("");
-		});
-	});
-
 	describe("parseList: kioxia", () => {
 		it("a.cmp-button から URL・タイトル・日付・カテゴリを抽出し重複URLを除く", async () => {
 			const html = [
@@ -484,26 +422,6 @@ if (import.meta.vitest) {
 					title: "決算短信",
 					date: "2026-06-09",
 					category: "IR",
-				},
-			]);
-		});
-	});
-
-	describe("parseList: murata (RSS)", () => {
-		it("item の link/title/pubDate(RFC822) を JST 暦日のまま正規化する", async () => {
-			const xml = [
-				"<rss><channel>",
-				"<item><link>https://corporate.murata.com/ja-jp/x</link>",
-				"<title>業績予想の修正 (PDF: 241KB)</title>",
-				"<pubDate>Thu, 11 Jun 2026 00:00:00 +0900</pubDate></item>",
-				"</channel></rss>",
-			].join("");
-			expect(await parseList("murata", xml, "")).toEqual([
-				{
-					url: "https://corporate.murata.com/ja-jp/x",
-					title: "業績予想の修正 (PDF: 241KB)",
-					date: "2026-06-11",
-					category: "irnews",
 				},
 			]);
 		});

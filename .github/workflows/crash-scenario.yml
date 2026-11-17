@@ -137,13 +137,13 @@ jobs:
               institutions building shorts; a running `lending.fee` = squeeze fuel, not a crash path).
               `forced` with a pending 投げ is a supply shock in its stated session.
             - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings`; the `premarket` channels
-              `sox_change_pct` (overnight US semis), `nasdaq_change_pct` / `dow_change_pct` (US equities),
-              `us10y_change_bp` (米金利上昇), `usdjpy_change` (円高), `vix_price` (risk-off). No channel is the
-              default lead: weigh each by how sensitive this name is to it, as `context_body` and `ticker_note`
-              show, and build a macro scenario only on a channel they show the name is exposed to. Neither shows
-              an exposure → treat `premarket` as general risk appetite only. `premarket.status: stale` → weigh
-              lightly; `us_session: carried_over` → a prior close the last JP session already traded on, not a
-              fresh sign. `market_phase: premarket` makes a tonight→open gap-down its own scenario.
+              `sox_change_pct` (US semis), `nasdaq_change_pct` / `dow_change_pct` (US equities),
+              `us10y_change_bp` (米金利上昇), `usdjpy_change` (円高), `vix_price` (risk-off). Build macro scenarios
+              on the channels `context_body`, `ticker_note` and `sector_role` show this name is exposed to, most
+              exposed first; skip the rest. None shown → `premarket` is general risk appetite only.
+              `premarket.status: stale` → weigh lightly; `us_session: carried_over` → a prior close the last JP
+              session already traded on, not a fresh sign. `market_phase: premarket` makes a tonight→open
+              gap-down its own scenario.
 
             ## Building the scenarios
 
@@ -159,7 +159,7 @@ jobs:
               by how alarming the headline reads.
             - For semiconductor names, name which channel the `sector_role` makes break first.
             - A メジャーSQ unwind, a near macro print, or a near 海外SOX系ピア決算 each stands as its own macro
-              scenario; its leading sign is the `premarket` channel this name is most exposed to.
+              scenario, led by the `premarket` channel this name is most exposed to.
 
             ## Web research (supplementary)
 

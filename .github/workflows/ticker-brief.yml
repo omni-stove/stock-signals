@@ -173,7 +173,7 @@ jobs:
             - **`prices`**: `quote_status: closed` → stale tape, backdrop only.
             - **`daily`** and **`trend`** only confirm or contradict the materials; never a standalone call. A
               money-flow reading that diverges from price leads over price alone. Take `volume_quality` /
-              `momentum_state` as given (`na` → skip). A 52週高値・安値 within reach or just broken is a 需給 fact.
+              `momentum_state` as given (`na` → skip). A 52週高値・安値 within reach or just broken is a 需給 fact. `trend.full_year: false` → treat the high/low as the high/low since `window_start` and do not call it 52週.
             - **`sector`** leads over `premarket`; with `relative` it separates a name-specific move from the
               market's.
             - **`premarket`**: lead on the field `context_body` or `ticker_note` shows this name is most exposed to;

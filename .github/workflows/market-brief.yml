@@ -96,12 +96,11 @@ jobs:
             - **`market_phase`** (JST trading-day position) frames every other field: `premarket` → the gap
               isn't in yet; 場中 → `sectors` and `live_indexes` are live, read breadth directly; `closed` → report
               today's close plus tonight's NY setup.
-            - **`premarket`** is last night's NY session — the primary pre-open input. Lead on the field the
-              watchlist's sectors are most exposed to, judged from `sectors` and each name's `sector_role`; the
-              others only confirm. `vix_peak`: state whether the fear spike is still building or unwinding, as a
-              fact, never as a bottom or timing call. `status: stale` → demote it; `unavailable` → report from
-              `sectors` and `event_context` alone. `us_session: carried_over` = 米国休場明け — the prior close the
-              last JP session already traded on; say so and do not report it as fresh overnight news.
+            - **`premarket`** leads pre-open. Lead on the field the watchlist's sectors are most exposed to,
+              judged from `sectors` and each name's `sector_role`; the others only confirm. `vix_peak`: state
+              whether the fear spike is building or unwinding, never as a bottom or timing call. `status: stale`
+              → demote it; `unavailable` → report from `sectors` and `event_context` alone; `us_session:
+              carried_over` → say so and do not report it as fresh overnight news.
             - **`us_peers`** (`peers[]`: `ticker`, `role`, `change_pct` for the US session `us_date`) explains
               what drove SOX. Name a peer only when it carries `earnings` or splits from SOX (opposite sign, or a
               much larger move); never list them all. `earnings: after_this_close` → the result is not in

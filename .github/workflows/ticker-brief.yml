@@ -190,10 +190,10 @@ jobs:
               over `premarket`.
             - **`relative`** (`returns[]` per 5/20/60 days, `excess_pct` vs TOPIX): with `sector`, separates a
               name-specific move from the market's.
-            - **`premarket`** (prior NY session): lead on the field `context_body` or `ticker_note` shows this
-              name is most exposed to; other fields it is exposed to only confirm; skip the rest. No exposure
-              shown → risk appetite alone, crediting no move to a single index. `status: stale` → backdrop only;
-              `us_session: carried_over` → the prior JP session already traded these numbers, not fresh.
+            - **`premarket`**: lead on the field `context_body` or `ticker_note` shows this name is most exposed
+              to; other fields it is exposed to only confirm; skip the rest. No exposure shown → risk appetite
+              alone, crediting no move to a single index. `status: stale` → backdrop only; `us_session:
+              carried_over` → not fresh.
             - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>`. Weigh each event as a
               driver of the tape before crediting a move to a material; never list it as a material. On an
               SQ当日, state in `technical` that today's tape overlaps the SQ. A coming SQ or SQ明け goes in

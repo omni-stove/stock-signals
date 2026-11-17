@@ -139,8 +139,8 @@ jobs:
             - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings`; `premarket` — build a
               macro scenario on each field `context_body`, `ticker_note` or `sector_role` shows this name is
               exposed to, most exposed first; none shown → general risk appetite only. `status: stale` → weigh
-              lightly; `us_session: carried_over` → a prior close the last JP session already traded on, not a
-              fresh sign. `market_phase: premarket` makes a tonight→open gap-down its own scenario.
+              lightly; `us_session: carried_over` → not a fresh sign. `market_phase: premarket` makes a
+              tonight→open gap-down its own scenario.
 
             ## Building the scenarios
 

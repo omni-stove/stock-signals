@@ -2,7 +2,6 @@
 
 ## Workflow
 
-- Never switch branches; work on the current branch only.
 - Never `cd`; run commands from the repo root with a path or filter.
 - Local secrets live in `worker/.dev.vars`; source them into the env before running any `scripts/*.sh` locally.
 

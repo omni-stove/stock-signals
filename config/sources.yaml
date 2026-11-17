@@ -27,8 +27,11 @@ per_ticker:
 # (実装は worker/src/index.ts の parseList。ローカルの scripts/fetch-ir.ts は廃止済み)。
 # 取得物は per_ticker と同様 D1 articles (source=ir:<site>:<code>) に入る (銘柄確定済み)。
 # kioxia だけ記事本文HTMLが安定して取れるので本文も取得し、
-# 他2社は記事リンクが PDF/カレンダーで本文HTMLが取れないため一覧の見出しを本文として保存する
+# 他社は記事リンクが PDF/カレンダーで本文HTMLが取れないため一覧の見出しを本文として保存する
 # (適時開示はタイトルで「何が起きたか」が分かる。disclosure.ts と同思想)。
+# ただしリンクが PDF の決算系開示 (決算短信・業績予想の修正・説明資料) は、PDF から
+# 「経営成績の概況」「今後の見通し」「修正の理由」など定性部分を抜き、見出しの後ろに足す
+# (worker/src/lib/pdf-text.ts。上限 3000 字、取れなければ見出しのみ)。TDnet 適時開示も同じ。
 ir:
   # 285A キオクシア。
   #  www.kioxia.com/ja-jp/news.html 1ページに、事業会社(kioxia.com)と
@@ -67,6 +70,18 @@ ir:
     list_url: "https://www.lasertec.co.jp/news/"
     encoding: "utf-8"
     note: "当年ページのみ表示。見出しを本文として保存"
+
+  # 6976 太陽誘電。
+  #  IR トップ (www.yuden.co.jp/ir/) のニュース一覧を、クラス名に依らず
+  #  「日付テキスト (2026年11月5日 / 2026.11.05 等) + 記事リンク」の並びとして読む。
+  #  li / tr / dt / article でブロックを切り、日付の無いブロック (ナビ・フッタ) は捨てる。
+  #  リンク文言が「PDF」等なら項目のテキストを見出しにする。
+  #  決算系の見出しは category=earnings、それ以外は ir。
+  - code: "6976"
+    site: "yuden"
+    list_url: "https://www.yuden.co.jp/ir/"
+    encoding: "utf-8"
+    note: "決算短信・業績予想の修正・説明資料の PDF は定性部分の抜粋を見出しに足す。他は見出しを本文として保存"
 
 # マクロ: 全銘柄横断のニュース。Worker が aliases/keywords で銘柄判定する。
 # 株探にRSSは存在しないので、こちらもHTML一覧をスクレイプする。

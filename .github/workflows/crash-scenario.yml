@@ -101,51 +101,41 @@ jobs:
 
             ## Inputs
 
-            A block with nothing to report is left out; an absent block means no data — do not mention it.
+            An absent block means no data — do not mention it.
 
             **Primary — where the fault lines come from:**
 
-            - **`context_body`**, read in full. Mine it for fault lines, not the bull case. **直近の重大トピック**
-              is what the market is pricing now — the most likely thing to disappoint. Absent → say
-              `context: unavailable` and build from price, the sector backdrop, and the generic fault lines of
-              this 業種.
+            - **`context_body`**, read in full for fault lines, not the bull case. **直近の重大トピック** is what
+              the market is pricing now — the most likely thing to disappoint. Absent → say `context: unavailable`
+              and build from price, the sector backdrop, and the generic fault lines of this 業種.
 
             **Secondary — raises 確度 or sets the channel; never invents 銘柄固有 risk:**
 
-            - **`market_brief`** (`{ headline, body, date }`): the morning market-wide fact summary, including
-              投資部門別 and 空売り比率. Broad weakness in it raises the 確度 of the macro scenarios and shortens
-              their trigger horizon. `date` before today → an earlier morning's backdrop; weigh it lightly.
-            - **`event_context`**: one-line 需給イベント string `需給イベント(<date>): <…>` (SQ, 指数リバランス,
-              nearby macro or peer earnings). An event inside the next few sessions is a trigger candidate; a
+            - **`market_brief`**: broad weakness in it raises the 確度 of the macro scenarios and shortens their
+              trigger horizon. `date` before today → weigh it lightly.
+            - **`event_context`**: an event inside the next few sessions is a trigger candidate; a
               `当銘柄のSQ連動度` well above 1 makes the SQ one; `特になし` → ignore.
             - **`ticker_note`**: qualifies the other inputs; never a scenario of its own.
-            - **Metadata** (this ticker in `worker/src/lib/watchlist.ts`: `name`/`sector`/`sector_role`):
-              `sector`/`sector_role` set the systematic exposure and which part of the cycle hits first.
-            - **Run-up fragility**: `daily.range_pct` (0 = bottom, 100 = top), `ma25_dev_pct`/`ma5_dev_pct`,
-              `vol_x_20d`, `margin.ratio` with WoW `long_chg`/`short_chg`. In-session (`market_phase` other than
-              `premarket`/`closed`), `daily` is the prior bar — read `daily.vol_x_20d_intraday` for today's 出来高.
-              `prices.quote_status: closed` → the tape is not live; do not read a move into it.
-            - **Medium-term fragility**: `trend.ma75_dev_pct` and `trend.from_low_52w_pct` (how much gain holders
-              could give back), `relative.returns[].excess_pct` (vs TOPIX), `event_reactions.items[]` (a good-news
-              disclosure that sold off on `excess_2d_pct` shows exhausted buyers), `valuation.per` against
-              `per_range`/`peers` (how much good news the price carries), `revisions.revisions[]` (a `down`
-              revision, or a forecast left unchanged into a strong cycle). `sector.rel_strength_pct` / `rank` of
-              `peers_n` separates a name-specific run-up from the sector's.
-            - **Supply shocks**: `supply.items[]` (売出し/公募/CB/大株主の異動; `lockup_90d`/`lockup_180d` are
-              rough dates from the announcement; a `large_holding_change` with `ratio_pct` below `prev_ratio_pct`
-              = a large holder selling down) and `short_interest` (`positions.total_ratio_pct` rising =
-              institutions building shorts; a running `lending.fee` = squeeze fuel, not a crash path).
-              `forced` with a pending 投げ is a supply shock in its stated session.
-            - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings` (`earnings.estimated: true`
-              = the date is a guess from last year's same quarter: treat the timing as approximate and never
-              write it as a 確定日; `false` = the date JPX published); the `premarket` channels
-              `sox_change_pct` (overnight US semis), `nasdaq_change_pct` / `dow_change_pct` (US equities),
-              `us10y_change_bp` (米金利上昇), `usdjpy_change` (円高), `vix_price` (risk-off). No channel is the
-              default lead: weigh each by how sensitive this name is to it, as `context_body` and `ticker_note`
-              show, and build a macro scenario only on a channel they show the name is exposed to. Neither shows
-              an exposure → treat `premarket` as general risk appetite only. `premarket.status: stale` → weigh
-              lightly; `us_session: carried_over` → a prior close the last JP session already traded on, not a
-              fresh sign. `market_phase: premarket` makes a tonight→open gap-down its own scenario.
+            - **`sector` / `sector_role`** (this ticker in `worker/src/lib/watchlist.ts`) set the systematic
+              exposure and which part of the cycle hits first.
+            - **Run-up fragility**: `daily` stretch and position in the 20日レンジ, `vol_x_20d`, and the WoW change
+              in `margin`. In-session, `daily` is the prior bar — take today's 出来高 from
+              `daily.vol_x_20d_intraday`. `prices.quote_status: closed` → do not read a move into the tape.
+            - **Medium-term fragility** — how much gain holders could give back and how much good news the price
+              carries: `trend`, `relative`, `valuation` against its range and peers, a good-news disclosure in
+              `event_reactions` that sold off (exhausted buyers), a `down` revision or a forecast left unchanged
+              into a strong cycle in `revisions`. `sector` separates a name-specific run-up from the sector's.
+            - **Supply shocks**: `supply.items[]` (lock-up dates are rough; `ratio_pct` below `prev_ratio_pct` = a
+              large holder selling down), rising `short_interest.positions` (institutions building shorts; a running
+              `lending.fee` is squeeze fuel, not a crash path), and `forced` with a pending 投げ in its stated
+              session.
+            - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings` (`earnings.estimated: true` →
+              a guess from last year's same quarter: treat the timing as approximate, never as a 確定日);
+              `premarket` — build a macro
+              scenario on each field `context_body`, `ticker_note` or `sector_role` shows this name is exposed to,
+              most exposed first; none shown → general risk appetite only. `status: stale` → weigh lightly;
+              `us_session: carried_over` → not a fresh sign. `market_phase: premarket` makes a tonight→open gap-down
+              its own scenario.
 
             ## Building the scenarios
 
@@ -161,7 +151,7 @@ jobs:
               by how alarming the headline reads.
             - For semiconductor names, name which channel the `sector_role` makes break first.
             - A メジャーSQ unwind, a near macro print, or a near 海外SOX系ピア決算 each stands as its own macro
-              scenario; its leading sign is the `premarket` channel this name is most exposed to.
+              scenario, led by the `premarket` channel this name is most exposed to.
 
             ## Web research (supplementary)
 

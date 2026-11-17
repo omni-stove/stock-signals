@@ -9,8 +9,10 @@
 //                       本文も取得する (唯一 fetchBody=true)。
 //   - advantest (6857): li.m-list-news__item (time.datetime / p.m-text__item)。
 //   - lasertec  (6920): article.news__article (time.datetime / h3.news__title)。当年ページのみ。
-//   advantest/lasertec は記事リンクが PDF/カレンダーで本文HTMLが取れないため、
-//   一覧の見出しを本文として保存する (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。
+//   - yuden     (6976): 日付と記事リンクの並び (ir-sources.ts の parseYudenList)。
+//   kioxia 以外は記事リンクが PDF/カレンダーで本文HTMLが取れないため、一覧の見出しを本文として
+//   保存する (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。ただしリンクが PDF の
+//   決算系開示は、PDF の定性部分の抜粋を見出しの後ろに足す (pdf-text.ts)。
 
 import { seenArticleUrls } from "./articles";
 import { db } from "./db";
@@ -22,6 +24,12 @@ import {
 	parseKioxiaArticle,
 	parseList,
 } from "./ir-sources";
+import {
+	isPdfPath,
+	PDF_BODIES_PER_RUN,
+	pdfBody,
+	wantsPdfBody,
+} from "./pdf-text";
 import { articles } from "./schema";
 import { type NotifyItem, notifySlack } from "./slack";
 import { fetchHtml, hash, sleep } from "./utils";
@@ -74,9 +82,6 @@ async function collectOne(
 	const total = items.length;
 	items = items.slice(0, limit);
 
-	// kioxia は記事本文HTMLが安定して取れるので本文取得する。他社の記事リンクは
-	// IRカレンダー/PDFラッパーで本文HTMLが取れないため、一覧のタイトルを本文として保存する
-	// (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。
 	const fetchBody = src.site === "kioxia";
 
 	const seen = await seenArticleUrls(
@@ -85,6 +90,7 @@ async function collectOne(
 	);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	let skipped = 0;
+	let pdfFetches = 0;
 	const fresh: NotifyItem[] = []; // 今回新規に保存した記事 (Slack通知対象)
 	for (const it of items) {
 		if (seen.has(it.url)) {
@@ -93,13 +99,21 @@ async function collectOne(
 		}
 		try {
 			let title = it.title;
-			let body = it.title; // 本文を取らない site は見出しを本文に充てる
+			let body = it.title;
+			const pdfUrl = isPdfPath(it.url) ? it.url : null;
 			if (fetchBody) {
 				await sleep(interval); // 本文取得する site だけ記事ごとに間隔を空ける
 				const artHtml = await fetchHtml(it.url, env);
 				const parsed = await parseKioxiaArticle(artHtml);
 				title = parsed.title || it.title;
 				body = parsed.body;
+			} else if (
+				pdfFetches < PDF_BODIES_PER_RUN &&
+				wantsPdfBody(it.title, pdfUrl)
+			) {
+				pdfFetches++;
+				await sleep(interval);
+				body = await pdfBody(env, it.title, pdfUrl);
 			}
 			await saveArticle(env, {
 				url: it.url,

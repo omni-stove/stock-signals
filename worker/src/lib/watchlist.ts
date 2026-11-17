@@ -102,7 +102,7 @@ export const TICKERS: Ticker[] = [
 			"通信デバイス",
 		],
 		ir_url: "https://www.yuden.co.jp/ir/",
-		// IR一覧パーサ (ir-sources.ts) に太陽誘電用がないため ir 省略 = IR スクレイプ対象外。
+		ir: { site: "yuden", list_url: "https://www.yuden.co.jp/ir/" },
 		news_url: "https://kabutan.jp/stock/news?code=6976",
 		edinet_code: "E01824",
 		// 電子部品(MLCC)大手。利益回復途上で現在予想PER ~130倍と高いが、高収益部品株として仮に30倍。

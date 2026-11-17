@@ -477,6 +477,33 @@ export function buildPremarketBlock(
 	};
 }
 
+// ── VIX の直近高値 (/market-context 用) ─────────────────────────────────────
+// premarket_backdrop の直近 VIX_PEAK_WINDOW_DAYS 日分の vix_price から高値を取り、現値の高値からの乖離 (%) を出す。
+// 高値は現値も含めて取るので from_peak_pct は 0 以下。現値・履歴が無ければ null。
+export const VIX_PEAK_WINDOW_DAYS = 30;
+
+type VixPeak = {
+	window_days: number;
+	peak: number;
+	from_peak_pct: number;
+};
+
+export function buildVixPeak(
+	history: (number | null)[],
+	current: number | null | undefined,
+): VixPeak | null {
+	if (current == null || !(current > 0)) return null;
+	const peak = Math.max(
+		current,
+		...history.filter((v): v is number => v != null && v > 0),
+	);
+	return {
+		window_days: VIX_PEAK_WINDOW_DAYS,
+		peak,
+		from_peak_pct: Math.round((current / peak - 1) * 1000) / 10,
+	};
+}
+
 // ── 海外ピアの前夜の騰落 (/market-context 用) ───────────────────────────────
 // market-brief だけが読む。銘柄ブリーフには渡さない (市場全体の材料は market-brief 経由)。
 // 米国セッションの終値日 (SOX と同じ JST 暦日) と揃わない銘柄は落とし、決算日に当たる銘柄にだけ
@@ -722,6 +749,23 @@ if (import.meta.vitest) {
 		});
 	});
 
+	describe("buildVixPeak", () => {
+		it("履歴の高値と現値の乖離を出す", () => {
+			expect(buildVixPeak([18, 32.4, null, 25], 24.3)).toEqual({
+				window_days: VIX_PEAK_WINDOW_DAYS,
+				peak: 32.4,
+				from_peak_pct: -25,
+			});
+		});
+		it("現値が高値なら乖離 0", () => {
+			expect(buildVixPeak([15, 18], 21.5)?.from_peak_pct).toBe(0);
+			expect(buildVixPeak([], 21.5)?.peak).toBe(21.5);
+		});
+		it("現値が無ければ null", () => {
+			expect(buildVixPeak([30], null)).toBeNull();
+			expect(buildVixPeak([30], undefined)).toBeNull();
+		});
+	});
 	describe("buildPremarketBlock", () => {
 		const NOW = new Date("2026-06-24T00:00:00Z").getTime();
 		const TODAY = "2026-06-24";

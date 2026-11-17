@@ -48,6 +48,11 @@ crons = [
 binding = "SELF"
 service = "stock-signals-collector"
 
+# CPU 上限。/run?kind=pdf-text が pdf.js で決算 PDF を解析するため、無料枠の 10ms では足りない。
+# cpu_ms の指定は Workers 有料プランが前提 (無料枠では PDF 抜粋は取れず、見出しのみで保存される)。
+[limits]
+cpu_ms = 30000
+
 # D1: 取得済みURLハッシュ(重複排除)と記事メタを持つ。
 # スキーマの真の情報源は src/lib/schema.ts。drizzle-kit が差分 migration を drizzle/ に生成し、
 # wrangler d1 migrations apply (migrations_dir=drizzle) が適用する。手書き schema.sql は廃止。

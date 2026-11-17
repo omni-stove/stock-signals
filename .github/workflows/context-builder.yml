@@ -145,7 +145,15 @@ jobs:
 
             `ir_items` are official IR + TDnet + `rating`, lead on them. `news_items` are per-ticker news, noisier
             — confirm against an IR item or drop. Both are already filtered to since each cursor and ordered
-            oldest-first. Empty `context_body` means first run — build the body from scratch (step 3).
+            oldest-first. The same filing can arrive from both official IR and TDnet; treat it as one item.
+
+            An `ir_items` body that runs past its title carries text taken from an earnings filing (決算短信,
+            業績予想の修正, 説明資料). Read its qualitative statements — demand outlook by end market, reasons for
+            a revision, the stance behind the guidance — as material for `earnings`, `earnings_pattern`, and
+            `topics`. Use any figure in it only to see the direction; never copy an amount, percentage, growth
+            rate, or forecast value into any section, write the direction in words instead. The text is cut at a
+            fixed length; do not guess what follows the cut. A body that is only the title means the filing text
+            was unavailable — judge on the title alone and never fill in the filing contents from memory. Empty `context_body` means first run — build the body from scratch (step 3).
             `status: "ok"` with both item lists empty is a forced regeneration — never return no-update;
             rebuild the existing body under the current rules (step 3).
 

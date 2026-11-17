@@ -19,7 +19,7 @@ jobs:
 
   checks:
     needs: precheck
-    if: needs.precheck.outputs.review == 'true'
+    if: needs.precheck.outputs.review == 'true' && github.actor != 'dependabot[bot]'
     uses: omni-stove/.github/.github/workflows/ci.yml@main
     permissions:
       contents: read

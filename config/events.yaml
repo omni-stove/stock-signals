@@ -1,6 +1,6 @@
 # マクロ/需給イベントカレンダー (手動メンテ)
 #
-# 個別銘柄の決算 (watchlist.yaml の next_earnings_date) とは別に、
+# 個別銘柄の決算 (Worker が D1 earnings に収集) とは別に、
 # 相場全体・需給に効くイベントの日付をここに並べる (人間が手動メンテする出所)。
 # 実行時はこの yaml ではなく Worker の worker/src/lib/event-context.ts が近接イベントを
 # 1 行に整形し、/judge-context・/market-context の event_context に同梱して prompt に渡す

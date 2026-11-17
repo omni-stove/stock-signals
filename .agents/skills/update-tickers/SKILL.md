@@ -22,7 +22,6 @@ Copy field shapes from a neighbor; these need a call, not a lookup:
 - `ir` — set `{ site, list_url }` only when `parseList` in `worker/src/lib/ir-sources.ts` already handles that
   site; otherwise omit it (the name skips IR scraping). Never invent a `site` with no parser.
 - `edinet_code` — the issuer's EDINET code (E + 5 digits) from EDINET or the company's 有価証券報告書.
-- `next_earnings_date` — with no official date, estimate from the prior-year same quarter.
 
-Can't confirm a value? Enter your estimate and mark it in a line comment. Flag any estimated
-`next_earnings_date` and any omitted `ir` in the final report.
+Can't confirm a value? Enter your estimate and mark it in a line comment. Flag any estimated value and any
+omitted `ir` in the final report.

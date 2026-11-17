@@ -105,7 +105,7 @@ run.get("/", async (c) => {
 		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
 	}
 	if (kind === "earnings") {
-		// 次回決算予定日の推定 → D1 earnings に保存。
+		// 次回決算予定日 (JPX 一覧の公表日、無ければ推定) → D1 earnings に保存。
 		const result = await collectEarnings(env, code);
 		return c.json({ ok: true, kind, result });
 	}
@@ -116,7 +116,7 @@ run.get("/", async (c) => {
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "peer-earnings-jp") {
-		// 国内ピア (東エレ/ディスコ 等) の次回決算日を kabutan から推定 → D1 macro_events に保存。
+		// 国内ピア (東エレ/ディスコ 等) の次回決算日 (JPX 一覧の公表日、無ければ kabutan から推定) → D1 macro_events に保存。
 		// code を証券コードフィルタとして渡せる (例: ?kind=peer-earnings-jp&code=8035)。
 		const result = await collectJpPeerEarnings(env, code);
 		return c.json({ ok: true, kind, result });

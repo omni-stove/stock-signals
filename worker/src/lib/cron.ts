@@ -72,7 +72,7 @@ async function notifyFreshNews(
 //                           立てないため。下の isNoonIntakeSlot 参照)。
 //                           JST 15:00 相当の最終スロット (isPreCloseSlot) では大引け前にその時点の材料
 //                           だけで翌日寄り越えの玉を判断するため、intake 同様に全銘柄を無条件判定する。
-//   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日推定 + ピア決算日
+//   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日 + ピア決算日
 // eod / flows は重いので、ジョブを 1 つずつ別 invocation で回す (fan-out.ts)。
 const MORNING_INTAKE_CRON = "30 23 * * *";
 const EVENING_INTAKE_CRON = "0 9 * * *";

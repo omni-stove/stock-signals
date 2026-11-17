@@ -106,6 +106,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 	const earningsRow = await db(env.DB)
 		.select({
 			next_date: earnings.nextDate,
+			estimated: earnings.estimated,
 			forecast_period: earnings.forecastPeriod,
 			forecast_sales: earnings.forecastSales,
 			forecast_operating: earnings.forecastOperating,
@@ -390,7 +391,11 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 			// 当該銘柄分の固定注記だけ同梱 (watchlist は静的、note 未設定なら null)。
 			ticker_note: TICKERS.find((t) => t.code === code)?.note ?? null,
 			context_body: contextRow?.body ?? null,
-			earnings: buildEarnings(earningsRow?.next_date ?? null, today),
+			earnings: buildEarnings(
+				earningsRow?.next_date ?? null,
+				earningsRow?.estimated ?? null,
+				today,
+			),
 			earnings_result: buildEarningsResult(
 				quarterRows,
 				earningsRow ?? null,

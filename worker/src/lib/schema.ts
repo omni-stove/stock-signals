@@ -175,11 +175,13 @@ export const premarketBackdrop = sqliteTable("premarket_backdrop", {
 });
 
 // ── earnings (次回決算発表予定日と通期会社予想。PK = ticker) ──────────────────
+// estimated は next_date の出所: true = 株探の前年同期発表日 +1年の推定、false = JPX 決算発表予定日一覧の公表日。
 // forecast_* は株探 finance ページ通期表の予想行 (百万円)。fundamentals.forecast_* (株探トップ、億円) とは
 // 単位が違うので、四半期実績 (earnings_quarters) との進捗率はこちらで割る。
 export const earnings = sqliteTable("earnings", {
 	ticker: text("ticker").primaryKey(),
 	nextDate: text("next_date"),
+	estimated: integer("estimated", { mode: "boolean" }).notNull().default(true),
 	detail: text("detail"),
 	forecastPeriod: text("forecast_period"),
 	forecastSales: real("forecast_sales"),

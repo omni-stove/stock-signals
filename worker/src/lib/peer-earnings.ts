@@ -22,10 +22,16 @@
 // 収集はレーティング/決算日と同じ流儀 (LLM 不使用、ティッカーごとにループ、INSERT OR REPLACE)。
 // earnings.ts と同様、全社0件のときだけ例外を投げて既存データを守り、部分成功は保存する。
 
+import { and, eq, gt, ne } from "drizzle-orm";
 import { db } from "./db";
-import { estimateNextEarningsDate, URL_FINANCE } from "./earnings";
+import {
+	estimateNextEarningsDate,
+	loadEarningsSchedule,
+	resolveNextDate,
+	URL_FINANCE,
+} from "./earnings";
 import { macroEvents } from "./schema";
-import { fetchHtml, sleep } from "./utils";
+import { fetchHtml, jstDate, sleep } from "./utils";
 
 export interface PeerEarningsEnv {
 	DB: D1Database;
@@ -314,44 +320,84 @@ export async function collectPeerEarnings(
 
 // --- 国内ピア決算 -------------------------------------------------------------
 
-// 1国内ピアの (コード, 社名, ロール, 決算日) から macro_events 行を組み立てる。
+// 1国内ピアの (コード, 社名, ロール, 決算日, 推定か) から macro_events 行を組み立てる。
 // 国内決算は引け後発表が大半 → 同業への連想波及は翌営業日 (近似で翌暦日)。
+// event-context は label をそのまま prompt に載せるので、推定日は label で公表日と見分けられるようにする。
 function toJpPeerEvent(
 	code: string,
 	name: string,
 	role: string,
 	date: string,
+	estimated: boolean,
 ): PeerEvent {
 	return {
 		date,
 		kind: `peer_earnings_jp:${code}`,
-		label: `${name}(${code}) 決算`,
+		label: `${name}(${code}) 決算${estimated ? "(推定日)" : ""}`,
 		impact: "high",
 		jst_effect_date: nextDay(date),
 		note: `${role}の国内ピア。引け後発表が大半 → 翌営業日に同業の watchlist 銘柄へ連想で波及。`,
 	};
 }
 
-// JP_PEERS (codeFilter 指定時はその1社) の次回決算日を kabutan finance ページから推定し
-// macro_events に保存する。推定ロジックは watchlist の earnings.ts と同一
-// (直近実績の次四半期 = 前年同期の発表日 +1年)。全社0件のときだけ例外を投げ既存データを守る。
+// 推定日から公表日に切り替わると (date, kind) の別行になるので、同じピアの明日以降の古い予定行を消す。
+// 当日の行は「本日発表」の文脈に要るので残す。
+async function dropOtherUpcomingPeerEvents(
+	env: PeerEarningsEnv,
+	kind: string,
+	keepDate: string,
+	today: string,
+): Promise<void> {
+	await db(env.DB)
+		.delete(macroEvents)
+		.where(
+			and(
+				eq(macroEvents.kind, kind),
+				gt(macroEvents.date, today),
+				ne(macroEvents.date, keepDate),
+			),
+		)
+		.run();
+}
+
+// JP_PEERS (codeFilter 指定時はその1社) の次回決算日を JPX 決算発表予定日一覧の公表日で、載っていなければ
+// kabutan finance ページからの推定 (watchlist の earnings.ts と同一) で決め、macro_events に保存する。
+// 全社0件のときだけ例外を投げ既存データを守る。
 export async function collectJpPeerEarnings(
 	env: PeerEarningsEnv,
 	codeFilter: string | null,
 ): Promise<Record<string, unknown>> {
 	const peers = JP_PEERS.filter((p) => !codeFilter || p.code === codeFilter);
 	const interval = Number.parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
+	const schedule = await loadEarningsSchedule(
+		env,
+		peers.map((p) => p.code),
+	);
+	const today = jstDate(Date.now());
 	const results: Record<string, unknown> = {};
 	let saved = 0;
 	for (const p of peers) {
 		try {
 			const html = await fetchHtml(URL_FINANCE(p.code), env);
 			const { est, detail } = await estimateNextEarningsDate(html);
-			if (est) {
-				await savePeerEvent(env, toJpPeerEvent(p.code, p.name, p.role, est));
+			const next = resolveNextDate(schedule.dates.get(p.code), est, detail);
+			if (next.date) {
+				const e = toJpPeerEvent(
+					p.code,
+					p.name,
+					p.role,
+					next.date,
+					next.estimated,
+				);
+				await savePeerEvent(env, e);
+				await dropOtherUpcomingPeerEvents(env, e.kind, e.date, today);
 				saved++;
 			}
-			results[p.code] = { date: est, detail };
+			results[p.code] = {
+				date: next.date,
+				estimated: next.estimated,
+				detail: next.detail,
+			};
 		} catch (e) {
 			results[p.code] = { error: (e as Error).message };
 		}
@@ -362,7 +408,7 @@ export async function collectJpPeerEarnings(
 			"peer-earnings-jp: 取得0件 (kabutan 障害/構造変更の可能性)。保存をスキップ。",
 		);
 	}
-	return { saved, results };
+	return { saved, jpx_schedule: schedule.summary, results };
 }
 
 // in-source tests (本番ビルドでは tree-shake される。vitest.config.ts 参照)
@@ -492,12 +538,19 @@ if (import.meta.vitest) {
 			"東京エレクトロン",
 			"前工程装置",
 			"2026-08-06",
+			false,
 		);
 		it("kind は peer_earnings_jp:<code> (海外ピアと区別する)", () => {
 			expect(e.kind).toBe("peer_earnings_jp:8035");
 		});
-		it("label は 社名(コード) 決算", () => {
+		it("公表日の label は 社名(コード) 決算", () => {
 			expect(e.label).toBe("東京エレクトロン(8035) 決算");
+		});
+		it("推定日の label には (推定日) を付ける", () => {
+			expect(
+				toJpPeerEvent("8035", "東京エレクトロン", "前工程装置", "2026-08-06", true)
+					.label,
+			).toBe("東京エレクトロン(8035) 決算(推定日)");
 		});
 		it("波及日は翌営業日 (近似で翌暦日)・impact=high", () => {
 			expect(e.jst_effect_date).toBe("2026-08-07");

@@ -136,7 +136,9 @@ jobs:
               = a large holder selling down) and `short_interest` (`positions.total_ratio_pct` rising =
               institutions building shorts; a running `lending.fee` = squeeze fuel, not a crash path).
               `forced` with a pending 投げ is a supply shock in its stated session.
-            - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings`; the `premarket` channels
+            - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings` (`earnings.estimated: true`
+              = the date is a guess from last year's same quarter: treat the timing as approximate and never
+              write it as a 確定日; `false` = the date JPX published); the `premarket` channels
               `sox_change_pct` (overnight US semis), `nasdaq_change_pct` / `dow_change_pct` (US equities),
               `us10y_change_bp` (米金利上昇), `usdjpy_change` (円高), `vix_price` (risk-off). No channel is the
               default lead: weigh each by how sensitive this name is to it, as `context_body` and `ticker_note`

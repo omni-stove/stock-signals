@@ -210,6 +210,8 @@ jobs:
               (`excess_to_date_pct`). Report how the market took a material — a good-news item that sold off or
               faded is itself a fact. `partial: true` = the second session is not in yet.
             - **`earnings`** (next date) is binary-event risk — report the date as a `watch` or `bear` fact.
+              `estimated: false` = the date JPX published; `estimated: true` = a guess from last year's same
+              quarter — give it as a rough timing (`…頃の見込み`), never as 確定日 or 予定日 for certain.
               **`earnings_result`** with `status: fresh` = the quarter `period` (`fiscal_quarter` 4 = 本決算) came
               out on `announced_at`. Lead on `yoy_pct` (前年同期比 of 売上・営業益・経常益・最終益); `qoq_pct`
               (前四半期比) and `progress_pct` (期初からの累計 ÷ `forecast_period` の通期会社予想) only confirm;

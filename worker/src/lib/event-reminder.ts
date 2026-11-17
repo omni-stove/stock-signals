@@ -5,7 +5,7 @@
 // LLM 不使用・日付計算と D1 読みだけで決まる。該当がない朝は何も出さない (毎朝連投しない)。
 //
 // 対象イベント:
-//   - watchlist 銘柄の次回決算 (D1 earnings.next_date)
+//   - watchlist 銘柄の次回決算 (D1 earnings.next_date。estimated の日付は「(推定日)」付き)
 //   - FOMC/日銀 (D1 macro_events。日本市場に効く日 = jst_effect_date || date)
 //   - 海外SOX系ピア決算 (D1 macro_events kind=peer_earnings:*。同じく波及日)
 //   - 日本SQ/米メジャーSQ/指数リバランス (event-context の日付計算)
@@ -31,7 +31,11 @@ const LEAD_DAYS = [0, 1, 3];
 function buildEventReminders(
 	today: string,
 	macroRows: MacroEventRow[],
-	earningsRows: { ticker: string; next_date: string | null }[],
+	earningsRows: {
+		ticker: string;
+		next_date: string | null;
+		estimated: boolean;
+	}[],
 ): ReminderNotifyItem[] {
 	const out: ReminderNotifyItem[] = [];
 	const add = (date: string | null | undefined, label: string) => {
@@ -41,7 +45,10 @@ function buildEventReminders(
 	};
 	for (const r of earningsRows) {
 		const name = WATCHLIST_NAMES[r.ticker] ?? r.ticker;
-		add(r.next_date, `決算発表: ${name} (${r.ticker})`);
+		add(
+			r.next_date,
+			`決算発表: ${name} (${r.ticker})${r.estimated ? " (推定日)" : ""}`,
+		);
 	}
 	// FOMC/日銀/ピア決算。リマインドは「日本市場に効く日」基準 (event-context と同じ)。
 	for (const r of macroRows) add(r.jst_effect_date || r.date, r.label);
@@ -74,7 +81,11 @@ export async function remindUpcomingEvents(
 		.from(macroEvents)
 		.all()) as MacroEventRow[];
 	const earningsRows = await db(env.DB)
-		.select({ ticker: earnings.ticker, next_date: earnings.nextDate })
+		.select({
+			ticker: earnings.ticker,
+			next_date: earnings.nextDate,
+			estimated: earnings.estimated,
+		})
 		.from(earnings)
 		.all();
 	const items = buildEventReminders(today, macroRows, earningsRows);
@@ -88,7 +99,9 @@ if (import.meta.vitest) {
 
 	describe("buildEventReminders", () => {
 		it("watchlist 決算は 3日前/1日前/当日にだけ出る", () => {
-			const rows = [{ ticker: "285A", next_date: "2026-07-09" }];
+			const rows = [
+				{ ticker: "285A", next_date: "2026-07-09", estimated: false },
+			];
 			// 3日前。
 			expect(buildEventReminders("2026-07-06", [], rows)).toContainEqual({
 				daysUntil: 3,
@@ -112,9 +125,20 @@ if (import.meta.vitest) {
 			const out = buildEventReminders(
 				"2026-07-09",
 				[],
-				[{ ticker: "9999", next_date: "2026-07-09" }],
+				[{ ticker: "9999", next_date: "2026-07-09", estimated: false }],
 			);
 			expect(out[0].label).toBe("決算発表: 9999 (9999)");
+		});
+
+		it("推定日の決算は (推定日) を付けて出す", () => {
+			const out = buildEventReminders(
+				"2026-07-09",
+				[],
+				[{ ticker: "285A", next_date: "2026-07-09", estimated: true }],
+			);
+			expect(out[0].label).toBe(
+				"決算発表: キオクシアホールディングス (285A) (推定日)",
+			);
 		});
 
 		it("next_date が null/不正な行はスキップする", () => {
@@ -123,8 +147,8 @@ if (import.meta.vitest) {
 					"2026-04-20",
 					[],
 					[
-						{ ticker: "285A", next_date: null },
-						{ ticker: "6857", next_date: "04-20" },
+						{ ticker: "285A", next_date: null, estimated: true },
+						{ ticker: "6857", next_date: "04-20", estimated: false },
 					],
 				),
 			).toHaveLength(0);
@@ -192,8 +216,8 @@ if (import.meta.vitest) {
 
 		it("daysUntil 昇順で返す (本日が先頭)", () => {
 			const rows = [
-				{ ticker: "285A", next_date: "2026-06-12" }, // 3日後 (SQと同日)
-				{ ticker: "6857", next_date: "2026-06-09" }, // 本日
+				{ ticker: "285A", next_date: "2026-06-12", estimated: false }, // 3日後 (SQと同日)
+				{ ticker: "6857", next_date: "2026-06-09", estimated: false }, // 本日
 			];
 			const out = buildEventReminders("2026-06-09", [], rows);
 			expect(out[0].daysUntil).toBe(0);

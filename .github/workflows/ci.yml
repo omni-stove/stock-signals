@@ -1,20 +1,126 @@
-# PR の品質ゲート。共通アクション `.github/actions/verify` で `pnpm run verify` を回す。
-# main マージ時の verify は PR で検証済みのコミットの二重実行になるため走らせない。
-# dependabot の PR は dependabot-automerge.yml 側で verify+マージするのでここでは走らせない (二重実行回避)。
-name: ci
+name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
-  workflow_dispatch: {}
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  verify:
-    if: github.actor != 'dependabot[bot]'
+  precheck:
+    uses: omni-stove/.github/.github/workflows/precheck.yml@main
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+
+  checks:
+    needs: precheck
+    if: needs.precheck.outputs.review == 'true'
+    uses: omni-stove/.github/.github/workflows/ci.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    with:
+      run-review: true
+      review-provider: "claude"
+      review-allowed-bots: "omni-stove-agent"
+    secrets: inherit
+
+  lint:
+    needs: precheck
+    if: needs.precheck.outputs.proceed == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/verify
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm & Node.js
+        uses: omni-stove/.github/actions/setup-pnpm-node@main
+        with:
+          node-version: "26"
+          frozen-lockfile: false
+
+      - name: Install worker dependencies
+        run: pnpm -C worker install --no-frozen-lockfile
+
+      - name: Hand the regenerated lockfiles to CI Gate
+        uses: omni-stove/.github/actions/regen-diff@main
+        with:
+          pathspec: |
+            pnpm-lock.yaml
+            worker/pnpm-lock.yaml
+          app-id: ${{ secrets.AGENT_GH_APP_ID }}
+          app-private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Type check worker
+        run: pnpm -C worker run typecheck
+
+      - name: Check watchlist
+        run: pnpm check:watchlist
+
+      - name: Check mermaid
+        run: pnpm check:mermaid
+
+      - name: Knip
+        run: pnpm knip
+
+  test:
+    needs: precheck
+    if: needs.precheck.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm & Node.js
+        uses: omni-stove/.github/actions/setup-pnpm-node@main
+        with:
+          node-version: "26"
+
+      - name: Install worker dependencies
+        run: pnpm -C worker install --frozen-lockfile
+
+      - name: Test
+        run: pnpm test
+
+      - name: Test worker
+        run: pnpm -C worker run test
+
+      - name: Test shell scripts
+        run: pnpm test:sh
+
+  ci:
+    needs: [precheck, checks, lint, test]
+    if: always()
+    uses: omni-stove/.github/.github/workflows/ci-gate.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    with:
+      results: ${{ toJSON(needs) }}
+      conflicted: ${{ needs.precheck.outputs.conflicted }}
+      review-comments: ${{ needs.checks.outputs.review-comments }}
+      review-result: ${{ needs.checks.outputs.review-result }}
+      run-fix: true
+      run-merge: true
+      fix-provider: "claude"
+    secrets: inherit

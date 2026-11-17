@@ -1,0 +1,18 @@
+name: Issue Worker
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  work:
+    uses: omni-stove/.github/.github/workflows/issue-worker.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    with:
+      provider: "claude"
+      allowed-bots: "omni-stove-agent"
+    secrets: inherit

@@ -3,6 +3,8 @@
 //   short-interest は part=lending|positions|market で 1 つだけ取れる。cron は重い収集をここへ
 //   1 ジョブずつ投げる (lib/fan-out.ts)。
 //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
+//   pdf-text は url (TDnet・watchlist の IR サイト上の PDF) の定性部分の抜粋を返すだけで何も書かない
+//   (/run?kind=pdf-text&url=)。収集側が PDF 解析を別 invocation に分けるために呼ぶ。
 //   premarket は地合い (米国指数+日経先物) を1回取得して D1 premarket_backdrop に書く。
 //   通常は寄り前 intake cron が自動取得するが、手動/dev 検証用に残す。
 //   手動 /run では既定で発火しない (検証で叩いても Actions を起動させないため)。
@@ -22,6 +24,7 @@ import { collectMacroEvents } from "../lib/macro-events";
 import { collectMargin } from "../lib/margin";
 import { collectMarketNews } from "../lib/market-news";
 import { collectNews } from "../lib/news";
+import { isAllowedPdfUrl, pdfExcerpt } from "../lib/pdf-text";
 import {
 	collectJpPeerEarnings,
 	collectPeerEarnings,
@@ -45,6 +48,21 @@ run.get("/", async (c) => {
 
 	if (kind === "premarket") {
 		const result = await collectBackdrop(env);
+		return c.json({ ok: true, kind, result });
+	}
+
+	if (kind === "pdf-text") {
+		// 決算系開示 PDF の定性部分の抜粋 (pdf-text.ts の pdfBody が別 invocation として呼ぶ)。
+		const url = c.req.query("url") ?? "";
+		if (!isAllowedPdfUrl(url)) {
+			throw new HTTPException(400, {
+				res: Response.json(
+					{ ok: false, error: `PDF url not allowed: ${url}` },
+					{ status: 400 },
+				),
+			});
+		}
+		const result = await pdfExcerpt(url, env);
 		return c.json({ ok: true, kind, result });
 	}
 

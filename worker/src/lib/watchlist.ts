@@ -112,7 +112,7 @@ export const TICKERS: Ticker[] = [
 			"通信デバイス",
 		],
 		ir_url: "https://www.yuden.co.jp/ir/",
-		// IR一覧パーサ (ir-sources.ts) に太陽誘電用がないため ir 省略 = IR スクレイプ対象外。
+		ir: { site: "yuden", list_url: "https://www.yuden.co.jp/ir/" },
 		news_url: "https://kabutan.jp/stock/news?code=6976",
 		edinet_code: "E01824",
 		// 1Q (2027/3期): 公式未公表、過去数年Q1=8月上旬 (前年Q1=2025-08-05) ベースの推定。公式日程が出たら上書き。

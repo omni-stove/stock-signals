@@ -1,15 +1,16 @@
 // Cloudflare Worker: 公式IRページの site 別一覧パーサ群。
 //
 // site ごとに一覧の構造が違うので parseList() で振り分ける。kioxia だけ記事本文HTMLが
-// 安定して取れるので本文取得する (collectOne の fetchBody 相当)。他2社の記事リンクは
-// IRカレンダー/PDFラッパーで本文HTMLが取れないため、disclosure.ts と同様「一覧のタイトル」を
-// 本文として保存する。適時開示はタイトルだけで「何が起きたか」は判定材料になる。
+// 安定して取れるので本文取得する (collectOne の fetchBody 相当)。他社の記事リンクは
+// IRカレンダー/PDFで本文HTMLが取れないため、disclosure.ts と同様「一覧のタイトル」を
+// 本文として保存する (決算系の PDF は ir-collect.ts が定性部分の抜粋を足す)。
 //
 // IR_SOURCES (どの銘柄を・どの URL で・どの site パーサで読むか) の定義は watchlist.ts に集約済み。
 // ここからは re-export するだけ。新しい site を足すときは下記パーサを追加し、watchlist.ts の
 // ticker.ir.site をそのキーにする。
 
-import { firstText, queryAll, scanHtml } from "./html";
+import { decodeEntities, firstText, queryAll, scanHtml } from "./html";
+import { isEarningsDisclosure } from "./pdf-text";
 import { IR_SOURCES, type IrSourceEntry } from "./watchlist";
 
 // 銘柄ごとの IR スクレイプ定義 (code/site/list_url)。collectOne の引数型に使う。
@@ -286,6 +287,127 @@ async function parseLasertecList(
 	return out;
 }
 
+// 年・月・日が揃った日付 (2026年11月5日 / 2026.11.05 / 2026/11/05 / 2026-11-05)。
+// 「2027年3月期」のように日が続かないものは当たらない。
+const YUDEN_DATE = /(\d{4})\s*[年./-]\s*(\d{1,2})\s*[月./-]\s*(\d{1,2})/;
+// リンク文言が見出しでなく「PDF」「詳細」等のときは、ブロックのテキストを見出しに使う。
+const GENERIC_LINK_TEXT = /^(?:PDF|詳細|詳しく|もっと見る|more|こちら)/i;
+// 見出しに付くファイル種別・サイズ表記 (「(PDF:235KB)」等)。
+const FILE_NOTE = /[(（]\s*PDF[^)）]*[)）]/gi;
+
+function yudenDate(m: RegExpMatchArray): string | null {
+	const month = Number(m[2]);
+	const day = Number(m[3]);
+	if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+	return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+}
+
+function cleanTitle(s: string): string {
+	return decodeEntities(s).replace(FILE_NOTE, "").replace(/\s+/g, " ").trim();
+}
+
+// 太陽誘電 IR ニュース一覧 (https://www.yuden.co.jp/ir/)。
+//   日付テキストと記事リンク (PDF / HTML) の並びを、クラス名に依らず読む。li / tr / dt / article の
+//   開始でブロックを切り、ブロック内の最初の日付をそのブロックのリンク全部に付ける。dt で切るので
+//   <dl><dt>日付</dt><dd><a>…</a></dd> も1ブロックになる。div/p だけで組まれた一覧は、日付とリンクを
+//   持つブロックの後に次の日付が現れた所で切る。日付の無いブロック (ナビ・フッタ) は捨てる。
+//   category は決算系の見出しなら "earnings"、それ以外は "ir"。
+async function parseYudenList(
+	html: string,
+	baseUrl: string,
+): Promise<ListItem[]> {
+	type Anchor = { href: string; text: string };
+	type Block = { text: string; date: string | null; anchors: Anchor[] };
+	const blocks: Block[] = [];
+	const open = (): Block => {
+		const b: Block = { text: "", date: null, anchors: [] };
+		blocks.push(b);
+		return b;
+	};
+	let cur: Block | null = null;
+	let anchor: Anchor | null = null;
+	const startBlock = {
+		element() {
+			cur = open();
+		},
+	};
+	await scanHtml(html, [
+		["li", startBlock],
+		["tr", startBlock],
+		["dt", startBlock],
+		["article", startBlock],
+		[
+			"a[href]",
+			{
+				element(e) {
+					anchor = { href: e.getAttribute("href") ?? "", text: "" };
+					cur ??= open();
+					cur.anchors.push(anchor);
+				},
+				text(t) {
+					if (anchor) anchor.text += t.text;
+				},
+			},
+		],
+		[
+			"body",
+			{
+				text(t) {
+					const s = t.text;
+					if (!s) return;
+					const itemDone = cur?.date && cur.anchors.length > 0;
+					if (itemDone && YUDEN_DATE.test(s)) cur = open();
+					cur ??= open();
+					cur.text += s;
+					if (!cur.date) {
+						const m = cur.text.match(YUDEN_DATE);
+						if (m) cur.date = yudenDate(m);
+					}
+				},
+			},
+		],
+	]);
+
+	const out: ListItem[] = [];
+	const seenUrl = new Set<string>();
+	for (const b of blocks) {
+		if (!b.date) continue;
+		// ブロックのテキストにはリンク文言も混ざるので、日付と全リンク文言を除いた残りを見出し候補にし、
+		// 残らなければ文言が見出しらしいリンクのものを使う。
+		let rest = b.text.replace(YUDEN_DATE, "");
+		for (const a of b.anchors) rest = rest.replace(a.text, "");
+		const namedLink = b.anchors
+			.map((a) => cleanTitle(a.text))
+			.find((t) => t !== "" && !GENERIC_LINK_TEXT.test(t));
+		const blockTitle = cleanTitle(rest) || namedLink || "";
+		for (const a of b.anchors) {
+			const href = decodeEntities(a.href).trim();
+			if (!href || href.startsWith("#")) continue;
+			let url: URL;
+			try {
+				url = new URL(href, baseUrl);
+			} catch {
+				continue;
+			}
+			if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+			const key = url.toString();
+			if (seenUrl.has(key)) continue;
+			const linkText = cleanTitle(a.text);
+			const generic = !linkText || GENERIC_LINK_TEXT.test(linkText);
+			const title = generic ? blockTitle : linkText;
+			if (!title) continue;
+			seenUrl.add(key);
+			out.push({
+				url: key,
+				title,
+				date: b.date,
+				category: isEarningsDisclosure(title) ? "earnings" : "ir",
+			});
+		}
+	}
+	return out;
+}
+
 // site → 一覧パーサ。一覧HTML から ListItem[] を返す。
 export async function parseList(
 	site: string,
@@ -299,6 +421,8 @@ export async function parseList(
 			return parseAdvantestList(body, baseUrl);
 		case "lasertec":
 			return parseLasertecList(body, baseUrl);
+		case "yuden":
+			return parseYudenList(body, baseUrl);
 		default:
 			return [];
 	}
@@ -424,6 +548,92 @@ if (import.meta.vitest) {
 					category: "IR",
 				},
 			]);
+		});
+	});
+
+	describe("parseList: yuden", () => {
+		const BASE = "https://www.yuden.co.jp/jp/ir/";
+		const parse = (body: string) =>
+			parseList("yuden", `<html><body>${body}</body></html>`, BASE);
+
+		it("dt の日付を dd の全リンクに付け、PDF 表記を除き決算系を earnings にする", async () => {
+			const html = [
+				"<nav><ul><li><a href='/jp/ir/library/'>IRライブラリ</a></li></ul></nav>",
+				"<dl>",
+				"<dt>2026年11月5日</dt>",
+				"<dd><a href='/jp/ir/pdf/tanshin.pdf'>2027年3月期 第2四半期決算短信 (PDF:512KB)</a>",
+				"<a href='/jp/ir/pdf/setsumei.pdf'>決算説明資料</a></dd>",
+				"<dt>2026.10.20</dt>",
+				"<dd><a href='/jp/ir/news/a.html'>自己株式の取得状況に関するお知らせ</a></dd>",
+				"</dl>",
+				"<footer><ul><li><a href='/jp/privacy/'>プライバシー</a></li></ul></footer>",
+			].join("");
+			expect(await parse(html)).toEqual([
+				{
+					url: "https://www.yuden.co.jp/jp/ir/pdf/tanshin.pdf",
+					title: "2027年3月期 第2四半期決算短信",
+					date: "2026-11-05",
+					category: "earnings",
+				},
+				{
+					url: "https://www.yuden.co.jp/jp/ir/pdf/setsumei.pdf",
+					title: "決算説明資料",
+					date: "2026-11-05",
+					category: "earnings",
+				},
+				{
+					url: "https://www.yuden.co.jp/jp/ir/news/a.html",
+					title: "自己株式の取得状況に関するお知らせ",
+					date: "2026-10-20",
+					category: "ir",
+				},
+			]);
+		});
+
+		it("リンク文言が PDF 等のときは li のテキストを見出しにする", async () => {
+			const html = [
+				"<ul>",
+				"<li><span>2026/08/05</span><p>通期業績予想の修正に関するお知らせ</p>",
+				"<a href='/jp/ir/pdf/rev.pdf'>PDF</a></li>",
+				"</ul>",
+			].join("");
+			expect(await parse(html)).toEqual([
+				{
+					url: "https://www.yuden.co.jp/jp/ir/pdf/rev.pdf",
+					title: "通期業績予想の修正に関するお知らせ",
+					date: "2026-08-05",
+					category: "earnings",
+				},
+			]);
+		});
+
+		it("div だけの一覧は次の日付で項目を切る", async () => {
+			const html = [
+				"<div><span>2026-11-05</span><a href='/a.pdf'>決算短信</a></div>",
+				"<div><span>2026-10-01</span><a href='/b.html'>役員人事</a></div>",
+			].join("");
+			const out = await parse(html);
+			expect(out.map((i) => [i.url, i.date])).toEqual([
+				["https://www.yuden.co.jp/a.pdf", "2026-11-05"],
+				["https://www.yuden.co.jp/b.html", "2026-10-01"],
+			]);
+		});
+
+		it("日付の無いブロック・ページ内リンク・重複 URL は捨てる", async () => {
+			const html = [
+				"<ul><li><a href='/jp/ir/stock/'>株式情報</a></li></ul>",
+				"<ul><li>2026年7月1日 <a href='#top'>ページ先頭</a>",
+				"<a href='/x.pdf'>決算短信</a><a href='/x.pdf'>決算短信</a></li></ul>",
+			].join("");
+			expect((await parse(html)).map((i) => i.url)).toEqual([
+				"https://www.yuden.co.jp/x.pdf",
+			]);
+		});
+
+		it("「2027年3月期」のような日の無い年月は日付にしない", async () => {
+			const html =
+				"<ul><li><a href='/y.pdf'>2027年3月期 決算短信</a></li></ul>";
+			expect(await parse(html)).toEqual([]);
 		});
 	});
 

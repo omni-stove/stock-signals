@@ -68,7 +68,7 @@ app.onError((err, c) => {
 
 app.notFound((c) =>
 	c.text(
-		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket /latest?kind= /pull?code= /pull-news?code= /context?code= /judge-context?code=&now= /context-input?code= /market-context?now= /sq-context?now= /thread-context?channel=&thread_ts=&kind=&text= /position-users /position-context?userId= /index-rebalance?now= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
+		"stock-signals collector. routes: /run?kind=ir|news|disclosure|ratings|prices|daily|fundamentals|earnings|margin|premarket|pdf-text /latest?kind= /pull?code= /pull-news?code= /context?code= /judge-context?code=&now= /context-input?code= /market-context?now= /sq-context?now= /thread-context?channel=&thread_ts=&kind=&text= /position-users /position-context?userId= /index-rebalance?now= /health /test-slack /slack/post /slack/command /slack/interact /slack/events",
 		404,
 	),
 );

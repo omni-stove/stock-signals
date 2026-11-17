@@ -23,8 +23,8 @@ import { db } from "./db";
 import { parseKabutanNewsList } from "./kabutan";
 import {
 	PDF_BODIES_PER_RUN,
-	pdfBody,
 	type PdfBodyEnv,
+	pdfBody,
 	wantsPdfBody,
 } from "./pdf-text";
 import { articles } from "./schema";
@@ -41,7 +41,7 @@ export interface DisclosureEnv extends PdfBodyEnv {
  * kabutan の開示ラッパー URL (/disclosures/pdf/<YYYYMMDD>/<開示ID>/) から TDnet の PDF 原本 URL を作る。
  * 形が違えば null。
  */
-export function tdnetPdfUrl(kabutanUrl: string): string | null {
+function tdnetPdfUrl(kabutanUrl: string): string | null {
 	let path: string;
 	try {
 		path = new URL(kabutanUrl).pathname;
@@ -128,10 +128,7 @@ async function collectDisclosureOne(
 		try {
 			const pdfUrl = tdnetPdfUrl(it.url);
 			let body = it.title;
-			if (
-				pdfFetches < PDF_BODIES_PER_RUN &&
-				wantsPdfBody(it.title, pdfUrl)
-			) {
+			if (pdfFetches < PDF_BODIES_PER_RUN && wantsPdfBody(it.title, pdfUrl)) {
 				pdfFetches++;
 				await sleep(interval);
 				body = await pdfBody(env, it.title, pdfUrl);

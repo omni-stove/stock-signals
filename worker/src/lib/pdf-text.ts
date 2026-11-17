@@ -13,7 +13,7 @@ import { getDocumentProxy } from "unpdf";
 import { IR_SOURCES } from "./watchlist";
 
 /** 見出しの後ろに足す抜粋の上限文字数。 */
-export const PDF_BODY_MAX_CHARS = 3000;
+const PDF_BODY_MAX_CHARS = 3000;
 
 /** 1 銘柄・1 ソースの 1 回の収集で PDF 本文を取りに行く件数の上限。残りは見出しのみで保存する。 */
 export const PDF_BODIES_PER_RUN = 3;
@@ -34,7 +34,8 @@ const ALLOWED_PDF_HOSTS = new Set([
 ]);
 
 // 決算発表の日程告知・説明会の開催案内は見出しで足りるので PDF を取らない。
-const EARNINGS_TITLE = /決算短信|業績予想|業績の修正|決算説明|決算補足|決算概要|決算資料|説明会資料/;
+const EARNINGS_TITLE =
+	/決算短信|業績予想|業績の修正|決算説明|決算補足|決算概要|決算資料|説明会資料/;
 const NOT_EARNINGS_TITLE = /開催|発表日|発表予定/;
 
 /** 見出しが PDF 本文を取り込む決算系開示 (決算短信・業績予想の修正・説明資料など) か。 */
@@ -72,6 +73,8 @@ const QUAL_END =
 	/連結財務諸表及び主な注記|財務諸表及び主な注記|会計基準の選択に関する基本的な考え方|継続企業の前提に関する注記/;
 // 目次行: リーダー (… ・ . 等の連続) の後にページ番号で終わる。
 const TOC_LINE = /(?:[.．・…‥·]\s*){3,}\s*[0-9０-９]+\s*$/;
+// 見出しの行頭側に許すのは番号接頭辞 (「1.」「(1)」) だけ。
+const HEADING_PREFIX = /^\s*(?:(?:[0-9０-９]+[.．]|[(（][0-9０-９]+[)）])\s*)?$/;
 
 /** 行ごとに空白 (全角空白を含む) を畳み、空行を落とす。 */
 function normalizePdfText(text: string): string {
@@ -91,7 +94,7 @@ function clip(s: string, maxChars: number): string {
  * maxChars で切って返す。目次行の見出しは飛ばす。定性見出しが見つからない資料 (説明資料等) は
  * 冒頭から切る。テキストが空なら空文字。
  */
-export function qualitativeExcerpt(raw: string, maxChars: number): string {
+function qualitativeExcerpt(raw: string, maxChars: number): string {
 	const text = normalizePdfText(raw);
 	if (!text) return "";
 	for (const m of text.matchAll(QUAL_START)) {
@@ -100,6 +103,8 @@ export function qualitativeExcerpt(raw: string, maxChars: number): string {
 		const line = text.slice(at, lineEnd < 0 ? undefined : lineEnd);
 		if (TOC_LINE.test(line)) continue;
 		const start = text.lastIndexOf("\n", at) + 1;
+		// 「」内や文中の参照 (「…添付資料P.4「1.経営成績等の概況…」をご覧ください」) は見出しではない。
+		if (!HEADING_PREFIX.test(text.slice(start, at))) continue;
 		const from = at + m[0].length;
 		const endRel = text.slice(from).search(QUAL_END);
 		// 章見出しは行頭の番号 (「2.」等) ごと落とすため、その行の頭で切る。
@@ -107,6 +112,7 @@ export function qualitativeExcerpt(raw: string, maxChars: number): string {
 			endRel < 0 ? text.length : text.lastIndexOf("\n", from + endRel) + 1;
 		const end = endLine > start ? endLine : from + endRel;
 		const section = text.slice(start, end).trim();
+		if (section.split("\n").some((l) => TOC_LINE.test(l))) continue;
 		if (section.length >= MIN_SECTION_CHARS) return clip(section, maxChars);
 	}
 	return clip(text, maxChars);
@@ -149,24 +155,20 @@ async function fetchPdf(
 // 先頭 PDF_MAX_PAGES ページのテキスト層を、pdf.js の行末 (hasEOL) で改行して連結する。
 async function extractPdfText(data: Uint8Array): Promise<string> {
 	const pdf = await getDocumentProxy(data);
-	try {
-		const pages = Math.min(pdf.numPages, PDF_MAX_PAGES);
-		const out: string[] = [];
-		for (let i = 1; i <= pages; i++) {
-			const page = await pdf.getPage(i);
-			const content = await page.getTextContent();
-			let s = "";
-			for (const item of content.items) {
-				if (!("str" in item)) continue;
-				s += item.str;
-				if (item.hasEOL) s += "\n";
-			}
-			out.push(s);
+	const pages = Math.min(pdf.numPages, PDF_MAX_PAGES);
+	const out: string[] = [];
+	for (let i = 1; i <= pages; i++) {
+		const page = await pdf.getPage(i);
+		const content = await page.getTextContent();
+		let s = "";
+		for (const item of content.items) {
+			if (!("str" in item)) continue;
+			s += item.str;
+			if (item.hasEOL) s += "\n";
 		}
-		return out.join("\n");
-	} finally {
-		await pdf.destroy();
+		out.push(s);
 	}
+	return out.join("\n");
 }
 
 /**
@@ -330,6 +332,25 @@ if (import.meta.vitest) {
 			expect(out).not.toContain("…………");
 		});
 
+		it("1 ページ目の参照文 (「」内の見出し) は開始位置にしない", () => {
+			const withRef = [
+				"2027年3月期 決算短信〔日本基準〕(連結)",
+				"※ 業績予想の適切な利用に関する説明",
+				"詳細は添付資料P.4「1.経営成績等の概況（4）今後の見通し」をご覧ください。",
+				"○添付資料の目次",
+				"1. 経営成績等の概況 ………………………… 2",
+				"2. 会計基準の選択に関する基本的な考え方 ……… 5",
+				"3. 連結財務諸表及び主な注記 ………………… 6",
+				"1. 経営成績等の概況",
+				para,
+				"2. 会計基準の選択に関する基本的な考え方",
+			].join("\n");
+			const out = qualitativeExcerpt(withRef, 10_000);
+			expect(out).toMatch(/^1\. 経営成績等の概況\n/);
+			expect(out).toContain(para);
+			expect(out).not.toContain("ご覧ください");
+		});
+
 		it("定性見出しの無い資料は冒頭から切る", () => {
 			expect(qualitativeExcerpt("説明資料\n\n\n需要は回復基調", 100)).toBe(
 				"説明資料\n需要は回復基調",
@@ -369,9 +390,7 @@ if (import.meta.vitest) {
 				SYNC_TOKEN: "tok",
 				USER_AGENT: "ua",
 			};
-			expect(await pdfBody(env, title, pdfUrl)).toBe(
-				`${title}\n\n需要は堅調`,
-			);
+			expect(await pdfBody(env, title, pdfUrl)).toBe(`${title}\n\n需要は堅調`);
 			const [url, init] = selfFetch.mock.calls[0];
 			const q = new URL(url).searchParams;
 			expect(q.get("kind")).toBe("pdf-text");

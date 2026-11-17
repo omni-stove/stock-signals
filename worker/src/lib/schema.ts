@@ -174,13 +174,37 @@ export const premarketBackdrop = sqliteTable("premarket_backdrop", {
 	usPeersJson: text("us_peers_json"),
 });
 
-// ── earnings (次回決算発表予定日。PK = ticker) ──────────────────────────────
+// ── earnings (次回決算発表予定日と通期会社予想。PK = ticker) ──────────────────
+// forecast_* は株探 finance ページ通期表の予想行 (百万円)。fundamentals.forecast_* (株探トップ、億円) とは
+// 単位が違うので、四半期実績 (earnings_quarters) との進捗率はこちらで割る。
 export const earnings = sqliteTable("earnings", {
 	ticker: text("ticker").primaryKey(),
 	nextDate: text("next_date"),
 	detail: text("detail"),
+	forecastPeriod: text("forecast_period"),
+	forecastSales: real("forecast_sales"),
+	forecastOperating: real("forecast_operating"),
+	forecastOrdinary: real("forecast_ordinary"),
+	forecastNet: real("forecast_net"),
 	fetchedAt: text("fetched_at").notNull(),
 });
+
+// ── earnings_quarters (四半期 3ヵ月実績。冪等キー = (ticker, period)) ─────────
+// 株探 finance ページの3ヵ月決算表。period は "2026.07-09" (開始月の西暦年)、金額は百万円。
+export const earningsQuarters = sqliteTable(
+	"earnings_quarters",
+	{
+		ticker: text("ticker").notNull(),
+		period: text("period").notNull(),
+		sales: real("sales"),
+		operating: real("operating"),
+		ordinary: real("ordinary"),
+		net: real("net"),
+		announcedAt: text("announced_at"),
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.ticker, t.period] })],
+);
 
 // ── intraday_dispatch (場中 dispatch のデバウンス。PK = ticker) ─────────────
 export const intradayDispatch = sqliteTable("intraday_dispatch", {

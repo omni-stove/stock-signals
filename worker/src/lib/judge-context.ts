@@ -78,35 +78,50 @@ export function buildEarnings(
 	};
 }
 
-// --- earnings_result: 直近に出た決算の beat/miss -----------------------------
-// 「決算が近い」(buildEarnings) と対をなす「決算が出たばかり」ブロック。fundamentals は
-// (ticker, date) で毎日1スナップショット入るので、actual_period (最後の実績四半期) が
-// 前の取得日から別四半期へ切り替わった日 = その四半期決算が出た日、と捉えられる。
-// その日から FRESH_DAYS 営業日以内なら fresh とし、実績EPS vs 予想EPS のサプライズ符号を渡す。
-// 読み(材料としての重み付け)は ticker-brief (LLM) に委ね、ここは事実 (beat/miss と経過日) だけ出す。
+// --- earnings_result: 直近に出た四半期決算の事実 -----------------------------
+// 「決算が近い」(buildEarnings) と対をなす「決算が出たばかり」ブロック。earnings_quarters の
+// 直近四半期の発表日から FRESH_DAYS 営業日以内を fresh とし、その四半期の前年同期比・前四半期比と、
+// 通期会社予想に対する累計進捗率を出す。コンセンサスは収集していないので beat/miss は判定しない。
 
-// fundamentals の1スナップショット (取得日 date と、その時点の実績/予想)。
-export interface FundamentalsSnapshot {
-	date: string; // 取得日 YYYY-MM-DD
-	actual_eps?: number | null;
-	actual_period?: string | null;
-	forecast_eps?: number | null;
+// earnings_quarters の1行 (3ヵ月実績、百万円)。period は "2026.07-09"。
+export interface QuarterFigures {
+	period: string;
+	sales?: number | null;
+	operating?: number | null;
+	ordinary?: number | null;
+	net?: number | null;
+	announced_at?: string | null;
 }
+
+// earnings の通期会社予想 (百万円)。period は決算期末 "2027.03"。
+export interface FullYearForecastRow {
+	forecast_period?: string | null;
+	forecast_sales?: number | null;
+	forecast_operating?: number | null;
+	forecast_ordinary?: number | null;
+	forecast_net?: number | null;
+}
+
+type PlKey = "sales" | "operating" | "ordinary" | "net";
+const PL_KEYS: PlKey[] = ["sales", "operating", "ordinary", "net"];
+type PlPct = Record<PlKey, number | null>;
 
 export interface EarningsResultBlock {
 	status: "fresh" | "stale" | "none";
-	reported_period: string | null; // 出たばかりの決算期 (例 "2026.06")
-	days_since: number | null; // 決算が出た取得日から today までの営業日 (土日除く、同日=0)
-	actual_eps: number | null;
-	forecast_eps: number | null;
-	surprise_pct: number | null; // (actual - forecast)/|forecast| ×100、floor1
-	verdict: "beat" | "inline" | "miss" | null;
+	period: string | null; // 直近四半期 "2026.07-09"
+	fiscal_quarter: number | null; // 通期予想の決算期末から数えた第何四半期 (4 = 本決算)
+	announced_at: string | null;
+	days_since: number | null; // 発表日から today までの営業日 (土日除く、同日=0)
+	actual: PlPct | null; // その四半期の3ヵ月実績 (百万円)
+	year_ago: PlPct | null; // 前年同期の3ヵ月実績 (百万円)
+	yoy_pct: PlPct | null; // 前年同期比 (%)。前年同期が0以下・欠けは null
+	qoq_pct: PlPct | null; // 前四半期比 (%)。同上
+	forecast_period: string | null; // 進捗率の分母にした通期予想の決算期
+	progress_pct: PlPct | null; // 期初からの累計 ÷ 通期会社予想 (%)。直近四半期が予想の期に属さなければ null
 }
 
 // 決算が出てから fresh 扱いする営業日 (当日=0。寄りで大半が織り込まれるので2営業日ほど)。
 const FRESH_DAYS = 2;
-// サプライズが inline を脱する閾値 (予想比 ±%)。これ未満は誤差として inline。
-const SURPRISE_BAND_PCT = 5;
 
 // from→to (いずれも YYYY-MM-DD) の間の営業日数 (土日を除く、同日=0)。祝日は非考慮の近似で、
 // event-context.ts の営業日計算と揃える (窓判定なので祝日ズレは実用上問題ない)。
@@ -124,64 +139,122 @@ function businessDaysBetween(from: string, to: string): number {
 
 const NONE_RESULT: EarningsResultBlock = {
 	status: "none",
-	reported_period: null,
+	period: null,
+	fiscal_quarter: null,
+	announced_at: null,
 	days_since: null,
-	actual_eps: null,
-	forecast_eps: null,
-	surprise_pct: null,
-	verdict: null,
+	actual: null,
+	year_ago: null,
+	yoy_pct: null,
+	qoq_pct: null,
+	forecast_period: null,
+	progress_pct: null,
 };
 
-// snapshots は date 降順 (新しい順) で渡す。先頭が最新スナップショット。
+// "2026.07-09" → 開始月の通し月番号 (年*12 + 月-1)。形式外は null。
+function quarterStartIdx(period: string): number | null {
+	const m = period.match(/^(\d{4})\.(\d{2})-\d{2}$/);
+	return m ? Number(m[1]) * 12 + Number(m[2]) - 1 : null;
+}
+
+// 決算期末 "2027.03" → 期末月の通し月番号。
+function fiscalEndIdx(period: string | null | undefined): number | null {
+	const m = (period ?? "").match(/^(\d{4})\.(\d{2})$/);
+	return m ? Number(m[1]) * 12 + Number(m[2]) - 1 : null;
+}
+
+function plOf(q: QuarterFigures | undefined): PlPct | null {
+	if (!q) return null;
+	return Object.fromEntries(PL_KEYS.map((k) => [k, q[k] ?? null])) as PlPct;
+}
+
+// 赤字や0からの変化率は符号の意味が崩れるので、基準が正のときだけ出す。
+function growthPct(from: number | null, to: number | null): number | null {
+	if (from == null || to == null || from <= 0) return null;
+	return floor1(((to - from) / from) * 100);
+}
+
+function pctOf(from: PlPct | null, to: PlPct): PlPct | null {
+	if (!from) return null;
+	return Object.fromEntries(
+		PL_KEYS.map((k) => [k, growthPct(from[k], to[k])]),
+	) as PlPct;
+}
+
+// 直近四半期が通期予想の期に属するとき、期初からの累計 ÷ 通期予想 (%)。
+// 期中の四半期が1つでも欠けたら累計が過小になるので null。
+function progressOf(
+	byStart: Map<number, QuarterFigures>,
+	latestStart: number,
+	forecast: FullYearForecastRow | null,
+	fyEnd: number | null,
+): PlPct | null {
+	if (!forecast || fyEnd === null) return null;
+	const fyStart = fyEnd - 11;
+	if (latestStart < fyStart || latestStart + 2 > fyEnd) return null;
+	if ((latestStart - fyStart) % 3 !== 0) return null;
+	const members: QuarterFigures[] = [];
+	for (let s = fyStart; s <= latestStart; s += 3) {
+		const q = byStart.get(s);
+		if (!q) return null;
+		members.push(q);
+	}
+	const denom: Record<PlKey, number | null | undefined> = {
+		sales: forecast.forecast_sales,
+		operating: forecast.forecast_operating,
+		ordinary: forecast.forecast_ordinary,
+		net: forecast.forecast_net,
+	};
+	return Object.fromEntries(
+		PL_KEYS.map((k) => {
+			const d = denom[k];
+			if (d == null || d <= 0 || members.some((q) => q[k] == null))
+				return [k, null];
+			const cum = members.reduce((a, q) => a + (q[k] as number), 0);
+			return [k, floor1((cum / d) * 100)];
+		}),
+	) as PlPct;
+}
+
+// quarters は earnings_quarters の行 (順不同)、forecast は earnings の通期会社予想。
 export function buildEarningsResult(
-	snapshots: FundamentalsSnapshot[],
+	quarters: QuarterFigures[],
+	forecast: FullYearForecastRow | null,
 	today: string,
 ): EarningsResultBlock {
-	if (snapshots.length === 0) return NONE_RESULT;
-	const latest = snapshots[0];
-	const period = latest.actual_period ?? null;
-	if (!period) return NONE_RESULT;
-
-	// actual_period が latest と違う最初の (= 直近の) 古いスナップショットを探す。
-	// 見つかればその「直後」のスナップショットが切り替わり日 = 決算が出た日。
-	let reportedAt: string | null = null;
-	for (let i = 1; i < snapshots.length; i++) {
-		const prevPeriod = snapshots[i].actual_period ?? null;
-		if (prevPeriod && prevPeriod !== period) {
-			reportedAt = snapshots[i - 1].date;
-			break;
-		}
-		// period が一致し続ける = まだ切り替わっていない。さらに遡る。
+	const byStart = new Map<number, QuarterFigures>();
+	for (const q of quarters) {
+		const s = quarterStartIdx(q.period);
+		if (s !== null) byStart.set(s, q);
 	}
-	// 全スナップショットで同じ period = この窓内に切替なし。決算は窓より前。
-	if (reportedAt === null) {
-		return { ...NONE_RESULT, status: "stale", reported_period: period };
-	}
+	if (byStart.size === 0) return NONE_RESULT;
+	const latestStart = Math.max(...byStart.keys());
+	const latest = byStart.get(latestStart) as QuarterFigures;
+	if (!latest.announced_at) return NONE_RESULT;
 
-	const daysSince = businessDaysBetween(reportedAt, today);
-
-	const actual = latest.actual_eps ?? null;
-	const forecast = latest.forecast_eps ?? null;
-	let surprisePct: number | null = null;
-	let verdict: EarningsResultBlock["verdict"] = null;
-	if (actual !== null && forecast !== null && forecast !== 0) {
-		surprisePct = floor1(((actual - forecast) / Math.abs(forecast)) * 100);
-		verdict =
-			surprisePct >= SURPRISE_BAND_PCT
-				? "beat"
-				: surprisePct <= -SURPRISE_BAND_PCT
-					? "miss"
-					: "inline";
-	}
+	const daysSince = businessDaysBetween(latest.announced_at, today);
+	const actual = plOf(latest) as PlPct;
+	const yearAgo = plOf(byStart.get(latestStart - 12));
+	const fyEnd = fiscalEndIdx(forecast?.forecast_period);
+	// 期首月からの月数 (0..11)。決算期末の翌月が期首。
+	const offset =
+		fyEnd === null ? null : (((latestStart - fyEnd - 1) % 12) + 12) % 12;
+	const fiscalQuarter =
+		offset !== null && offset % 3 === 0 ? offset / 3 + 1 : null;
+	const progress = progressOf(byStart, latestStart, forecast, fyEnd);
 
 	return {
 		status: daysSince <= FRESH_DAYS ? "fresh" : "stale",
-		reported_period: period,
+		period: latest.period,
+		fiscal_quarter: fiscalQuarter,
+		announced_at: latest.announced_at,
 		days_since: daysSince,
-		actual_eps: actual,
-		forecast_eps: forecast,
-		surprise_pct: surprisePct,
-		verdict,
+		actual,
+		year_ago: yearAgo,
+		yoy_pct: pctOf(yearAgo, actual),
+		qoq_pct: pctOf(plOf(byStart.get(latestStart - 3)), actual),
+		forecast_period: progress ? (forecast?.forecast_period ?? null) : null,
+		progress_pct: progress,
 	};
 }
 
@@ -724,153 +797,119 @@ if (import.meta.vitest) {
 	});
 
 	describe("buildEarningsResult", () => {
-		// date 降順 (新しい順) で渡す。actual_period の切替で「決算が出た日」を割り出す。
-		it("直近で四半期が切替→fresh、予想超えで beat", () => {
-			// 06-18(木) 切替 → 06-19(金) today = 1営業日。
-			const out = buildEarningsResult(
-				[
-					{
-						date: "2026-06-19",
-						actual_eps: 152,
-						forecast_eps: 120,
-						actual_period: "2026.06",
-					},
-					{
-						date: "2026-06-18",
-						actual_eps: 152,
-						forecast_eps: 120,
-						actual_period: "2026.06",
-					},
-					{
-						date: "2026-06-17",
-						actual_eps: 100,
-						forecast_eps: 120,
-						actual_period: "2026.03",
-					},
-				],
-				"2026-06-19",
-			);
-			expect(out.status).toBe("fresh");
-			expect(out.reported_period).toBe("2026.06");
-			expect(out.days_since).toBe(1); // 切替日 = 2026-06-18(木)
-			expect(out.verdict).toBe("beat");
-			expect(out.surprise_pct).toBe(26.6); // (152-120)/120*100 floor1
+		// 3月決算。FY2026.03 の4四半期と FY2027.03 の上期2四半期 (百万円)。
+		const q = (
+			period: string,
+			sales: number,
+			ordinary: number,
+			announced_at: string,
+		): QuarterFigures => ({
+			period,
+			sales,
+			operating: ordinary,
+			ordinary,
+			net: ordinary / 2,
+			announced_at,
 		});
-		it("予想割れは miss", () => {
+		const fy26 = [
+			q("2025.04-06", 200, 80, "2025-07-29"),
+			q("2025.07-09", 250, 100, "2025-10-29"),
+			q("2025.10-12", 300, 120, "2026-01-28"),
+			q("2026.01-03", 350, 140, "2026-04-27"),
+		];
+		const fy27 = [
+			q("2026.04-06", 400, 160, "2026-07-28"),
+			q("2026.07-09", 500, 200, "2026-10-28"),
+		];
+		const forecast27: FullYearForecastRow = {
+			forecast_period: "2027.03",
+			forecast_sales: 2000,
+			forecast_operating: 900,
+			forecast_ordinary: 900,
+			forecast_net: 450,
+		};
+
+		it("四半期決算直後: 前年同期比・前四半期比・累計進捗率を出し、beat/miss は持たない", () => {
+			// 10-28(水) 発表 → 10-29(木) today = 1営業日。
 			const out = buildEarningsResult(
-				[
-					{
-						date: "2026-06-20",
-						actual_eps: 90,
-						forecast_eps: 120,
-						actual_period: "2026.06",
-					},
-					{
-						date: "2026-06-19",
-						actual_eps: 100,
-						forecast_eps: 120,
-						actual_period: "2026.03",
-					},
-				],
-				"2026-06-20",
+				[...fy26, ...fy27],
+				forecast27,
+				"2026-10-29",
 			);
-			expect(out.status).toBe("fresh");
-			expect(out.verdict).toBe("miss");
+			expect(out).toMatchObject({
+				status: "fresh",
+				period: "2026.07-09",
+				fiscal_quarter: 2,
+				announced_at: "2026-10-28",
+				days_since: 1,
+				forecast_period: "2027.03",
+			});
+			expect(out.yoy_pct?.sales).toBe(100); // 500 / 250
+			expect(out.qoq_pct?.sales).toBe(25); // 500 / 400
+			expect(out.year_ago?.sales).toBe(250);
+			expect(out.progress_pct?.sales).toBe(45); // (400+500) / 2000
+			expect(out.progress_pct?.ordinary).toBe(40); // (160+200) / 900
+			expect(out).not.toHaveProperty("verdict");
 		});
-		it("予想比±5%以内は inline", () => {
+		it("本決算直後: 新年度予想と比べず進捗率は null、第4四半期の前年同期比は出す", () => {
+			// 04-27(月) 発表、予想行は既に新年度 2027.03。
 			const out = buildEarningsResult(
-				[
-					{
-						date: "2026-06-20",
-						actual_eps: 123,
-						forecast_eps: 120,
-						actual_period: "2026.06",
-					},
-					{
-						date: "2026-06-19",
-						actual_eps: 100,
-						forecast_eps: 120,
-						actual_period: "2026.03",
-					},
-				],
-				"2026-06-20",
+				[q("2025.01-03", 175, 70, "2025-04-28"), ...fy26],
+				forecast27,
+				"2026-04-28",
 			);
-			expect(out.verdict).toBe("inline");
+			expect(out).toMatchObject({
+				status: "fresh",
+				period: "2026.01-03",
+				fiscal_quarter: 4,
+				days_since: 1,
+				forecast_period: null,
+				progress_pct: null,
+			});
+			expect(out.yoy_pct?.sales).toBe(100); // 350 / 175
+			expect(out.qoq_pct?.ordinary).toBe(16.6); // 140 / 120 floor1
 		});
-		it("切替から FRESH_DAYS 超過は stale", () => {
-			// 06-12(金) 切替 → 06-19(金) today = 5営業日 > 2。
+		it("期中の四半期が欠けたら進捗率は null", () => {
+			const out = buildEarningsResult([fy27[1]], forecast27, "2026-10-29");
+			expect(out.progress_pct).toBeNull();
+			expect(out.yoy_pct).toBeNull();
+		});
+		it("前年同期が赤字・0 の項目は比率を出さない", () => {
 			const out = buildEarningsResult(
-				[
-					{
-						date: "2026-06-19",
-						actual_eps: 152,
-						forecast_eps: 120,
-						actual_period: "2026.06",
-					},
-					{
-						date: "2026-06-12", // 切替直後 = 決算が出た日 (金)
-						actual_eps: 152,
-						forecast_eps: 120,
-						actual_period: "2026.06",
-					},
-					{
-						date: "2026-06-11",
-						actual_eps: 100,
-						forecast_eps: 120,
-						actual_period: "2026.03",
-					},
-				],
-				"2026-06-19",
+				[{ ...fy26[1], ordinary: -50, net: 0 }, fy27[0], fy27[1]],
+				forecast27,
+				"2026-10-29",
 			);
-			expect(out.status).toBe("stale");
-			expect(out.days_since).toBe(5);
-			expect(out.reported_period).toBe("2026.06");
+			expect(out.yoy_pct).toMatchObject({
+				sales: 100,
+				ordinary: null,
+				net: null,
+			});
+			expect(out.year_ago?.ordinary).toBe(-50);
 		});
-		it("土日は営業日に数えない (金切替→翌月曜 today = 1営業日で fresh)", () => {
-			// 06-19(金) 切替 → 06-22(月) today。暦日3だが営業日は1。
-			const out = buildEarningsResult(
-				[
-					{
-						date: "2026-06-22",
-						actual_eps: 152,
-						forecast_eps: 120,
-						actual_period: "2026.06",
-					},
-					{
-						date: "2026-06-19", // 切替直後 = 決算が出た日 (金)
-						actual_eps: 152,
-						forecast_eps: 120,
-						actual_period: "2026.06",
-					},
-					{
-						date: "2026-06-18",
-						actual_eps: 100,
-						forecast_eps: 120,
-						actual_period: "2026.03",
-					},
-				],
-				"2026-06-22",
+		it("発表から FRESH_DAYS 営業日超は stale、土日は数えない", () => {
+			// 10-23(金) 発表 → 10-26(月) = 1営業日で fresh、10-30(金) = 5営業日で stale。
+			const rows = [{ ...fy27[1], announced_at: "2026-10-23" }];
+			expect(buildEarningsResult(rows, null, "2026-10-26")).toMatchObject({
+				status: "fresh",
+				days_since: 1,
+				fiscal_quarter: null,
+				progress_pct: null,
+			});
+			expect(buildEarningsResult(rows, null, "2026-10-30")).toMatchObject({
+				status: "stale",
+				days_since: 5,
+			});
+		});
+		it("四半期実績なし / 直近の発表日なしは none", () => {
+			expect(buildEarningsResult([], forecast27, "2026-10-29").status).toBe(
+				"none",
 			);
-			expect(out.status).toBe("fresh");
-			expect(out.days_since).toBe(1);
-		});
-		it("窓内で切替なし (全行同一四半期) は stale", () => {
-			const out = buildEarningsResult(
-				[
-					{ date: "2026-06-20", actual_period: "2026.06" },
-					{ date: "2026-06-19", actual_period: "2026.06" },
-				],
-				"2026-06-20",
-			);
-			expect(out.status).toBe("stale");
-			expect(out.days_since).toBeNull();
-		});
-		it("スナップショット無し / actual_period 無しは none", () => {
-			expect(buildEarningsResult([], "2026-06-20").status).toBe("none");
 			expect(
 				buildEarningsResult(
-					[{ date: "2026-06-20", actual_period: null }],
-					"2026-06-20",
+					[{ ...fy27[1], announced_at: null }],
+					forecast27,
+					"2026-10-29",
 				).status,
 			).toBe("none");
 		});

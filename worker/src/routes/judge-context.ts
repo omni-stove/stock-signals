@@ -36,10 +36,11 @@ import {
 	compactJudgeContext,
 	type ForcedRow,
 	type ForecastSnapshot,
-	type FundamentalsSnapshot,
 	type MarginRow,
 	type PremarketRow,
 	type PriceRow,
+	type QuarterFigures,
+	type ValuationSnapshot,
 } from "../lib/judge-context";
 import { readLargeHoldings } from "../lib/large-holdings";
 import { resolveMarketPhase, sessionElapsedFrac } from "../lib/market-phase";
@@ -55,6 +56,7 @@ import {
 	contexts,
 	daily,
 	earnings,
+	earningsQuarters,
 	forcedLiquidation,
 	fundamentals,
 	macroEvents,
@@ -102,21 +104,42 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.get();
 
 	const earningsRow = await db(env.DB)
-		.select({ next_date: earnings.nextDate })
+		.select({
+			next_date: earnings.nextDate,
+			forecast_period: earnings.forecastPeriod,
+			forecast_sales: earnings.forecastSales,
+			forecast_operating: earnings.forecastOperating,
+			forecast_ordinary: earnings.forecastOrdinary,
+			forecast_net: earnings.forecastNet,
+		})
 		.from(earnings)
 		.where(eq(earnings.ticker, code))
 		.get();
 
-	// fundamentals の日次スナップショット (date 降順)。actual_period の四半期切替で「決算が出た日」を、
-	// 予想の発表日・予想値の変化で業績予想の修正を割り出すため、約1年遡る。
+	// 直近四半期と、その前年同期・前四半期・同じ期の累計に要る分 (直近 + 4四半期) を読む。
+	const quarterRows: QuarterFigures[] = await db(env.DB)
+		.select({
+			period: earningsQuarters.period,
+			sales: earningsQuarters.sales,
+			operating: earningsQuarters.operating,
+			ordinary: earningsQuarters.ordinary,
+			net: earningsQuarters.net,
+			announced_at: earningsQuarters.announcedAt,
+		})
+		.from(earningsQuarters)
+		.where(eq(earningsQuarters.ticker, code))
+		.orderBy(desc(earningsQuarters.period))
+		.limit(5)
+		.all();
+
+	// fundamentals の日次スナップショット (date 降順)。予想の発表日・予想値の変化で業績予想の修正を
+	// 割り出すため、約1年遡る。
 	const fundamentalsRows = (await db(env.DB)
 		.select({
 			date: fundamentals.date,
 			per: fundamentals.per,
 			pbr: fundamentals.pbr,
 			dividend_yield: fundamentals.dividendYield,
-			actual_eps: fundamentals.actualEps,
-			actual_period: fundamentals.actualPeriod,
 			forecast_eps: fundamentals.forecastEps,
 			forecast_period: fundamentals.forecastPeriod,
 			forecast_sales: fundamentals.forecastSales,
@@ -129,7 +152,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.where(eq(fundamentals.ticker, code))
 		.orderBy(desc(fundamentals.date))
 		.limit(DAILY_LONG)
-		.all()) as (FundamentalsSnapshot & ForecastSnapshot)[];
+		.all()) as (ValuationSnapshot & ForecastSnapshot)[];
 
 	// 同一セクタのピアの最新予想 PER (valuation の比較用)。
 	const selfMeta = WATCHLIST_META.find((t) => t.code === code);
@@ -368,7 +391,11 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 			ticker_note: TICKERS.find((t) => t.code === code)?.note ?? null,
 			context_body: contextRow?.body ?? null,
 			earnings: buildEarnings(earningsRow?.next_date ?? null, today),
-			earnings_result: buildEarningsResult(fundamentalsRows, today),
+			earnings_result: buildEarningsResult(
+				quarterRows,
+				earningsRow ?? null,
+				today,
+			),
 			revisions: buildRevisions(fundamentalsRows, today),
 			valuation: buildValuation(fundamentalsRows, peerPers),
 			premarket: premarketBlock,

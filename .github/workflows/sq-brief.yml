@@ -73,50 +73,34 @@ jobs:
 
             ## Inputs
 
-            Lead on `history` and `week_to_date` (what SQ has done to these names and how this week has run into
-            it); `premarket` sets today's gap; the rest only raises or lowers 確度.
+            Lead on `history` and `week_to_date`; `premarket` sets today's gap; the rest only raises or lowers 確度.
+            `unavailable` or `insufficient` → skip that field or name.
 
-            - **`market_phase`**: `premarket` (today's gap isn't in yet) / 場中 / `closed`.
-            - **`sq`**: this week's 日本SQ — `date`, `major` (true = メジャーSQ, futures and options settle; false =
-              options only, a weaker pull), `days_to_sq` (0 = today is SQ day, pre-open). `in_week: false` → not an
-              SQ week (manual run); frame the brief as a preview of the next SQ.
-            - **`market.nikkei225`** leads the market-wide scenarios; its `history` carries `*_excess` vs TOPIX —
-              how far SQ pushed 日経225 apart from the broad market. **`market.topix`** is the broad-market
-              reference. **`market.nt_ratio`** (`nt`, `prev_week_end`, `avg_20d`): rising into SQ = the 日経225 side
-              bid harder than the broad market, falling = sold harder; `insufficient` → skip.
-            - **`market.*.history`** and **`tickers[].history`** — past SQ weeks from stored daily bars. Per event:
-              `pre_ret_pct` (前週末→SQ前日), `week_ret_pct` (前週末→SQ日終値), `sq_gap_pct` (SQ前日終値→SQ日始値),
-              `sq_vol_x` (SQ日出来高 ÷ 20日平均), `post_ret_pct` (SQ日→翌週末), `sq_day_share` (SQ day's share of the
-              week's daily ranges through SQ), `pre_day_abs_pct` (mean daily range before SQ day). `all` / `major`
-              aggregate them (`n`, `mean`, `median`, `up_ratio`); tickers also carry `week_excess` /
-              `sq_gap_excess` / `post_excess` vs TOPIX. `status: insufficient` → skip that name.
-            - **`sensitivity`** (SQ連動度, each against non-SQ weeks; 1 = as usual): `sq_gap_abs_x` (SQ-day opening
-              gap vs the same weekday's gap in normal weeks), `sq_day_share` vs `normal_day_share`,
-              `pre_day_abs_x` (daily range before SQ day vs normal days), `sq_week_abs_x` (SQ-week range vs normal
-              weeks), `sq_vol_x` (SQ-day volume multiple), `reversal_rate` (share of SQ weeks whose move reversed
-              after SQ). For each name, read where SQ's push lands — the SQ-day open, the days before SQ, or the
-              unwind after it — and how far above normal it runs.
-            - **Sample size**: the fewer events behind an aggregate (`n`), the less weight it carries; never
-              present an average of a handful of events as a law, and say so when `n` is thin.
-            - **`events[].tags`** — what else was going on in each past SQ week: `trend` (the tape before the SQ
-              week: up / down / range), `earnings` (`sq_week` / `post_week` / `none`; `unknown` = no record that
-              far back; `null` = index), `macro` (FOMC・日銀・ピア決算・指数採用/除外 in the SQ week), `confounded`
-              (earnings or macro overlapped). `clean` / `sensitivity_clean` are the same aggregates over the
-              non-confounded events, present only when some event was confounded. When `sensitivity` and
-              `sensitivity_clean` disagree, lead with `sensitivity_clean` and name the tagged event behind the
-              gap; when `clean.n` is too thin to separate the SQ effect, say so. Use `trend` to explain an
-              outlier or to name which past weeks resemble this one, never to filter the aggregates further.
-            - **`week_to_date`**: this week so far (return since 前週末, `excess_pct` vs TOPIX). A week that has
-              already run hard into SQ is what `reversal_rate` speaks to.
-            - **`premarket`**: per name, lead on the field its `sector_role` is most exposed to; the others only
-              confirm; none shown → general risk appetite. `nikkei_futures_price` is the home gap into the SQ
-              print: lead on it for the market-wide scenarios, especially when `days_to_sq` is 0. `status: stale` →
-              demote; `us_session: carried_over` → not fresh.
-            - **`live_indexes`** (場中の日経225/KOSPI): pre-open they are stale → skip.
-            - **`market_short_ratio`** (空売り比率 vs its 5日平均): heavy hedging is squeeze fuel into SQ.
-              **`investor_flows`** (weekly 海外投資家 net and its streak). `unavailable` → skip either.
-            - **`event_context`**: other events this week — FOMC/日銀/ピア決算 overlapping the SQ week reshape the
-              scenarios; `特になし` → ignore.
+            - **`sq`**: `major: false` = options only, a weaker pull; `days_to_sq: 0` = SQ day, pre-open.
+              `in_week: false` → not an SQ week (manual run); frame the brief as a preview of the next SQ.
+            - **`market.nikkei225`** leads the market-wide scenarios; its `*_excess` is how far SQ pushed 日経225
+              apart from TOPIX. **`market.nt_ratio`** rising into SQ = the 日経225 side bid harder than the broad
+              market, falling = sold harder.
+            - **`history`** (past SQ weeks): `pre_ret_pct` = 前週末→SQ前日, `week_ret_pct` = 前週末→SQ日終値,
+              `sq_gap_pct` = SQ前日終値→SQ日始値, `post_ret_pct` = SQ日→翌週末, `sq_day_share` = SQ day's share of
+              the week's daily ranges through SQ.
+            - **`sensitivity`** (SQ連動度 vs non-SQ weeks; 1 = as usual): for each name, read where SQ's push lands
+              — the SQ-day open, the days before SQ, or the unwind after it (`reversal_rate`) — and how far above
+              normal it runs.
+            - The fewer events (`n`) behind an aggregate, the less weight it carries; never present an average of a
+              handful of events as a law, and say so when `n` is thin.
+            - **`events[].tags`**: when `sensitivity` and `sensitivity_clean` (non-confounded events only) disagree,
+              lead with `sensitivity_clean` and name the tagged event behind the gap; when `clean.n` is too thin to
+              separate the SQ effect, say so. Use `trend` to explain an outlier or to name which past weeks resemble
+              this one, never to filter the aggregates further.
+            - **`week_to_date`**: a week that has already run hard into SQ is what `reversal_rate` speaks to.
+            - **`premarket`**: `nikkei_futures_price` leads the market-wide scenarios, most of all when `days_to_sq`
+              is 0. Per name, lead on the field its `sector_role` is most exposed to; the others only confirm; none
+              shown → general risk appetite. `status: stale` → demote; `us_session: carried_over` → not fresh.
+            - **`live_indexes`**: pre-open → skip.
+            - **`market_short_ratio`** well above its 5日平均 is squeeze fuel into SQ.
+            - **`event_context`**: FOMC/日銀/ピア決算 overlapping the SQ week reshape the scenarios; `特になし` →
+              ignore.
 
             ## Output
 

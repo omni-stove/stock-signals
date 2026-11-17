@@ -10,7 +10,7 @@
 // 全ソース UTF-8 なので TextDecoder で十分。
 
 import { db } from "./db";
-import { scanTables, type TableData as FinanceTable } from "./html";
+import { type TableData as FinanceTable, scanTables } from "./html";
 import { earnings, earningsQuarters } from "./schema";
 import { toNumber, WATCHLIST } from "./timeseries";
 import { fetchHtml, sleep, sliceTables } from "./utils";
@@ -51,7 +51,7 @@ function parseAnnounce(s: string | null | undefined): string | null {
 }
 
 // 売上・営業益・経常益・最終益 (百万円)。
-export type PlFigures = {
+type PlFigures = {
 	sales: number | null;
 	operating: number | null;
 	ordinary: number | null;
@@ -61,7 +61,7 @@ export type PlFigures = {
 type QuarterRow = { q: Quarter; announce: string | null } & PlFigures;
 
 // 通期表の予想行。period は決算期末 "2027.03"。
-export type FullYearForecast = { period: string } & PlFigures;
+type FullYearForecast = { period: string } & PlFigures;
 
 function plColumns(t: FinanceTable) {
 	const col = (name: string) => t.headers.findIndex((h) => h.includes(name));
@@ -236,9 +236,7 @@ async function saveQuarters(
 				set,
 			});
 	});
-	await d.batch(
-		stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]],
-	);
+	await d.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]);
 }
 
 // watchlist 全銘柄 (codeFilter 指定時はその1銘柄) の次回決算予定日を推定し、通期予想・四半期実績と

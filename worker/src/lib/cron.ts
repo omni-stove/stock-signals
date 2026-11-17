@@ -2,27 +2,30 @@
 // 発火した cron 式を event.cron で判別して取得種別に振り分ける。
 
 import { collectDisclosures } from "./disclosure";
-import { collectEarnings } from "./earnings";
 import type { Env } from "./env";
 import { jpSqWeek } from "./event-context";
 import { remindUpcomingEvents } from "./event-reminder";
+import { fanOut } from "./fan-out";
 import { collectForcedLiquidation } from "./forced-liquidation";
+import { readFreshness, staleSources } from "./freshness";
 import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
-import { collectInvestorFlows } from "./investor-flows";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
 import { collectLiveIndexes } from "./live-indexes";
-import { collectMacroEvents } from "./macro-events";
 import { collectMargin } from "./margin";
 import { collectMarketNews } from "./market-news";
 import { collectNews } from "./news";
-import { collectJpPeerEarnings, collectPeerEarnings } from "./peer-earnings";
 import { listPositionUsers } from "./position-report";
 import { collectBackdrop } from "./premarket";
 import { collectRatings } from "./ratings";
-import { collectShortInterest } from "./short-interest";
-import { notifyNewsSlack, notifyParseFailure } from "./slack";
-import { collectTimeseries, WATCHLIST } from "./timeseries";
+import {
+	notifyJobFailure,
+	notifyNewsSlack,
+	notifyOps,
+	notifyParseFailure,
+} from "./slack";
+import { collectTimeseries, DAILY_CODES, WATCHLIST } from "./timeseries";
+import { jstDate } from "./utils";
 
 // 銘柄ニュース + 市場テーマニュースの新着を Slack (SLACK_NEWS_WEBHOOK_URL) に通知する。
 // IR(notifySlack) と別チャンネルに分離する。webhook 未設定/新着 0 なら no-op。best-effort。
@@ -58,22 +61,26 @@ async function notifyFreshNews(
 }
 
 // 発火した cron 式 → 取得種別。wrangler.toml の [triggers] crons と対応させること。
-// Cloudflare の cron trigger 上限は5個。新規 cron は足せないので、複数ソースの収集は
-// 既存 cron に相乗りさせ、scheduled() 内で順に実行する:
-//   - intake (8:30/20:00):  IR + ニュースを収集し、新規があれば signal-report 起動。
+// Cloudflare の cron trigger 上限は5個で、5個とも使っている。新しい収集は既存 cron に相乗りさせる:
+//   - intake (8:30/18:00):  IR + ニュースを収集し、全銘柄を signal-update (定時ブリーフ付き) で起動。
 //                           寄り前(8:30)のみ地合い(米国指数+日経先物)も先に取得する。
-//                           引け後は 20:00 (決算・適時開示が19時台以降に出ても当夜のうちに拾うため)。
-//   - prices (場中5分毎):   prices + ニュース速報を収集し、新規ニュースで signal-report 起動。
+//                           引け後(18:00)は先に flows (空売り需給 (逆日歩/機関の空売り残高/東証全体の
+//                           空売り比率) + 投資部門別 + 大量保有報告書 (EDINET)) を収集し、信用残も取る。
+//                           18:00 以降の開示は翌朝 8:30 の intake で拾う。
+//   - prices (場中5分毎):   prices + ニュース速報を収集し、新規ニュースのあった銘柄を signal-update で起動。
 //                           さらに JST 12:30 相当スロットでは IR intake も相乗りさせる (昼の専用 cron を
-//                           立てず4個に収めるため。下の isNoonIntakeSlot 参照)。
+//                           立てないため。下の isNoonIntakeSlot 参照)。
 //                           JST 15:00 相当の最終スロット (isPreCloseSlot) では大引け前にその時点の材料
 //                           だけで翌日寄り越えの玉を判断するため、intake 同様に全銘柄を無条件判定する。
-//   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日推定 + 空売り需給 + 投資部門別
+//   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日推定 + ピア決算日
+// eod / flows は重いので、ジョブを 1 つずつ別 invocation で回す (fan-out.ts)。
+const MORNING_INTAKE_CRON = "30 23 * * *";
+const EVENING_INTAKE_CRON = "0 9 * * *";
 const CRON_KIND: Record<string, "intake" | "prices" | "eod"> = {
-	"30 23 * * *": "intake",
-	"0 11 * * *": "intake",
+	[MORNING_INTAKE_CRON]: "intake",
+	[EVENING_INTAKE_CRON]: "intake",
 	"*/5 0-6 * * *": "prices",
-	"0 7 * * *": "eod", // JST 16:00 引け後: daily + fundamentals + earnings
+	"0 7 * * *": "eod",
 };
 
 // JST 12:30 (= UTC 03:30) のスロットか。場中 prices ループ (*/5 0-6) はどのスロットでも
@@ -109,13 +116,6 @@ function isJstWeekend(scheduledTime: number): boolean {
 	return day === 0 || day === 6;
 }
 
-// 発火予定時刻を JST の暦日 (YYYY-MM-DD) にする。
-function jstDate(scheduledTime: number): string {
-	return new Date(scheduledTime + 9 * 60 * 60 * 1000)
-		.toISOString()
-		.slice(0, 10);
-}
-
 // 発火予定時刻 (JST) が月の最初の稼働日 (1〜3日のいずれか初回) かを判定する。マクロイベント
 // (FOMC/日銀) を eod cron に月1回だけ相乗りさせるための「月初スロット」。JST 1日が土日だと
 // その日の eod は isJstWeekend で全スキップされるため、1〜3日を窓にして月内で確実に1回拾う。
@@ -124,6 +124,36 @@ function isJstMonthStart(scheduledTime: number): boolean {
 	const jst = new Date(scheduledTime + 9 * 60 * 60 * 1000);
 	const d = jst.getUTCDate();
 	return d >= 1 && d <= 3;
+}
+
+// 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率)・投資部門別売買 (週次)・
+// 大量保有報告書 (EDINET)。公表が夕方以降のものなので引け後 intake (18:00) の先頭で回す。
+async function collectFlows(env: Env): Promise<void> {
+	const { results, failed } = await fanOut(env, [
+		{ kind: "short-interest", part: "lending" },
+		...WATCHLIST.map((code) => ({
+			kind: "short-interest",
+			part: "positions",
+			code,
+		})),
+		{ kind: "short-interest", part: "market" },
+		{ kind: "investor-flows" },
+		{ kind: "large-holdings" },
+	]);
+	if (failed.length > 0) console.error("flows jobs failed:", failed);
+	await notifyJobFailure(env, "flows", failed);
+	console.log("scheduled flows done:", JSON.stringify({ results, failed }));
+}
+
+// D1 の表ごとの最新日を見て、遅れている収集を運用チャンネルに知らせる (freshness.ts)。
+async function notifyStaleSources(env: Env, today: string): Promise<void> {
+	try {
+		const stale = staleSources(await readFreshness(env, today), today);
+		if (stale.length > 0)
+			await notifyOps(env, `⚠️ データ更新の途絶: ${stale.join(", ")}`);
+	} catch (e) {
+		console.error("freshness check failed:", e);
+	}
 }
 
 // Cron Trigger 発火時。event.cron でどの cron が鳴ったか判別して種別を振り分ける。
@@ -142,13 +172,14 @@ export async function runScheduled(
 		return;
 	}
 	if (kind === "intake") {
-		// intake cron (8:30/12:30/18:30) では IR とニュースを両方収集する。
+		// intake cron (8:30/18:00) では IR とニュースを両方収集する。
 		// 寄り前(8:30)のときだけ先に当日の premarket を D1 に取る (失敗しても収集は続行)。
 		// premarket が揃った直後に market-brief (朝のマーケットブリーフ) も kick する。市場全体の
 		// 事実サマリーなので、下で発火する個別 ticker-brief より「先」に Slack へ出す必要がある。
 		// schedule cron で別に撃つと ticker-brief より後ろにずれるため、ここで premarket 取得後
 		// すぐに発火する。
-		if (event.cron === "30 23 * * *") {
+		const evening = event.cron === EVENING_INTAKE_CRON;
+		if (event.cron === MORNING_INTAKE_CRON) {
 			await collectBackdrop(env).catch((e) =>
 				console.error("backdrop failed:", e),
 			);
@@ -174,53 +205,50 @@ export async function runScheduled(
 				console.error("event-reminder failed:", e),
 			);
 		}
-		// intake (寄り前 8:30 / 引け後 20:00) は新規の有無によらず全銘柄を signal-update する。
-		// fresh だけを撃つと、出来高/話題の薄い銘柄 (例: 6857 が数日ニュース 0) のコンテキストが
-		// 一度も再生成されず取り残されるため。ticker-brief は新着材料があった銘柄だけ発火する
-		// (context-builder.yml の dispatch ステップが status=ok のときだけ撃つ)。場中
-		// (prices, 5分毎) は LLM コストを抑えるため新規ベース (下の分岐)。
+		// 引け後 (18:00) は flows を先に D1 へ入れ、この回のブリーフに夕方の需給データを載せる。
+		// fanOut なので flows の CPU はこの invocation に積まれない。
+		if (evening) {
+			await collectFlows(env).catch((e) => console.error("flows failed:", e));
+		}
+		// intake (寄り前 8:30 / 引け後 18:00) は新規の有無によらず全銘柄を brief 付きで signal-update し、
+		// 全銘柄の ticker-brief まで出す (定時ブリーフ。新着が無い銘柄は簡易版)。場中 (prices, 5分毎) は
+		// LLM コストを抑えるため新規ベース (下の分岐) で、ticker-brief は新着材料があった銘柄だけ。
 		//
-		// dispatch は 2 段で撃つ:
-		//   1) ここ (収集より先): 全銘柄無条件の保険。収集 (IR/ニュース等の全銘柄フル取得) は重く、
-		//      引け後 (20:00) は market_news まで相乗りして CPU 時間上限に達しうる。収集後にだけ
-		//      dispatch を置くと、収集が上限超過で打ち切られた回に dispatch ごと飛んで再発火が
-		//      止まる。先に撃てば収集が途中で力尽きても判定だけは必ず発火する。
-		//   2) 収集後 (下の fresh 再dispatch): この回の収集で入った新規 IR/ニュースを「同じ回」の
-		//      context-builder に乗せる。1) だけだと context-builder が /context-input を引く時点で
-		//      新規がまだ articles に無く、反映が次の intake (半日後) にずれる (cron → 収集 →
-		//      context → brief の順序保証)。concurrency (cancel-in-progress) が銘柄単位なので、
-		//      1) の走行中ジョブは 2) が上書きし二重 LLM にはならない。
+		// dispatch は 2 段で撃つ (どちらも全銘柄・brief 付き):
+		//   1) ここ (収集より先): 保険。収集 (IR/ニュース等の全銘柄フル取得) は重く、引け後 (18:00) は
+		//      market_news まで相乗りして CPU 時間上限に達しうる。収集が上限超過で打ち切られても、
+		//      判定と定時ブリーフはここで必ず発火する。
+		//   2) 収集後 (下の再dispatch): この回の収集で入った新規 IR/ニュースを「同じ回」の
+		//      context-builder に乗せる (cron → 収集 → context → brief の順序保証)。concurrency
+		//      (cancel-in-progress) が銘柄単位なので、1) の走行中ジョブは 2) が上書きし二重 LLM にはならない。
 		// 寄り前 (8:30) の market-brief dispatch は上で既に撃ち終えており、順序
 		// (市場全体→個別) も保たれる。
-		await dispatchSignalUpdate(env, WATCHLIST);
-		// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) のいずれかに新規があった
-		// 銘柄をまとめて signal-report を起動する。適時開示は /pull の ir カーソルに合流する。
+		await dispatchSignalUpdate(env, WATCHLIST, { brief: true });
+		// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) を収集する。新規があった銘柄 (fresh) は
+		// ログと新着通知に使う。適時開示は /pull の ir カーソルに合流する。
 		const ir = await collectAll(env, null, DEFAULT_LIMIT);
 		const disc = await collectDisclosures(env, null);
 		const news = await collectNews(env, null);
 		// 市場テーマニュース (半導体/AI/金利/米国市場) も収集する。market-brief が /market-context
 		// 経由で読むほか、新規見出しに watchlist 銘柄の言及 (matchTickers) があればその銘柄を
-		// freshTickers に合流させて個別ブリーフも起動する (例: 「サムスン、HBM増産」→ 6857)。
+		// freshTickers に合流させる (例: 「サムスン、HBM増産」→ 6857)。
 		// 失敗しても intake の主収集は壊さない (catch でログのみ)。
 		const mnews = await collectMarketNews(env).catch((e) => {
 			console.error("market-news failed:", e);
 			return null;
 		});
 		// 証券会社レーティング (個社別 目標株価) も intake で収集する。日報は当日夕方〜夜に
-		// 出揃うため、引け後 (20:00) intake で拾うと取りこぼしが少ない。新規があれば
-		// 目標株価変更も判定材料なので signal-report 起動対象に含める。
+		// 出揃うため、引け後 (18:00) intake で拾う。
 		const rat = await collectRatings(env, null);
-		// 信用残 (週次の需給データ) は引け後 (20:00) intake にだけ相乗りさせる。週1更新なので
+		// 信用残 (週次の需給データ) は引け後 (18:00) intake にだけ相乗りさせる。週1更新なので
 		// 毎日取っても (ticker, 集計基準日) PK で1週1行に収束する (margin.ts 参照)。新しい週次行が
-		// 公表された夜だけ freshTickers に乗り、上の IR/開示/ニュース/レーティングと束ねて 1 回
-		// だけ dispatch する (信用残だけ更新された夜でも、揃ったタイミングで判定が走る)。
-		const mgn =
-			event.cron === "0 11 * * *"
-				? await collectMargin(env, null).catch((e) => {
-						console.error("margin failed:", e);
-						return { results: null, freshTickers: [] as string[] };
-					})
-				: { results: null, freshTickers: [] as string[] };
+		// 公表された夜だけ freshTickers に乗る。
+		const mgn = evening
+			? await collectMargin(env, null).catch((e) => {
+					console.error("margin failed:", e);
+					return { results: null, freshTickers: [] as string[] };
+				})
+			: { results: null, freshTickers: [] as string[] };
 		const fresh = [
 			...new Set([
 				...ir.freshTickers,
@@ -244,9 +272,9 @@ export async function runScheduled(
 			"fresh:",
 			fresh.join(","),
 		);
-		// 上記 2 段 dispatch の 2)。この回の収集で新規が出た銘柄だけ再dispatch し、入ったばかりの
-		// IR/ニュースを同じ回の context-builder に読ませる (新規なしなら no-op)。
-		await dispatchSignalUpdate(env, fresh);
+		// 上記 2 段 dispatch の 2)。全銘柄を brief 付きで再dispatch し、入ったばかりの IR/ニュースを
+		// 同じ回の context-builder に読ませる。
+		await dispatchSignalUpdate(env, WATCHLIST, { brief: true });
 		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
 		await notifyFreshNews(env, news, mnews);
 		// 「HTTP 200 なのに一覧パース0件」= ソースサイトの DOM 変更で収集が静かに止まっている疑い。
@@ -257,6 +285,10 @@ export async function runScheduled(
 			...news.emptyParses.map((c) => `news:${c}`),
 			...(mnews?.emptyParse ? ["market-news"] : []),
 		]);
+		// 引け後 (18:00) は eod / flows の収集が済んでいるので、表ごとの途絶を確かめる (1日1回)。
+		if (evening) {
+			await notifyStaleSources(env, jstDate(event.scheduledTime));
+		}
 		return;
 	}
 	if (kind === "prices") {
@@ -277,7 +309,7 @@ export async function runScheduled(
 			return null;
 		});
 		// JST 12:30 相当スロットでは IR + 適時開示 intake も相乗りさせる (昼の専用 cron を持たないため)。
-		// IR・適時開示・ニュースどの新着でも signal-report を起動するので fresh を統合して dispatch する。
+		// IR・適時開示・ニュースどの新着でも signal-update を撃つので fresh を統合して dispatch する。
 		let ir: { freshTickers: string[] } | null = null;
 		let disc: { freshTickers: string[] } | null = null;
 		if (isNoonIntakeSlot(event.scheduledTime)) {
@@ -315,46 +347,24 @@ export async function runScheduled(
 			return;
 		}
 		// 場中の通常スロットは同一銘柄の短時間連発を抑える (デバウンス)。intake (上の分岐) は抑えない。
-		await dispatchSignalUpdate(env, fresh, true);
+		await dispatchSignalUpdate(env, fresh, { debounce: true });
 		return;
 	}
 	if (kind === "eod") {
-		// 引け後の1日1回。daily (watchlist + TOPIX + 日経225、足りない過去分の補完込み) + fundamentals +
-		// 次回決算予定日の推定をまとめて実行。
-		const d = await collectTimeseries(env, "daily", null);
-		const f = await collectTimeseries(env, "fundamentals", null);
-		const e = await collectEarnings(env, null);
-		// 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率) と投資部門別売買 (週次)。
-		// 公表が夕方〜翌日のものは前営業日分を拾う。失敗しても eod の主収集は壊さない。
-		const si = await collectShortInterest(env, null).catch((err) => {
-			console.error("short-interest failed:", err);
-			return null;
-		});
-		const inv = await collectInvestorFlows(env).catch((err) => {
-			console.error("investor-flows failed:", err);
-			return null;
-		});
-		// 海外SOX系ピア (MU/NVDA 等) の次回決算日も毎 eod 取得する。次回日は決算ごとに繰り上がる
-		// ため月初1回では最大1ヶ月古くなる。watchlist の earnings と同頻度・同思想 (毎日上書き)。
-		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
-		const pe = await collectPeerEarnings(env, null).catch((err) => {
-			console.error("peer-earnings failed:", err);
-			return null;
-		});
-		// 国内ピア (東エレ/ディスコ 等) の次回決算日も同様に毎 eod 取得する (kabutan から推定)。
-		const pej = await collectJpPeerEarnings(env, null).catch((err) => {
-			console.error("peer-earnings-jp failed:", err);
-			return null;
-		});
-		// マクロイベント (FOMC/日銀) は月初スロットでだけ相乗り収集する。会合は年8回・先の日程が
-		// 確定公表されており月1で十分。失敗しても eod の主収集は壊さない (catch でログのみ)。
-		let macro: Record<string, unknown> | null = null;
-		if (isJstMonthStart(event.scheduledTime)) {
-			macro = await collectMacroEvents(env).catch((err) => {
-				console.error("macro-events failed:", err);
-				return null;
-			});
-		}
+		// 引け後の1日1回。日足 (watchlist + TOPIX + 日経225、足りない過去分の補完込み)・fundamentals・
+		// 次回決算予定日・ピア決算日 (毎日上書き)・FOMC/日銀 (月初だけ) を、1 ジョブ = 1 invocation で回す。
+		const { results: eodJobs, failed: eodFailed } = await fanOut(env, [
+			...DAILY_CODES.map((code) => ({ kind: "daily", code })),
+			...WATCHLIST.map((code) => ({ kind: "fundamentals", code })),
+			{ kind: "earnings" },
+			{ kind: "peer-earnings" },
+			{ kind: "peer-earnings-jp" },
+			...(isJstMonthStart(event.scheduledTime)
+				? [{ kind: "macro-events" }]
+				: []),
+		]);
+		if (eodFailed.length > 0) console.error("eod jobs failed:", eodFailed);
+		await notifyJobFailure(env, "eod", eodFailed);
 		// 強制決済スコア (追証売り/踏み上げ) を当日 daily が確定した直後に算出して D1 に保存する。
 		// daily を上で収集済みなので最新足が揃っている。margin は intake で取得済みの最新行を読む。
 		// 失敗しても eod の主収集は壊さない (catch でログのみ)。
@@ -385,14 +395,8 @@ export async function runScheduled(
 		console.log(
 			"scheduled eod done:",
 			JSON.stringify({
-				daily: d,
-				fundamentals: f,
-				earnings: e,
-				...(si ? { shortInterest: si } : {}),
-				...(inv ? { investorFlows: inv } : {}),
-				...(pe ? { peerEarnings: pe } : {}),
-				...(pej ? { peerEarningsJp: pej } : {}),
-				...(macro ? { macroEvents: macro } : {}),
+				jobs: eodJobs,
+				failed: eodFailed,
 				...(fl ? { forcedLiquidation: fl.results } : {}),
 				...(pr ? { positionReview: pr } : {}),
 			}),

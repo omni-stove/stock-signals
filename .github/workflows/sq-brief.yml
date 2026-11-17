@@ -61,75 +61,75 @@ jobs:
             # sq-brief
 
             Produce the morning **SQ週ブリーフ** for a semis-heavy Japanese watchlist held for days to three
-            weeks: how this SQ week is likely to move, and how strongly each name gets pushed around by SQ.
-            Give scenarios with 確度, never a verdict: no buy/sell direction, no 指値, no 損切り, no advice
-            verbs. The watchlist names move largely together as one sector, so don't write a forecast per name —
-            the per-name question is only **how much SQ moves it** compared with its normal days.
+            weeks: the paths this SQ week can take, and how strongly SQ pushes each name compared with its
+            normal days. Give scenarios with 確度, never a verdict: no buy/sell direction, no 指値, no 損切り, no
+            advice verbs. Do not forecast any single name. Never write a figure (price, %, multiple, count); the
+            posting step appends the SQ date, this week's returns, NT倍率, and each name's SQ連動度.
+
+            Judge only on what these inputs show now; never on hindsight or a later result.
 
             Do not post to Slack; do not run any script; do not write any file — return structured output
-            and stop. Judge only on what these inputs show now; never on hindsight or a later result.
+            and stop.
 
             ## Inputs
 
-            Lead on `history` + `week_to_date` (what SQ has done to these names and how this week has run into
+            Lead on `history` and `week_to_date` (what SQ has done to these names and how this week has run into
             it); `premarket` sets today's gap; the rest only raises or lowers 確度.
 
-            - **`sq`**: this week's 日本SQ. `date` (SQ値は当日の寄りで決まる), `major` (3・6・9・12月 = 先物と
-              オプションの両方が清算されるメジャーSQ; otherwise options only and weaker), `days_to_sq`
-              (0 = today is SQ day, pre-open). `in_week: false` = not an SQ week (manual run) — frame the
-              brief as a preview of the next SQ.
-            - **`market.nikkei225`** leads the market-wide scenarios — SQ値 is the 日経225 settlement; its
-              `history` carries `*_excess` vs TOPIX, i.e. how much SQ pushed 日経225 apart from the broad market.
-              **`market.topix`** is the broad-market reference. **`market.nt_ratio`** (日経225 ÷ TOPIX: `nt`,
-              `prev_week_end`, `avg_20d`): NT rising into SQ = 日経225 side bid harder than the broad market
-              (the 225-heavy semis carry it), falling = sold harder; `insufficient` → skip.
-            - **`market.*.history`** and **`tickers[].history`** — past SQ weeks from stored daily bars.
-              Per event: `pre_ret_pct` (前週末→SQ前日), `week_ret_pct` (前週末→SQ日終値), `sq_gap_pct` (SQ前日終値→
-              SQ日始値), `sq_vol_x` (SQ日出来高 / 20日平均), `post_ret_pct` (SQ日→翌週末, SQ明け), `sq_day_share`
-              (月〜SQ日の日次値幅の合計のうち SQ日の割合), `pre_day_abs_pct` (月〜SQ前日の日次値幅の平均). `all` / `major`
-              aggregate them (`n`, `mean`, `median`, `up_ratio`); tickers also carry `week_excess` /
-              `sq_gap_excess` / `post_excess` (minus TOPIX on the same SQ) when TOPIX bars exist.
-              **`sensitivity`** is the SQ連動度, each against non-SQ weeks: `sq_gap_abs_x` (SQ日の寄りギャップ ÷
-              平常週の同じ曜日の寄りギャップ), `sq_day_share` vs `normal_day_share` (SQ日の割合 vs 平常週の同じ曜日の
-              割合), `pre_day_abs_x` (月〜SQ前日の日次値幅 ÷ 平常日), `sq_week_abs_x` (SQ週の値幅 ÷ 平常週),
-              `sq_vol_x` (SQ日の出来高倍率), `reversal_rate` (SQ週の値動きが明けに逆向きになった割合). Above 1 /
-              above the normal share = SQ moves it more than usual. Classify each name by where SQ hits it:
-              concentrated on SQ day (`sq_gap_abs_x` and `sq_day_share` above normal), spread across the days before
-              SQ (`pre_day_abs_x` above 1 while `sq_day_share` is at or below normal), or barely (all near 1).
-              `n` is small (one SQ a month) — say so when it is, weigh `major` lightly when `major.n` ≤ 2, and
-              never present an average of a handful of events as a law. `status: insufficient` → skip that name.
-              **`events[].tags`** note what else was going on in each past SQ week: `trend` (SQ週前の地合い: up /
-              down / range, from `pre_20d_ret_pct` against the name's normal 20-day swing), `earnings` (自社決算が
-              `sq_week` / `post_week` (SQ明け) / `none`; `unknown` = no earnings record that far back; `null` = index),
-              `macro` (FOMC・日銀・ピア決算・その銘柄の指数採用/除外 in the SQ week), `confounded` (earnings or macro
-              overlapped, so the move may not be SQ's). `clean` / `sensitivity_clean` are the same aggregates over
-              the non-confounded events only, present only when some event was confounded. When `sensitivity`
-              and `sensitivity_clean` disagree, lead with `sensitivity_clean` and name the tagged event that drove
-              the gap; when `clean.n` ≤ 2, say the SQ effect can't be separated. Use
-              `trend` to explain an outlier or to note which past weeks resemble this one, never to filter the
-              aggregates further.
-            - **`week_to_date`**: this week so far (前週末からのリターン, `excess_pct` = TOPIX比). A week that has
-              already run hard into SQ is what `reversal_rate` speaks to.
-            - **`premarket`** (last night's NY: `sox_change_pct` leads for semis, `nikkei_futures_price` is the
-              home gap, plus ドル円・米10年債・VIX; `status: stale` → demote, `us_session: carried_over` → not fresh),
-              **`live_indexes`** (場中の日経225/KOSPI; pre-open they are stale, skip),
-              **`market_short_ratio`** (空売り比率 vs 5日平均 — heavy hedging is squeeze fuel into SQ),
-              **`investor_flows`** (週次の海外投資家の買い越し/売り越しの連続), **`event_context`** (other events
-              this week — FOMC/日銀/ピア決算 overlapping SQ week change the scenarios; `特になし` → ignore).
             - **`market_phase`**: `premarket` (today's gap isn't in yet) / 場中 / `closed`.
+            - **`sq`**: this week's 日本SQ — `date`, `major` (true = メジャーSQ, futures and options settle; false =
+              options only, a weaker pull), `days_to_sq` (0 = today is SQ day, pre-open). `in_week: false` → not an
+              SQ week (manual run); frame the brief as a preview of the next SQ.
+            - **`market.nikkei225`** leads the market-wide scenarios; its `history` carries `*_excess` vs TOPIX —
+              how far SQ pushed 日経225 apart from the broad market. **`market.topix`** is the broad-market
+              reference. **`market.nt_ratio`** (`nt`, `prev_week_end`, `avg_20d`): rising into SQ = the 日経225 side
+              bid harder than the broad market, falling = sold harder; `insufficient` → skip.
+            - **`market.*.history`** and **`tickers[].history`** — past SQ weeks from stored daily bars. Per event:
+              `pre_ret_pct` (前週末→SQ前日), `week_ret_pct` (前週末→SQ日終値), `sq_gap_pct` (SQ前日終値→SQ日始値),
+              `sq_vol_x` (SQ日出来高 ÷ 20日平均), `post_ret_pct` (SQ日→翌週末), `sq_day_share` (SQ day's share of the
+              week's daily ranges through SQ), `pre_day_abs_pct` (mean daily range before SQ day). `all` / `major`
+              aggregate them (`n`, `mean`, `median`, `up_ratio`); tickers also carry `week_excess` /
+              `sq_gap_excess` / `post_excess` vs TOPIX. `status: insufficient` → skip that name.
+            - **`sensitivity`** (SQ連動度, each against non-SQ weeks; 1 = as usual): `sq_gap_abs_x` (SQ-day opening
+              gap vs the same weekday's gap in normal weeks), `sq_day_share` vs `normal_day_share`,
+              `pre_day_abs_x` (daily range before SQ day vs normal days), `sq_week_abs_x` (SQ-week range vs normal
+              weeks), `sq_vol_x` (SQ-day volume multiple), `reversal_rate` (share of SQ weeks whose move reversed
+              after SQ). For each name, read where SQ's push lands — the SQ-day open, the days before SQ, or the
+              unwind after it — and how far above normal it runs.
+            - **Sample size**: the fewer events behind an aggregate (`n`), the less weight it carries; never
+              present an average of a handful of events as a law, and say so when `n` is thin.
+            - **`events[].tags`** — what else was going on in each past SQ week: `trend` (the tape before the SQ
+              week: up / down / range), `earnings` (`sq_week` / `post_week` / `none`; `unknown` = no record that
+              far back; `null` = index), `macro` (FOMC・日銀・ピア決算・指数採用/除外 in the SQ week), `confounded`
+              (earnings or macro overlapped). `clean` / `sensitivity_clean` are the same aggregates over the
+              non-confounded events, present only when some event was confounded. When `sensitivity` and
+              `sensitivity_clean` disagree, lead with `sensitivity_clean` and name the tagged event behind the
+              gap; when `clean.n` is too thin to separate the SQ effect, say so. Use `trend` to explain an
+              outlier or to name which past weeks resemble this one, never to filter the aggregates further.
+            - **`week_to_date`**: this week so far (return since 前週末, `excess_pct` vs TOPIX). A week that has
+              already run hard into SQ is what `reversal_rate` speaks to.
+            - **`premarket`** (last night's NY): `sox_change_pct` leads for semis, `nikkei_futures_price` is the
+              home gap; ドル円・米10年債・VIX only confirm. `status: stale` → demote; `us_session: carried_over` → not
+              fresh.
+            - **`live_indexes`** (場中の日経225/KOSPI): pre-open they are stale → skip.
+            - **`market_short_ratio`** (空売り比率 vs its 5日平均): heavy hedging is squeeze fuel into SQ.
+              **`investor_flows`** (weekly 海外投資家 net and its streak). `unavailable` → skip either.
+            - **`event_context`**: other events this week — FOMC/日銀/ピア決算 overlapping the SQ week reshape the
+              scenarios; `特になし` → ignore.
 
-            ## Writing
+            ## Output
 
-            - **headline**: `🎯 SQ週ブリーフ: <一言>` — what matters most for this SQ week today.
-            - **scenarios**: 2-3 of 上振れ / 下振れ / 膠着 (or SQ通過後の剥落), each with 確度 (高/中/低), the trigger
-              that would set it off (a number or event from the inputs), and the path through SQ day and into
-              SQ明け. Ground 確度 in the inputs (history + this week's run + tonight's backdrop), not in
-              adjectives. On SQ day (`days_to_sq` 0) focus on the opening print and the post-SQ unwind; earlier in the week,
-              weigh the names whose SQ effect spreads across the days before SQ.
-            - **sensitivity**: rank the names by SQ連動度 and say which are pushed most/least by SQ and in what way
-              (SQ日の寄りに集中 / SQ前の日々に分散 / 明けの反転), with the multiples. 1 line per point, at most 5 lines.
-            - **watch**: 1-3 facts to check today (a level, a print, an event), as facts to watch, not instructions.
-            - Real numbers, not adjectives alone. Japanese. One point per line, short memo style.
+            Japanese, one point per line, clipped note style, no figures.
+
+            - `headline`: `🎯 SQ週ブリーフ: <one phrase>` — what matters most for this SQ week today.
+            - `scenarios`: 2–3 distinct paths through SQ day and into SQ明け. Each has `name` (a few words),
+              `likelihood` grounded in the inputs (history, this week's run, tonight's backdrop), `trigger` (an
+              event or move in the inputs that would set it off), and `path`. On SQ day (`days_to_sq` 0) center
+              them on the opening print and the post-SQ unwind; earlier in the week, weigh the names whose SQ
+              push lands on the days before SQ.
+            - `sensitivity`: rank the names by how hard SQ pushes them and say where the push lands (SQ日の寄り /
+              SQ前の日々 / 明けの反転), one point per line.
+            - `watch`: 1–3 facts to check today (a print or an event), as facts to watch, not instructions.
 
             ## SQコンテキスト
 
@@ -140,18 +140,18 @@ jobs:
               "type":"object","additionalProperties":false,
               "required":["headline","scenarios","sensitivity","watch"],
               "properties":{
-                "headline":{"type":"string","description":"Slack first line: 🎯 SQ週ブリーフ: <一言> (売買の方向は書かない)"},
+                "headline":{"type":"string"},
                 "scenarios":{"type":"array","minItems":2,"maxItems":3,"items":{
                   "type":"object","additionalProperties":false,
                   "required":["name","likelihood","trigger","path"],
                   "properties":{
-                    "name":{"type":"string","description":"シナリオ名 (上振れ / 下振れ / 膠着 / SQ通過後の剥落 など)"},
+                    "name":{"type":"string"},
                     "likelihood":{"type":"string","enum":["高","中","低"]},
-                    "trigger":{"type":"string","description":"きっかけ (入力にある数値・イベント)"},
-                    "path":{"type":"string","description":"SQ日から SQ明けまでの値動きの経路"}
+                    "trigger":{"type":"string"},
+                    "path":{"type":"string"}
                   }}},
-                "sensitivity":{"type":"array","items":{"type":"string"},"maxItems":5,"description":"銘柄ごとの SQ連動度の読み (倍率付き、1 行 1 論点)"},
-                "watch":{"type":"array","items":{"type":"string"},"maxItems":3,"description":"今日確かめる事実"}
+                "sensitivity":{"type":"array","items":{"type":"string"},"maxItems":5},
+                "watch":{"type":"array","items":{"type":"string"},"maxItems":3}
               }
             }'
 

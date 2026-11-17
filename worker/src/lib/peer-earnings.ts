@@ -36,15 +36,33 @@ export interface PeerEarningsEnv {
 
 // 監視対象セクター (semiconductor) を動かす海外ピア。config/peers.yaml と一致させること
 // (Worker は読み取り専用FSで yaml を読めないため、実行時の真の出所はこの定数)。
-// ピアの増減はここと config/peers.yaml の両方を直す。
-const SOX_PEERS: { ticker: string; name: string; role: string }[] = [
-	{ ticker: "MU", name: "マイクロン", role: "メモリ" },
-	{ ticker: "NVDA", name: "エヌビディア", role: "GPU" },
-	{ ticker: "AMAT", name: "アプライド", role: "前工程装置" },
-	{ ticker: "LRCX", name: "ラムリサーチ", role: "前工程装置" },
-	{ ticker: "KLAC", name: "KLA", role: "検査装置" },
-	{ ticker: "ASML", name: "ASML", role: "露光装置" },
-	{ ticker: "TSM", name: "TSMC", role: "ファウンドリ" },
+// ピアの増減はここと config/peers.yaml の両方を直す。premarket.ts が前夜の騰落も取る。
+// release は決算の発表タイミング: after_close = 米国の引け後 (その日の終値に未反映) /
+// before_open = 米国の寄り前 (その日の終値に反映済み。ASML は欧州朝、TSMC は台湾午後)。
+export type PeerRelease = "after_close" | "before_open";
+export const SOX_PEERS: {
+	ticker: string;
+	name: string;
+	role: string;
+	release: PeerRelease;
+}[] = [
+	{ ticker: "MU", name: "マイクロン", role: "メモリ", release: "after_close" },
+	{ ticker: "NVDA", name: "エヌビディア", role: "GPU", release: "after_close" },
+	{
+		ticker: "AMAT",
+		name: "アプライド",
+		role: "前工程装置",
+		release: "after_close",
+	},
+	{
+		ticker: "LRCX",
+		name: "ラムリサーチ",
+		role: "前工程装置",
+		release: "after_close",
+	},
+	{ ticker: "KLAC", name: "KLA", role: "検査装置", release: "after_close" },
+	{ ticker: "ASML", name: "ASML", role: "露光装置", release: "before_open" },
+	{ ticker: "TSM", name: "TSMC", role: "ファウンドリ", release: "before_open" },
 ];
 
 // 国内ピア (watchlist 外の東証銘柄)。決算は引け後発表が大半で、翌営業日に同業の watchlist 銘柄へ

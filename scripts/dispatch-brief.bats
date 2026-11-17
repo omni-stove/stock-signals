@@ -34,7 +34,21 @@ run_db() {
   printf '%s\n' "$output" | grep -q "GH api repos/foo/bar/dispatches"
   printf '%s\n' "$output" | grep -q "event_type=ticker-brief"
   printf '%s\n' "$output" | grep -q "client_payload\[ticker\]=285A"
+  printf '%s\n' "$output" | grep -q "client_payload\[fresh\]=true"
   printf '%s\n' "$output" | grep -q "ticker-brief dispatched"
+}
+
+# --no-fresh は新着なしの定時ブリーフ。fresh=false を載せる。
+@test "dispatch: --no-fresh sends fresh=false" {
+  GITHUB_REPOSITORY="foo/bar" run_db 285A --no-fresh
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -q "client_payload\[fresh\]=false"
+}
+
+@test "args: unknown second arg fails with usage" {
+  GITHUB_REPOSITORY="foo/bar" run_db 285A --bogus
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -vq "^GH "
 }
 
 # GITHUB_REPOSITORY が無ければ dispatch しない (ローカル等)。run は成功のまま。

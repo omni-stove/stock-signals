@@ -122,9 +122,34 @@ export function normArticleDate(raw: string, epochNow: number): string {
 	return "unknown";
 }
 
+// ── 日付 (YYYY-MM-DD) ────────────────────────────────────────────────────────
+
+// YYYY-MM-DD に n 日足す。UTC 正午で計算するので暦日だけが動く。
+export function addDays(date: string, days: number): string {
+	const d = new Date(`${date}T12:00:00Z`);
+	d.setUTCDate(d.getUTCDate() + days);
+	return d.toISOString().slice(0, 10);
+}
+
+// epoch ミリ秒を JST の暦日 (YYYY-MM-DD) にする。
+export function jstDate(epochMs: number): string {
+	return new Date(epochMs + 9 * 3600_000).toISOString().slice(0, 10);
+}
+
 // in-source tests (本番ビルドでは tree-shake される。vitest.config.ts 参照)
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
+
+	describe("addDays / jstDate", () => {
+		it("月末・年末をまたいで暦日を動かす", () => {
+			expect(addDays("2026-12-31", 1)).toBe("2027-01-01");
+			expect(addDays("2026-03-01", -1)).toBe("2026-02-28");
+		});
+		it("UTC 15:00 以降は JST の翌日", () => {
+			expect(jstDate(Date.parse("2026-11-12T14:59:00Z"))).toBe("2026-11-12");
+			expect(jstDate(Date.parse("2026-11-12T15:00:00Z"))).toBe("2026-11-13");
+		});
+	});
 
 	describe("hash", () => {
 		it("常に 8 桁の 16 進文字列を返す", () => {

@@ -1,0 +1,16 @@
+name: Hotfix/Revert Approve
+
+on:
+  pull_request:
+    types: [labeled, opened, reopened]
+
+jobs:
+  approve:
+    uses: omni-stove/.github/.github/workflows/hotfix-revert-approve.yml@main
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: write
+    with:
+      ci-workflow: "ci.yml"
+    secrets: inherit

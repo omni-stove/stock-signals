@@ -108,9 +108,12 @@ jobs:
               outlier or to name which past weeks resemble this one, never to filter the aggregates further.
             - **`week_to_date`**: this week so far (return since 前週末, `excess_pct` vs TOPIX). A week that has
               already run hard into SQ is what `reversal_rate` speaks to.
-            - **`premarket`** (last night's NY): `sox_change_pct` leads for semis, `nikkei_futures_price` is the
-              home gap; ドル円・米10年債・VIX only confirm. `status: stale` → demote; `us_session: carried_over` → not
-              fresh.
+            - **`premarket`** (last night's NY): `nikkei_futures_price` is the home gap into the SQ print. For the
+              names, no index leads by default: weigh `sox_change_pct` (US semis), `nasdaq_change_pct` /
+              `dow_change_pct` (US equities), ドル円・米10年債・VIX by how sensitive each name is to it, as its
+              `sector_role` suggests; the rest only confirm. When a name's exposure is unclear from `sector_role`,
+              read `premarket` as general risk appetite for it. `status: stale` → demote; `us_session:
+              carried_over` → not fresh.
             - **`live_indexes`** (場中の日経225/KOSPI): pre-open they are stale → skip.
             - **`market_short_ratio`** (空売り比率 vs its 5日平均): heavy hedging is squeeze fuel into SQ.
               **`investor_flows`** (weekly 海外投資家 net and its streak). `unavailable` → skip either.

@@ -27,7 +27,7 @@ per_ticker:
 # (実装は worker/src/index.ts の parseList。ローカルの scripts/fetch-ir.ts は廃止済み)。
 # 取得物は per_ticker と同様 D1 articles (source=ir:<site>:<code>) に入る (銘柄確定済み)。
 # kioxia だけ記事本文HTMLが安定して取れるので本文も取得し、
-# 他3社は記事リンクが PDF/カレンダーで本文HTMLが取れないため一覧の見出しを本文として保存する
+# 他2社は記事リンクが PDF/カレンダーで本文HTMLが取れないため一覧の見出しを本文として保存する
 # (適時開示はタイトルで「何が起きたか」が分かる。disclosure.ts と同思想)。
 ir:
   # 285A キオクシア。
@@ -67,15 +67,6 @@ ir:
     list_url: "https://www.lasertec.co.jp/news/"
     encoding: "utf-8"
     note: "当年ページのみ表示。見出しを本文として保存"
-
-  # 6981 村田製作所。
-  #  IRニュース専用 RSS。<item> ごとに link/title/pubDate (RFC822 JST 表記)。
-  #  pubDate は new Date() を経由すると暦日が UTC に1日ずれるので、文字列から JST 暦日を直接拾う。
-  - code: "6981"
-    site: "murata"
-    list_url: "https://corporate.murata.com/ja-jp/newsroom/news/irnews/irnews/rssfeed"
-    encoding: "utf-8"
-    note: "IRニュース RSS。pubDate は JST 暦日のまま正規化 (rfc822ToYmd)"
 
 # マクロ: 全銘柄横断のニュース。Worker が aliases/keywords で銘柄判定する。
 # 株探にRSSは存在しないので、こちらもHTML一覧をスクレイプする。

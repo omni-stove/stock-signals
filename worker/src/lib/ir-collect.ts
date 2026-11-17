@@ -9,8 +9,7 @@
 //                       本文も取得する (唯一 fetchBody=true)。
 //   - advantest (6857): li.m-list-news__item (time.datetime / p.m-text__item)。
 //   - lasertec  (6920): article.news__article (time.datetime / h3.news__title)。当年ページのみ。
-//   - murata    (6981): IRニュース RSS (item の link/title/pubDate)。
-//   advantest/lasertec/murata は記事リンクが PDF/カレンダーで本文HTMLが取れないため、
+//   advantest/lasertec は記事リンクが PDF/カレンダーで本文HTMLが取れないため、
 //   一覧の見出しを本文として保存する (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。
 
 import { seenArticleUrls } from "./articles";

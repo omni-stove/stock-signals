@@ -210,8 +210,15 @@ jobs:
               (`excess_to_date_pct`). Report how the market took a material — a good-news item that sold off or
               faded is itself a fact. `partial: true` = the second session is not in yet.
             - **`earnings`** (next date) is binary-event risk — report the date as a `watch` or `bear` fact.
-              **`earnings_result`** with `status: fresh`: report `verdict` (beat/miss/inline) as a material and
-              read the price reaction through **## 決算の特色・クセ** in `context_body`; any other status → skip.
+              **`earnings_result`** with `status: fresh` = the quarter `period` (`fiscal_quarter` 4 = 本決算) came
+              out on `announced_at`. Lead on `yoy_pct` (前年同期比 of 売上・営業益・経常益・最終益); `qoq_pct`
+              (前四半期比) and `progress_pct` (期初からの累計 ÷ `forecast_period` の通期会社予想) only confirm;
+              `actual` / `year_ago` (百万円) only show a 赤字・黒字 turn where a `*_pct` is null. Read these as
+              facts: say in words whether the quarter grew or shrank and whether progress runs ahead of or behind
+              the pace, and write none of the numbers. `progress_pct: null` → do not speak of progress (本決算 or a
+              missing quarter). No consensus is collected — never call the result beat/miss/上振れ/下振れ against
+              expectations unless a cited source states it. Read the price reaction through
+              **## 決算の特色・クセ** in `context_body`. Any other status → skip.
             - **`revisions`**: the current company forecast (`forecast`: 売上・経常・最終 in 億円, eps/dividend in 円,
               `announced_at`) and `revisions[]` within a year (`kind` `up`/`down`/`mixed` = 修正の向き,
               `unchanged` = 据え置き, `initial` = 期初予想; `*_chg_pct` = 修正幅). Nothing before `history_since`

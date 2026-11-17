@@ -334,7 +334,11 @@ function earningsTag(
 	if (!dates) return null;
 	const monday = mondayOf(e.date);
 	const postEnd = addDaysYmd(monday, 11);
-	if (!dates.length || dates.reduce((a, b) => (a < b ? a : b)) > postEnd)
+	if (
+		!dates.length ||
+		// biome-ignore lint/complexity/useMathMinMax: compares YYYY-MM-DD strings
+		dates.reduce((a, b) => (a < b ? a : b)) > postEnd
+	)
 		return "unknown";
 	if (dates.some((d) => d >= addDaysYmd(monday, -3) && d < e.date))
 		return "sq_week";
@@ -433,7 +437,8 @@ export function buildSqHistory(
 		status: "ok",
 		window_start: bars[0].date,
 		earnings_known_from: earningsDates.length
-			? earningsDates.reduce((a, b) => (a < b ? a : b))
+			? // biome-ignore lint/complexity/useMathMinMax: compares YYYY-MM-DD strings
+				earningsDates.reduce((a, b) => (a < b ? a : b))
 			: null,
 		events,
 		all: summarize(events, bench),

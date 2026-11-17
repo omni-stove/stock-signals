@@ -142,6 +142,18 @@ run_pm_ctx() {
   grep -qF '空売り比率 42.1%（5日平均 39.8%） / 海外投資家 -1200億円（2026-11-02〜2026-11-06・2週連続売り越し）' <<<"$t"
 }
 
+@test "numbers: VIX carries its distance from the recent high, or marks a new high" {
+  run_pm_ctx '{"premarket":{"status":"ok","date":"2026-11-13","vix_price":24.3,"vix_change_pct":-8.2,
+    "vix_peak":{"window_days":30,"peak":32.4,"from_peak_pct":-25}}}'
+  [ "$status" -eq 0 ]
+  grep -qF 'VIX 24.3（-8.2%・30日高値 32.4から-25%）' <<<"$(payload | jq -r '.blocks[1].elements[0].text')"
+
+  run_pm_ctx '{"premarket":{"status":"ok","date":"2026-11-13","vix_price":32.4,
+    "vix_peak":{"window_days":30,"peak":32.4,"from_peak_pct":0}}}'
+  [ "$status" -eq 0 ]
+  grep -qF 'VIX 32.4（30日高値）' <<<"$(payload | jq -r '.blocks[1].elements[0].text')"
+}
+
 @test "numbers: carried-over and stale premarket are tagged next to the date" {
   run_pm_ctx '{"premarket":{"status":"stale","date":"2026-11-12","us_session":"carried_over","sox_change_pct":1}}'
   [ "$status" -eq 0 ]

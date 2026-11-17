@@ -100,8 +100,10 @@ jobs:
               `nasdaq_change_pct` / `dow_change_pct` give breadth, `nikkei_futures_price` the home tape's own gap.
               The macro backdrop: `usdjpy_price` / `usdjpy_change` (円安 lifts exporters), `us10y_yield` /
               `us10y_change_bp` (a rise weighs on high-multiple semis), `vix_price` / `vix_change_pct` (risk
-              appetite). `status: stale` → demote it; `unavailable` → report from `sectors` and `event_context`
-              alone. `us_session: carried_over` = 米国休場明け — the numbers are the prior close (`date`) the last
+              appetite); `vix_peak` (`peak` over `window_days`, `from_peak_pct` = the current level's distance
+              below it) tells a fear spike still building (at the high) from one already unwinding — state
+              which, as a fact, never as a bottom or timing call. `status: stale` → demote it; `unavailable` →
+              report from `sectors` and `event_context` alone. `us_session: carried_over` = 米国休場明け — the numbers are the prior close (`date`) the last
               JP session already traded on; say so and do not report them as fresh overnight news.
             - **`us_peers`** (`peers[]`: `ticker`, `role`, `change_pct` for the US session `us_date`) explains
               what drove SOX. Name a peer only when it carries `earnings` or splits from SOX (opposite sign, or a

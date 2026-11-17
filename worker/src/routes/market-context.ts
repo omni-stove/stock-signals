@@ -6,11 +6,12 @@
 //   { asof, market_phase, event_context, premarket, us_peers, live_indexes, sectors, market_news,
 //     investor_flows, market_short_ratio }
 //
-// premarket は judge-context と違い us_indexes / date も載せる (市場全体のマーケットブリーフに使うため)。
+// premarket は judge-context と違い us_indexes / date と vix_peak (直近 30 日の VIX 高値と現値の乖離) も載せる
+// (市場全体のマーケットブリーフに使うため)。
 // us_peers は海外ピア個別株の前夜の騰落 (決算日に当たる銘柄は終値に反映済みか付き)。
 // live_indexes は場中に同時進行で動く指数 (日経225/KOSPI) の最新現値 (premarket=前夜確定 と対)。
 
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, gte } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
@@ -21,8 +22,10 @@ import { resolveMarketPhase } from "../lib/market-phase";
 import {
 	buildPremarketBlock,
 	buildUsPeersBlock,
+	buildVixPeak,
 	PREMARKET_COLUMNS,
 	parseUsIndexes,
+	VIX_PEAK_WINDOW_DAYS,
 } from "../lib/premarket";
 import {
 	daily,
@@ -128,6 +131,22 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 	}
 	const sectorReports = buildSectors(WATCHLIST_META, premarketLine, barsByCode);
 
+	// vix_peak: 直近 VIX_PEAK_WINDOW_DAYS 日の premarket 行の vix_price から高値と現値の乖離を出す。
+	const vixHistory = await db(env.DB)
+		.select({ vix_price: premarketBackdrop.vixPrice })
+		.from(premarketBackdrop)
+		.where(
+			gte(
+				premarketBackdrop.fetchedAt,
+				new Date(epochNow - VIX_PEAK_WINDOW_DAYS * 86400_000).toISOString(),
+			),
+		)
+		.all();
+	const vixPeak = buildVixPeak(
+		vixHistory.map((r) => r.vix_price),
+		pmRow?.vix_price,
+	);
+
 	// market_news 最新 8 件 (半導体/AI/金利/米国市場のテーマ見出し)。地合いの tilt を肉付けする材料。
 	// 本文ではなく見出し + topic + 日時だけ渡す (premarket が主、これは補強)。
 	const newsRows = await db(env.DB)
@@ -157,7 +176,10 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 		asof: today,
 		market_phase: marketPhase,
 		event_context: buildEventContext(today, macroRows, marketPhase),
-		premarket: premarketBlock,
+		premarket:
+			premarketBlock.status === "unavailable"
+				? premarketBlock
+				: { ...premarketBlock, vix_peak: vixPeak },
 		us_peers: buildUsPeersBlock(
 			pmRow?.us_peers_json,
 			pmRow?.fetched_at,

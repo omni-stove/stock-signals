@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'exec \"$(git rev-parse --show-toplevel)/.agents/hooks/run-skill-scripts.sh\"'"
+          }
+        ]
+      }
+    ]
+  }
+}

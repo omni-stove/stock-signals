@@ -60,23 +60,11 @@ jobs:
           app-id: ${{ secrets.AGENT_GH_APP_ID }}
           app-private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
 
+      - name: Setup mise
+        uses: jdx/mise-action@v5
+
       - name: Lint
-        run: pnpm lint
-
-      - name: Type check
-        run: pnpm typecheck
-
-      - name: Type check worker
-        run: pnpm -C worker run typecheck
-
-      - name: Check watchlist
-        run: pnpm check:watchlist
-
-      - name: Check mermaid
-        run: pnpm check:mermaid
-
-      - name: Knip
-        run: pnpm knip
+        run: make lint
 
   test:
     needs: precheck
@@ -96,14 +84,11 @@ jobs:
       - name: Install worker dependencies
         run: pnpm -C worker install --frozen-lockfile
 
+      - name: Setup mise
+        uses: jdx/mise-action@v5
+
       - name: Test
-        run: pnpm test
-
-      - name: Test worker
-        run: pnpm -C worker run test
-
-      - name: Test shell scripts
-        run: pnpm test:sh
+        run: make test
 
   ci:
     needs: [precheck, checks, lint, test]

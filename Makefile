@@ -1,14 +1,17 @@
-# 最初のゴールを mise タスク名、残りのゴールをその引数として渡す。
-#   make update  ->  mise run update
-# `-` で始まるフラグは make に食われるので ARGS で渡す。
+# make <task> [args] runs mise run <task> [args]: the first goal is the task name, the
+# rest are its arguments. A flag that begins with - is eaten by make, so pass it as ARGS:
+#   make count src/story           ->  mise run count src/story
+#   make pdf ARGS="--limit 10"     ->  mise run pdf --limit 10
 TASK := $(firstword $(MAKECMDGOALS))
 TASK_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 
 .PHONY: setup $(TASK) $(TASK_ARGS)
 
-# ツールの導入だけここで行い、残りは mise タスク（.mise/tasks.toml）の setup に任せる。一覧: mise tasks
+# The one target make owns: install the pinned tools, then hand over to the setup task.
+# Every other command is a task in .mise/tasks.toml — list them with: mise tasks
 setup:
-	@command -v mise >/dev/null 2>&1 || { echo "❌ mise が見つかりません: https://mise.jdx.dev/"; exit 1; }
+	@command -v git >/dev/null || { echo "make setup: git is not installed"; exit 1; }
+	@command -v mise >/dev/null || { echo "make setup: mise is not installed — see https://mise.jdx.dev/getting-started.html"; exit 1; }
 	@mise trust -q
 	@mise install
 	@mise run setup
@@ -20,7 +23,7 @@ $(TASK):
 endif
 endif
 
-# 引数として渡したゴールは何もしない
+# Without a no-op rule, make would try to build the argument goals as targets.
 ifneq ($(TASK_ARGS),)
 $(TASK_ARGS):
 	@:

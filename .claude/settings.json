@@ -2,12 +2,20 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write",
+        "matcher": "Write|Edit",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/llm-instruction-guard.sh\"",
-            "statusMessage": "Loading LLM instruction rules"
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/llm-instruction-rules.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/run-skill-scripts.sh\""
           }
         ]
       }

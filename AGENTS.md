@@ -20,6 +20,7 @@
 - Keep LLM inputs lean: add a `/judge-context` block only by merging into an existing one or removing another (`JUDGE_BLOCKS`); market-wide data goes to `market-brief`, not ticker inputs.
 - `scripts/*.ts` are manual tools; never call them from Actions.
 - LLM judgment rules live inline in each workflow's `prompt:` (`.github/workflows/*.yml`); edit the prompt there, not a skill file.
+- In a workflow `prompt:`, say for each input field what to lead on, what only confirms, and what to ignore; how to treat a stale, insufficient, or unavailable input; and to judge only on what it can see now. Forbid every side effect, have it return structured output and stop, and mark each machine-parsed output line as exact-format, verbatim.
 - D1 schema changes: edit `worker/src/lib/schema.ts`, then `pnpm db:generate`.
 
 ## Code & docs
@@ -28,3 +29,9 @@
 - Test `scripts/*.sh` in a sibling `*.bats`.
 - In docs/comments/messages, write the current state only; omit history, rationale, and "previously" unless skipping it invites a real bad practice.
 - Keep `README.md` user-facing and minimal; leave out implementation details and anything a user learns by using it.
+
+# Code rules
+
+A JSDoc or docblock states behavior: what the function does, its inputs and outputs, how it is used. Every other comment states only why the straightforward alternative was not taken, or the constraint that binds the code. Delete a comment that restates the implementation, also in code you did not write.
+
+Change a generated file by changing its source and regenerating it.

@@ -30,10 +30,7 @@ function parseScheduleLinks(html: string): string[] {
 
 // "6857" / "6857.0" / "68570" (末尾チェックディジット 0 付きの 5 桁) / "285A" → 4 桁コード。読めなければ null。
 function normalizeCode(raw: string): string | null {
-	const s = raw
-		.replace(/\s+/g, "")
-		.replace(/\.0+$/, "")
-		.toUpperCase();
+	const s = raw.replace(/\s+/g, "").replace(/\.0+$/, "").toUpperCase();
 	if (/^[0-9][0-9A-Z]{3}$/.test(s)) return s;
 	if (/^[0-9][0-9A-Z]{3}0$/.test(s)) return s.slice(0, 4);
 	return null;

@@ -548,8 +548,13 @@ if (import.meta.vitest) {
 		});
 		it("推定日の label には (推定日) を付ける", () => {
 			expect(
-				toJpPeerEvent("8035", "東京エレクトロン", "前工程装置", "2026-08-06", true)
-					.label,
+				toJpPeerEvent(
+					"8035",
+					"東京エレクトロン",
+					"前工程装置",
+					"2026-08-06",
+					true,
+				).label,
 			).toBe("東京エレクトロン(8035) 決算(推定日)");
 		});
 		it("波及日は翌営業日 (近似で翌暦日)・impact=high", () => {

@@ -53,9 +53,7 @@ function parseInvestorLinks(
 }
 
 // 東証プライムの金額行から部門ごとの差引き (億円) を出す。読めなければ null。
-function parseInvestorSheet(
-	rows: SheetRows,
-): Record<string, number> | null {
+function parseInvestorSheet(rows: SheetRows): Record<string, number> | null {
 	const rowNums = [...rows.keys()].sort((a, b) => a - b);
 	const find = (pred: (cells: Map<number, string>) => boolean) =>
 		rowNums.find((r) => pred(rows.get(r) ?? new Map()));

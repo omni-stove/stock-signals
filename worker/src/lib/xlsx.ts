@@ -33,7 +33,10 @@ function joinText(xml: string): string {
  * 共有文字列 (t="s") とインライン文字列 (t="inlineStr") は解決し、数値は文字列のまま返す。
  * sharedXml が null なら共有文字列セルは空文字になる。
  */
-export function readSheet(sheetXml: string, sharedXml: string | null): SheetRows {
+export function readSheet(
+	sheetXml: string,
+	sharedXml: string | null,
+): SheetRows {
 	const shared = [...(sharedXml ?? "").matchAll(/<si>([\s\S]*?)<\/si>/g)].map(
 		(m) => joinText(m[1]),
 	);

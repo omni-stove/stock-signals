@@ -48,7 +48,7 @@ const URL_FUNDAMENTALS = (code: string) =>
 	`https://kabutan.jp/stock/?code=${code}`;
 const SITE = "kabutan";
 
-function toNumber(raw: string | undefined | null): number | null {
+export function toNumber(raw: string | undefined | null): number | null {
 	if (!raw) return null;
 	const cleaned = raw.replace(/[,倍円株%％]/g, "").trim();
 	if (!cleaned || cleaned === "－" || cleaned === "-") return null;

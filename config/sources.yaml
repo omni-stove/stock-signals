@@ -27,7 +27,7 @@ per_ticker:
 # (実装は worker/src/index.ts の parseList。ローカルの scripts/fetch-ir.ts は廃止済み)。
 # 取得物は per_ticker と同様 D1 articles (source=ir:<site>:<code>) に入る (銘柄確定済み)。
 # kioxia だけ記事本文HTMLが安定して取れるので本文も取得し、
-# 他3社は記事リンクが PDF/カレンダーで本文HTMLが取れないため一覧の見出しを本文として保存する
+# 他2社は記事リンクが PDF/カレンダーで本文HTMLが取れないため一覧の見出しを本文として保存する
 # (適時開示はタイトルで「何が起きたか」が分かる。disclosure.ts と同思想)。
 ir:
   # 285A キオクシア。

@@ -9,6 +9,7 @@ import { and, asc, eq, gte, lte } from "drizzle-orm";
 import { db } from "./db";
 import type { Env } from "./env";
 import { articles } from "./schema";
+import { addDays } from "./utils";
 
 export interface ConsensusMention {
 	date: string; // 記事の公開日 YYYY-MM-DD
@@ -28,13 +29,6 @@ const MAX_MENTIONS = 3;
 const MAX_TEXT_LEN = 200;
 const CONSENSUS_RE = /市場予想|コンセンサス/;
 
-function addDays(date: string, n: number): string {
-	const d = new Date(`${date}T00:00:00Z`);
-	d.setUTCDate(d.getUTCDate() + n);
-	return d.toISOString().slice(0, 10);
-}
-
-// 本文を「。」と改行で文に割る。句点は文に残す。
 function splitSentences(body: string): string[] {
 	return body
 		.split(/(?<=。)|\n/)

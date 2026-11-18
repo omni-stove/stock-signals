@@ -12,12 +12,14 @@
 //     relative, event_reactions, prices, margin, short_interest, supply, forced }
 // sector は同一セクタ内での対象銘柄の順位・相対強弱とセクタ平均。trend / relative /
 // event_reactions は約1年分の日足と TOPIX から、supply は適時開示・公式 IR の見出しと EDINET の
-// 大量保有報告書から組む。event_context は日本SQ週なら当銘柄の SQ連動度 (lib/sq-week) を末尾に持つ。
+// 大量保有報告書から組む。earnings_result は fresh のとき株探記事の市場予想への言及
+// (consensus_mentions) を持つ。event_context は日本SQ週なら当銘柄の SQ連動度 (lib/sq-week) を末尾に持つ。
 // 市場全体の需給 (投資部門別・東証全体の空売り比率) は market-brief 側に任せて載せない。
 // now はテスト時刻注入兼用 (省略時はサーバ実時刻)。market_phase / today は JST 換算で出す。
 
 import { and, desc, eq, gte, like, or } from "drizzle-orm";
 import { type Context, Hono } from "hono";
+import { readConsensusMentions } from "../lib/consensus-mentions";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
@@ -41,6 +43,7 @@ import {
 	type PriceRow,
 	type QuarterFigures,
 	type ValuationSnapshot,
+	withConsensusMentions,
 } from "../lib/judge-context";
 import { readLargeHoldings } from "../lib/large-holdings";
 import { resolveMarketPhase, sessionElapsedFrac } from "../lib/market-phase";
@@ -132,6 +135,16 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.orderBy(desc(earningsQuarters.period))
 		.limit(5)
 		.all();
+	const earningsResult = buildEarningsResult(
+		quarterRows,
+		earningsRow ?? null,
+		today,
+	);
+	// stale 以降の earnings_result は compactJudgeContext が落とすので、fresh のときだけ R2 を読む。
+	const consensusMentions =
+		earningsResult.status === "fresh" && earningsResult.announced_at
+			? await readConsensusMentions(env, code, earningsResult.announced_at)
+			: [];
 
 	// fundamentals の日次スナップショット (date 降順)。予想の発表日・予想値の変化で業績予想の修正を
 	// 割り出すため、約1年遡る。
@@ -396,11 +409,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 				earningsRow?.estimated ?? null,
 				today,
 			),
-			earnings_result: buildEarningsResult(
-				quarterRows,
-				earningsRow ?? null,
-				today,
-			),
+			earnings_result: withConsensusMentions(earningsResult, consensusMentions),
 			revisions: buildRevisions(fundamentalsRows, today),
 			valuation: buildValuation(fundamentalsRows, peerPers),
 			premarket: premarketBlock,

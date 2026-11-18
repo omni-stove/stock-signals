@@ -12,6 +12,8 @@
 #     中期の MA75・52週高値安値・TOPIX比・予想PER) は LLM に
 #     出させず、numctx の実在値からここで決定論で組んで親の context block に貼る。LLM が水準・指標の
 #     数値を創作する余地を残さない (LLM はテクニカルの読みだけを返す)。
+#   - それでも LLM の technical / bull / bear / watch に価格・指標・比率の数字が混ざった行は投稿前に落とし、
+#     stderr に "post-brief.sh: dropped numeric line: <field>: <line>" を出す (Actions ログで見える)。
 #   - 強制決済スコア (追証売り/踏み上げ) は eod cron が D1 に算出済み。ここで D1 から最新行を引き、
 #     stance!=none のときだけ「観測事実」として本文末尾に 1 行貼る。fetch 失敗/該当なしは何も足さない。
 #
@@ -60,6 +62,43 @@ fi
 HEADLINE="$(printf '%s' "$BRIEF_JSON" | jq -r '.headline // ""')"
 [[ -n "$HEADLINE" && "$HEADLINE" != "null" ]] || {
   echo "post-brief.sh: empty headline in $BRIEF_FILE" >&2; exit 1; }
+
+# --- LLM 出力に混ざった数字の行を落とす (決定論) ------------------------------
+# technical / bull / bear / watch の各行から、数字として扱わない表記 (指数名・期・四半期・日付・時刻・
+# 移動平均などの指標名・銘柄コード・英字始まりの海外ティッカーや製品型番) を空白に置き換え、
+# それでも数字が残る行を落として stderr に出す。headline と materials は対象外。
+# 置換は順序に意味がある: 「26年3月期」を日付の「3月」より、「FY25Q3」を四半期の「Q3」より先に消す。
+# 4 桁英数の銘柄コードは単位が続くもの (4000円・1200億 など) を除くため、単位なしの 4 桁の数字は落とせない。
+# 指標名の除外リストは英字始まりの型番の扱いから PER40 / RSI70 のような「指標名+値」を外すためにある。
+NUMERIC_FILTER_JQ='
+  def ascii_digits: explode | map(if . >= 65296 and . <= 65305 then . - 65248 else . end) | implode;
+  def exempt_patterns: [
+    "S&P ?500", "(?:JPX)?日経 ?(?:225|400|500)", "(?:NASDAQ|ナスダック) ?100",
+    "(?:Russell|ラッセル) ?[123]000", "グロース ?250",
+    "TOPIX ?(?:Core ?30|Large ?70|Mid ?400|Small|100|500)", "Core ?30",
+    "FTSE ?100", "(?:DAX|CAC) ?40", "(?:Euro ?)?(?:STOXX|Stoxx) ?(?:50|600)",
+    "(?:\\d{4}|\\d{2})年\\d{1,2}月期", "(?:\\d{4}|\\d{2})年度", "(?:\\d{4}|\\d{2})/\\d{1,2}期",
+    "FY ?(?:\\d{4}|\\d{2})", "\\d{4}年", "\\d{2}年(?=[1-4]Q|[上下]半?期|通期|期)",
+    "第[1-4]四半期", "(?<![0-9A-Za-z])[1-4]Q(?![0-9])", "(?<![0-9A-Za-z])Q[1-4](?![0-9])",
+    "(?<![0-9A-Za-z])[12]H(?![0-9])", "(?<![0-9A-Za-z])H[12](?![0-9])",
+    "\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}", "(?<![0-9.,])\\d{1,2}/\\d{1,2}(?![0-9.,%％])",
+    "\\d{1,2}月\\d{1,2}日", "(?<![0-9.,])\\d{1,2}月(?![0-9])",
+    "(?<![0-9.,])\\d{1,2}日(?=[（(][月火水木金土日][）)])",
+    "(?<![0-9.,])(?:[01]?\\d|2[0-3]):[0-5]\\d(?![0-9])", "(?<![0-9.,])\\d{1,2}時(?:\\d{1,2}分)?",
+    "(?<![0-9.,])\\d{1,3}[日週](?:移動平均線?|線|レンジ|高値|安値|来高値|来安値)",
+    "(?<![0-9A-Za-z])(?:MA|EMA|SMA)\\d{1,3}(?![0-9.,])", "(?<![0-9A-Za-z])(?:RSI\\(?14\\)?|CMF\\(?20\\)?)(?![0-9.,])",
+    "(?<![0-9A-Za-z.,])[1-9]\\d{2}[0-9A-Z](?:\\.T)?(?![0-9A-Za-z.,%％円倍億万千株人件年月日期週ドル兆])",
+    "(?<![0-9A-Za-z])(?!(?:PER|PBR|PSR|RSI|ROE|ROA|ROIC|EPS|BPS|DPS|ATR|CMF|EV|EBITDA|PE|PB)\\d)[A-Z][A-Za-z]*\\d[0-9A-Za-z]*(?![0-9.,%％円倍億万兆ドル])"
+  ];
+  def numeric: (ascii_digits | reduce exempt_patterns[] as $re (.; gsub($re; " "))) | test("[0-9]");
+  ["technical", "bull", "bear", "watch"] as $fields
+  | . as $b
+  | { dropped: [ $fields[] as $f | ($b[$f] // [])[] | select(numeric) | {field: $f, line: .} ],
+      brief: (reduce $fields[] as $f ($b;
+        if has($f) then .[$f] |= map(select(numeric | not)) else . end)) }'
+FILTERED_JSON="$(printf '%s' "$BRIEF_JSON" | jq -c "$NUMERIC_FILTER_JQ")"
+printf '%s' "$FILTERED_JSON" | jq -r '.dropped[] | "post-brief.sh: dropped numeric line: \(.field): \(.line)"' >&2
+BRIEF_JSON="$(printf '%s' "$FILTERED_JSON" | jq -c '.brief')"
 
 # 本文を emoji 見出しのセクションごとの文字列に組む: 🆕 新着 (見出しのみ) / 📈 テクニカル /
 # 🐂 強気 / 🐻 弱気 / 👀 注視。項目が無いセクションは出さず、1 セクション 1 section block になる。

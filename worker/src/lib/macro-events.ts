@@ -1,22 +1,26 @@
-// Cloudflare Worker: マクロイベント (FOMC / 日銀金融政策決定会合) の日程収集。
+// Cloudflare Worker: マクロイベント (FOMC / 日銀金融政策決定会合 / 米CPI / 米雇用統計) の日程収集。
 //
-// FOMC・日銀会合は SQ や指数リバランスのように規則計算できない。公式が年単位で先の全日程を
-// 出すので、これを Worker が定期スクレープして D1 (macro_events) に保持する。
+// これらは SQ や指数リバランスのように規則計算できない。公式が先の日程を公表するので、これを
+// Worker が定期スクレープして D1 (macro_events) に保持する。
 // SQ / 指数リバランスは event-context.ts が日付計算で出すのでここでは扱わない。
 //
 // 収集はレーティング/決算日と同じ流儀 (素のスクレープ + 正規表現パース、LLM 不使用、INSERT OR REPLACE)。
-// 月1回 (eod cron に月初相乗り) で十分: 会合は年8回・先の日程が確定公表されており、event-context.sh が
+// 月1回 (eod cron に月初相乗り) で十分: どれも先の日程が確定公表されており、event-context が
 // 拾うのは「直近5日以内」なので、月初に先の日程を入れておけば近接日に judge/crash の prompt へ乗る。
 //
-// データソース (どちらも年ごとに先の全日程を掲載):
+// データソース:
 //   FOMC : https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
 //          各年ブロックに month/date セルが交互。"27-28"=2日開催で最終日が声明発表日。声明は現地夕方
 //          = 日本の翌営業日に効くので jst_effect_date = 翌日。
 //   日銀  : https://www.boj.or.jp/mopo/mpmsche_minu/index.htm
 //          各年テーブルの1列目「開催日および結果」が "7月30日（木）・31日（金）" 形式 (最終日=結果日)。
 //          日本時間昼に出るので jst_effect_date は付けない (当日に効く)。
+//   BLS  : https://www.bls.gov/schedule/news_release/cpi.htm (CPI) / empsit.htm (雇用統計)
+//          表の各行が "Reference Month | Release Date | Release Time" ("October 2026 | Nov. 10, 2026 |
+//          08:30 AM")。米東部 8:30 = JST 同日夜の発表なので jst_effect_date = 東証の翌営業日。
 
 import { db } from "./db";
+import { nextTseBusinessDay } from "./market-calendar";
 import { macroEvents } from "./schema";
 import { fetchHtml } from "./utils";
 
@@ -28,10 +32,12 @@ export interface MacroEventsEnv {
 const FOMC_URL =
 	"https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm";
 const BOJ_URL = "https://www.boj.or.jp/mopo/mpmsche_minu/index.htm";
+const BLS_CPI_URL = "https://www.bls.gov/schedule/news_release/cpi.htm";
+const BLS_JOBS_URL = "https://www.bls.gov/schedule/news_release/empsit.htm";
 
 type MacroEvent = {
 	date: string; // YYYY-MM-DD (イベントが起きる日 / 結果発表日)
-	kind: "fomc" | "boj";
+	kind: "fomc" | "boj" | "us-cpi" | "us-jobs";
 	label: string;
 	impact: "high";
 	jst_effect_date: string | null; // 日本市場に効く営業日 (米国イベントは翌日, 日銀は null=当日)
@@ -182,6 +188,65 @@ function parseBoj(html: string): MacroEvent[] {
 	return out;
 }
 
+// --- BLS (CPI / 雇用統計) パース ------------------------------------------------
+// 発表日は AP 式の略記 ("Jan." / "Sept." / "March") なので月名は先頭3文字で引く。
+const BLS_MONTHS: Record<string, number> = Object.fromEntries(
+	Object.entries(MONTHS).map(([name, n]) => [name.slice(0, 3), n]),
+);
+
+function blsMonth(name: string): number | undefined {
+	return BLS_MONTHS[name.slice(0, 3).toLowerCase()];
+}
+
+const BLS_SPEC = {
+	"us-cpi": {
+		name: "米CPI",
+		note: "米東部 8:30 (JST 同日夜) 発表 = 日本の翌営業日に効く。インフレ指標として米金利・ハイテク株経由で半導体に効く。",
+	},
+	"us-jobs": {
+		name: "米雇用統計",
+		note: "米東部 8:30 (JST 同日夜) 発表 = 日本の翌営業日に効く。利下げ観測と米金利経由で為替・ハイテク株に効く。",
+	},
+} as const;
+
+// 表の行のうち 1列目が "October 2026" (対象月)、2列目が "Nov. 10, 2026" (発表日) の形のものだけ採る。
+// 見出し行・脚注行はこの形にならないので弾かれる。
+function parseBlsSchedule(
+	html: string,
+	kind: "us-cpi" | "us-jobs",
+): MacroEvent[] {
+	const out: MacroEvent[] = [];
+	const spec = BLS_SPEC[kind];
+	for (const r of html.matchAll(/<tr[\s\S]*?<\/tr>/g)) {
+		const cells = [...r[0].matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/g)].map(
+			(c) =>
+				stripTags(c[1])
+					.replace(/&nbsp;/g, " ")
+					.replace(/\s+/g, " ")
+					.trim(),
+		);
+		if (cells.length < 2) continue;
+		const ref = cells[0].match(/^([A-Za-z]+)\s+(20\d{2})$/);
+		const rel = cells[1].match(/^([A-Za-z]+)\.?\s+(\d{1,2}),\s*(20\d{2})/);
+		if (!ref || !rel) continue;
+		const refMonth = blsMonth(ref[1]);
+		const relMonth = blsMonth(rel[1]);
+		if (!refMonth || !relMonth) continue;
+		const day = Number.parseInt(rel[2], 10);
+		if (day < 1 || day > 31) continue;
+		const date = ymd(Number.parseInt(rel[3], 10), relMonth, day);
+		out.push({
+			date,
+			kind,
+			label: `${spec.name} (${refMonth}月分)`,
+			impact: "high",
+			jst_effect_date: nextTseBusinessDay(date),
+			note: spec.note,
+		});
+	}
+	return out;
+}
+
 // date+kind で重複排除 (同じ会合が複数年テーブルに跨って載るケースの保険)。
 function dedupe(events: MacroEvent[]): MacroEvent[] {
 	const seen = new Set<string>();
@@ -222,25 +287,61 @@ async function saveEvent(env: MacroEventsEnv, e: MacroEvent): Promise<void> {
 		.run();
 }
 
-// FOMC + 日銀の日程を公式サイトから取得し D1 (macro_events) に保存する。
-// スクレープ結果が0件なら (サイト構造変更の可能性) 保存せず例外を投げる (既存データを守る)。
+const SOURCES: {
+	key: "fomc" | "boj" | "cpi" | "jobs";
+	url: string;
+	parse: (html: string) => MacroEvent[];
+}[] = [
+	{ key: "fomc", url: FOMC_URL, parse: parseFomc },
+	{ key: "boj", url: BOJ_URL, parse: parseBoj },
+	{
+		key: "cpi",
+		url: BLS_CPI_URL,
+		parse: (h) => parseBlsSchedule(h, "us-cpi"),
+	},
+	{
+		key: "jobs",
+		url: BLS_JOBS_URL,
+		parse: (h) => parseBlsSchedule(h, "us-jobs"),
+	},
+];
+
+// FOMC・日銀・米CPI・米雇用統計の日程を公式サイトから取得し D1 (macro_events) に保存し、
+// ソースごとの件数 ({fomc, boj, cpi, jobs, saved}) を返す。
+// ソースは独立に扱い、取得できたものだけ保存する (1 サイトの障害で他の日程更新を止めない)。
+// 取得失敗またはパース 0 件 (サイト構造変更の可能性) のソースは保存せず、他を保存した後に例外を投げて
+// ジョブ失敗として通知させる。
 export async function collectMacroEvents(
 	env: MacroEventsEnv,
 ): Promise<Record<string, unknown>> {
-	const [fomcHtml, bojHtml] = await Promise.all([
-		fetchHtml(FOMC_URL, env),
-		fetchHtml(BOJ_URL, env),
-	]);
-	const fomc = parseFomc(fomcHtml);
-	const boj = parseBoj(bojHtml);
-	const events = dedupe([...fomc, ...boj]);
-	if (events.length === 0) {
+	const settled = await Promise.allSettled(
+		SOURCES.map(async (s) => s.parse(await fetchHtml(s.url, env))),
+	);
+	const counts: Record<string, number> = {};
+	const failures: string[] = [];
+	const parsed: MacroEvent[] = [];
+	settled.forEach((r, i) => {
+		const { key } = SOURCES[i];
+		if (r.status === "rejected") {
+			failures.push(`${key}: ${String(r.reason)}`);
+			return;
+		}
+		counts[key] = r.value.length;
+		if (r.value.length === 0) {
+			failures.push(`${key}: スクレープ結果が0件 (サイト構造変更の可能性)`);
+			return;
+		}
+		parsed.push(...r.value);
+	});
+	const events = dedupe(parsed);
+	for (const e of events) await saveEvent(env, e);
+	const result = { ...counts, saved: events.length };
+	if (failures.length > 0) {
 		throw new Error(
-			"macro-events: スクレープ結果が0件 (サイト構造変更の可能性)。保存をスキップ。",
+			`macro-events: ${failures.join(" / ")} (保存済み ${JSON.stringify(result)})`,
 		);
 	}
-	for (const e of events) await saveEvent(env, e);
-	return { fomc: fomc.length, boj: boj.length, saved: events.length };
+	return result;
 }
 
 // in-source tests (本番ビルドでは tree-shake される。vitest.config.ts 参照)
@@ -330,6 +431,63 @@ if (import.meta.vitest) {
 
 		it("公表日のみの行 (開催日でない) は拾わない (3件)", () => {
 			expect(evts).toHaveLength(3);
+		});
+	});
+
+	describe("parseBlsSchedule", () => {
+		const cpiHtml = `
+      <table class="release-list">
+        <caption><span class="tableTitle">Schedule of Releases for the Consumer Price Index</span></caption>
+        <thead>
+          <tr><th scope="col">Reference Month</th><th scope="col">Release Date</th><th scope="col">Release Time</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>August 2026</td><td>Sept. 11, 2026</td><td>08:30&nbsp;AM</td></tr>
+          <tr><td>October 2026</td><td>Nov. 10, 2026</td><td>08:30 AM</td></tr>
+          <tr><td>November 2026</td><td>Dec. 10, 2026</td><td>08:30 AM</td></tr>
+        </tbody>
+      </table>`;
+		const jobsHtml = `
+      <table class="release-list">
+        <tbody>
+          <tr><th>Reference Month</th><th>Release Date</th><th>Release Time</th></tr>
+          <tr><td>November 2026</td><td>Dec. 04, 2026</td><td>08:30 AM</td></tr>
+          <tr><td>December 2026</td><td>Jan. 08, 2027</td><td>08:30 AM</td></tr>
+          <tr><td colspan="3">(1) Release date subject to change.</td></tr>
+        </tbody>
+      </table>`;
+		const cpi = parseBlsSchedule(cpiHtml, "us-cpi");
+		const jobs = parseBlsSchedule(jobsHtml, "us-jobs");
+
+		it("発表日を date、対象月を label に入れる (略記 Sept. も読む)", () => {
+			expect(cpi.map((e) => [e.date, e.label])).toEqual([
+				["2026-09-11", "米CPI (8月分)"],
+				["2026-11-10", "米CPI (10月分)"],
+				["2026-12-10", "米CPI (11月分)"],
+			]);
+			expect(jobs.map((e) => [e.date, e.label])).toEqual([
+				["2026-12-04", "米雇用統計 (11月分)"],
+				["2027-01-08", "米雇用統計 (12月分)"],
+			]);
+		});
+
+		it("見出し行・脚注行は拾わない", () => {
+			expect(jobs).toHaveLength(2);
+		});
+
+		it("jst_effect_date は東証の翌営業日 (週末・祝日を飛ばす)", () => {
+			const eff = (es: MacroEvent[], date: string) =>
+				es.find((e) => e.date === date)?.jst_effect_date;
+			expect(eff(cpi, "2026-12-10")).toBe("2026-12-11");
+			expect(eff(jobs, "2026-12-04")).toBe("2026-12-07");
+			expect(eff(jobs, "2027-01-08")).toBe("2027-01-12"); // 01-11 成人の日
+		});
+
+		it("kind と impact を付ける", () => {
+			expect(cpi.every((e) => e.kind === "us-cpi" && e.impact === "high")).toBe(
+				true,
+			);
+			expect(jobs.every((e) => e.kind === "us-jobs")).toBe(true);
 		});
 	});
 

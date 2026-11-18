@@ -101,6 +101,13 @@ export function latestTseBusinessDay(date: string): string {
 	return d;
 }
 
+// date より後で最も近い東証の営業日。
+export function nextTseBusinessDay(date: string): string {
+	let d = addDays(date, 1);
+	while (isTseHoliday(d)) d = addDays(d, 1);
+	return d;
+}
+
 // from の翌日から to までの東証の営業日数。from >= to なら 0。
 export function tseBusinessDaysBetween(from: string, to: string): number {
 	let n = 0;
@@ -206,6 +213,12 @@ if (import.meta.vitest) {
 			expect(latestTseBusinessDay("2027-01-01")).toBe("2026-12-30");
 			expect(latestTseBusinessDay("2026-11-23")).toBe("2026-11-20");
 			expect(latestTseBusinessDay("2026-11-13")).toBe("2026-11-13");
+		});
+		it("翌営業日は週末・祝日・年末年始を飛ばす", () => {
+			expect(nextTseBusinessDay("2026-11-12")).toBe("2026-11-13");
+			expect(nextTseBusinessDay("2026-11-13")).toBe("2026-11-16");
+			expect(nextTseBusinessDay("2026-11-20")).toBe("2026-11-24");
+			expect(nextTseBusinessDay("2026-12-30")).toBe("2027-01-04");
 		});
 	});
 

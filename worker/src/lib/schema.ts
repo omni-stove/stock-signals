@@ -368,7 +368,7 @@ export const largeHoldings = sqliteTable(
 	],
 );
 
-// ── macro_events (FOMC/日銀 会合日程。冪等キー = (date, kind)) ────────────────
+// ── macro_events (FOMC/日銀/米CPI/米雇用統計・ピア決算・指数採用の日程。冪等キー = (date, kind)) ──
 export const macroEvents = sqliteTable(
 	"macro_events",
 	{

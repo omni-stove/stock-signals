@@ -16,7 +16,7 @@ export interface ConsensusMention {
 	url: string;
 }
 
-export interface MentionSource {
+interface MentionSource {
 	date: string;
 	url: string;
 	body: string | null;
@@ -58,7 +58,7 @@ function clip(s: string, matchAt: number): string {
  * 市場予想・コンセンサスに触れた文を最大 MAX_MENTIONS 件返す。同じ文は1件にまとめる。
  * 発表前の記事 (決算プレビュー) は結果に対する市場予想比ではないので含めない。
  */
-export function extractConsensusMentions(
+function extractConsensusMentions(
 	sources: MentionSource[],
 	announcedAt: string,
 ): ConsensusMention[] {

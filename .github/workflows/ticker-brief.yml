@@ -192,8 +192,12 @@ jobs:
               turn where a `*_pct` is null. Say in words, without numbers, whether the quarter grew or shrank and
               whether progress runs ahead of or behind pace. `progress_pct: null` → do not speak of progress. Read
               the price reaction through **## 決算の特色・クセ** in `context_body`. Any other status → skip.
-            - **`revisions`**: nothing before `history_since` is stored. No analyst consensus is collected — never
-              claim a result or forecast beat, missed, or diverged from consensus unless a cited source states it.
+            - **`revisions`**: nothing before `history_since` is stored. Analyst consensus figures are not
+              collected. Only when `earnings_result.consensus_mentions` is present, you may state the result or
+              guidance came in above or below 市場予想 exactly as a mention's `text` says, citing it inline
+              (株探, `date`) — the direction only, never a figure from `text`; a `text` that states no direction →
+              skip it. Otherwise never claim a result or forecast beat, missed, or diverged from consensus unless
+              a cited source states it.
             - **`valuation`**: report the multiple as how much good news the price already carries; never call it
               割安/割高 on the number alone.
             - **`forced`**: take `summary` as given; report it as a 需給 fact on the side whose price it pushes, or

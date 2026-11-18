@@ -56,7 +56,6 @@ export const TICKERS: Ticker[] = [
 		ir: { site: "kioxia", list_url: "https://www.kioxia.com/ja-jp/news.html" },
 		news_url: "https://kabutan.jp/stock/news?code=285A",
 		edinet_code: "E35948",
-		// 半導体メモリ。予想EPS未開示時期は逆算スキップ。市況依存が大きく仮に20倍。
 		// メモリ市況の先行ピアは MU。MU 決算「直後」の時間外反応だけ寄りに効く材料 (通過後は sector /
 		// premarket に織り込み済み)。平時はセクタ内相対強弱と自社トピックが主。
 		note: "メモリ市況の先行ピアは MU だが、効くのは MU 決算直後の時間外反応のみ。通過後や次回予定は sector/premarket に織り込み済みとして扱い、平時はセクタ内相対強弱と自社トピックで判断する。",
@@ -72,7 +71,6 @@ export const TICKERS: Ticker[] = [
 		ir: { site: "advantest", list_url: "https://www.advantest.com/ja/news/" },
 		news_url: "https://kabutan.jp/stock/news?code=6857",
 		edinet_code: "E01950",
-		// 半導体テスター。現在予想PER ~40倍。高成長テスターとして仮に30倍。
 	},
 	{
 		code: "6920",
@@ -85,7 +83,6 @@ export const TICKERS: Ticker[] = [
 		ir: { site: "lasertec", list_url: "https://www.lasertec.co.jp/news/" },
 		news_url: "https://kabutan.jp/stock/news?code=6920",
 		edinet_code: "E01991",
-		// EUVマスク検査。現在予想PER ~52倍。独占的地位を加味し仮に35倍。
 	},
 	{
 		code: "6976",
@@ -105,7 +102,6 @@ export const TICKERS: Ticker[] = [
 		ir: { site: "yuden", list_url: "https://www.yuden.co.jp/ir/" },
 		news_url: "https://kabutan.jp/stock/news?code=6976",
 		edinet_code: "E01824",
-		// 電子部品(MLCC)大手。利益回復途上で現在予想PER ~130倍と高いが、高収益部品株として仮に30倍。
 	},
 ];
 

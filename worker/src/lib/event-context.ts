@@ -12,7 +12,7 @@
 //     (呼び出し側が rows を注入)。
 //   - 指数採用・除外の「個別確定イベント」(例: watchlist 銘柄の日経225採用が公表された) は
 //     kind=index_change:* の macro_events 行 (date=実施日) で渡す。発表〜実施のパッシブ先回り期間が
-//     長いので専用の長い窓 (INDEX_CHANGE_LEAD) で出す。投入方法は config/events.yaml 参照。
+//     長いので専用の長い窓 (INDEX_CHANGE_LEAD) で出す。投入方法は worker/README.md 参照。
 //   - 全て UTC 正午アンカーで日付計算する。
 
 import {

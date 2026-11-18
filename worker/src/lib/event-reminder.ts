@@ -6,7 +6,7 @@
 //
 // 対象イベント:
 //   - watchlist 銘柄の次回決算 (D1 earnings.next_date。estimated の日付は「(推定日)」付き)
-//   - FOMC/日銀 (D1 macro_events。日本市場に効く日 = jst_effect_date || date)
+//   - FOMC/日銀/米CPI/米雇用統計 (D1 macro_events。日本市場に効く日 = jst_effect_date || date)
 //   - 海外SOX系ピア決算 (D1 macro_events kind=peer_earnings:*。同じく波及日)
 //   - 日本SQ/米メジャーSQ/指数リバランス (event-context の日付計算)
 //

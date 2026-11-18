@@ -96,3 +96,16 @@ watchlist (4銘柄) と URL テンプレートは各 src (`timeseries.ts` / `new
 需給イベント (SQ/指数リバランス/FOMC/日銀/ピア決算)・セクター相対強弱・数値正規化といった
 決定論的な前処理はすべて Worker 側 (バンドルエンドポイントと `src/lib/`) に寄せてある。
 判定はワークフローが `@` で正規化済み JSON を受け取り、解釈だけを行う。
+
+## 指数採用・除外イベントの手動投入
+
+監視銘柄の指数採用・除外 (例: 日経225採用) は日付計算できないので、公表を見たら D1 `macro_events` に
+`kind=index_change:<code>`・`date=実施日` で手で入れる。`event-context.ts` が実施 21 日前から
+パッシブ先回りの窓として prompt に出す。リポジトリルートから:
+
+```sh
+pnpm -C worker exec wrangler d1 execute stock-signals --remote --command \
+  "INSERT OR REPLACE INTO macro_events (date, kind, label, impact, jst_effect_date, note, fetched_at) \
+   VALUES ('2026-10-01', 'index_change:285A', 'キオクシアHD(285A) 日経225採用', 'high', NULL, \
+           '9/4公表。実施日の引けにパッシブ買い集中見込み。', datetime('now'))"
+```

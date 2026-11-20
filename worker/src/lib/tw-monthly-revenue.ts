@@ -459,10 +459,7 @@ ${tsmcRow}
 		});
 
 		it("並び順によらず最新月を選び、行が無い月の yoy は null", () => {
-			const out = buildTwMonthlyRevenueBlock(
-				[rows[2], rows[0]],
-				"2026-11-20",
-			);
+			const out = buildTwMonthlyRevenueBlock([rows[2], rows[0]], "2026-11-20");
 			expect(out.month).toBe("2026-10");
 			expect(out.yoy_trend).toEqual([
 				{ month: "2026-08", yoy_pct: 33.8 },

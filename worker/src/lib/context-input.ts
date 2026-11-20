@@ -48,8 +48,7 @@ export function mergeNews(
 		...ticker.rows.map((r) => ({ ...r, source: "ticker" as const })),
 		...market.rows
 			.filter(
-				(r) =>
-					!tickerUrls.has(r.url) && matchTickers(r.title).includes(code),
+				(r) => !tickerUrls.has(r.url) && matchTickers(r.title).includes(code),
 			)
 			.map((r) => ({ ...r, source: "market" as const })),
 	]

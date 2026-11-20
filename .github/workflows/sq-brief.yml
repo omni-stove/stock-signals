@@ -68,14 +68,15 @@ jobs:
 
             Judge only on what these inputs show now; never on hindsight or a later result.
 
-            Do not post to Slack; do not run any script; do not write any file — return structured output
-            and stop.
+            Return structured output and stop.
 
             ## Inputs
 
             Lead on `history` and `week_to_date`; `premarket` sets today's gap; the rest only raises or lowers 確度.
             `unavailable` or `insufficient` → skip that field or name.
 
+            - **`market_phase`**: `premarket` → today's gap comes from `premarket`; in-session → `live_indexes`
+              is live and leads today's move.
             - **`sq`**: `major: false` = options only, a weaker pull; `days_to_sq: 0` = SQ day, pre-open.
               `in_week: false` → not an SQ week (manual run); frame the brief as a preview of the next SQ.
             - **`market.nikkei225`** leads the market-wide scenarios; its `*_excess` is how far SQ pushed 日経225
@@ -99,12 +100,15 @@ jobs:
               shown → general risk appetite. `status: stale` → demote; `us_session: carried_over` → not fresh.
             - **`live_indexes`**: pre-open → skip.
             - **`market_short_ratio`** well above its 5日平均 is squeeze fuel into SQ.
+            - **`investor_flows`**: background only; mention it only when the foreigners' streak flips
+              (`foreigners_streak_weeks` changes sign: positive = consecutive net-buying weeks, negative =
+              net-selling).
             - **`event_context`**: FOMC/日銀/ピア決算 overlapping the SQ week reshape the scenarios; `特になし` →
               ignore.
 
             ## Output
 
-            Japanese, one point per line, clipped note style, no figures.
+            Japanese, one point per line, clipped note style.
 
             - `headline`: `🎯 SQ週ブリーフ: <one phrase>` — what matters most for this SQ week today.
             - `scenarios`: 2–3 distinct paths through SQ day and into SQ明け. Each has `name` (a few words),
@@ -113,8 +117,8 @@ jobs:
               them on the opening print and the post-SQ unwind; earlier in the week, weigh the names whose SQ
               push lands on the days before SQ.
             - `sensitivity`: rank the names by how hard SQ pushes them and say where the push lands (SQ日の寄り /
-              SQ前の日々 / 明けの反転), one point per line.
-            - `watch`: 1–3 facts to check today (a print or an event), as facts to watch, not instructions.
+              SQ前の日々 / 明けの反転).
+            - `watch`: 1–3 facts to check today (a print or an event).
 
             ## SQコンテキスト
 

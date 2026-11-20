@@ -20,7 +20,7 @@
 - Keep LLM inputs lean: add a `/judge-context` block only by merging into an existing one or removing another (`JUDGE_BLOCKS`); market-wide data goes to `market-brief`, not ticker inputs.
 - `scripts/*.ts` are manual tools; never call them from Actions.
 - LLM judgment rules live inline in each workflow's `prompt:` (`.github/workflows/*.yml`); edit the prompt there, not a skill file.
-- In a workflow `prompt:`, say for each input field what to lead on, what only confirms, and what to ignore; how to treat a stale, insufficient, or unavailable input; and to judge only on what it can see now. Forbid every side effect, have it return structured output and stop, and mark each machine-parsed output line as exact-format, verbatim.
+- In a workflow `prompt:`, say for each input field what to lead on, what only confirms, and what to ignore; how to treat a stale, insufficient, or unavailable input; and to judge only on what it can see now. Have it return structured output and stop, and mark each machine-parsed output line as exact-format, verbatim.
 - D1 schema changes: edit `worker/src/lib/schema.ts`, then `pnpm db:generate`.
 
 ## Code & docs

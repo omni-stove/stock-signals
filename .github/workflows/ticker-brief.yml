@@ -147,12 +147,10 @@ jobs:
             ("priced in", "unexplained" volume, a top being "in"). Ground every claim in a material,
             a number, or a sourced find; write nothing you cannot attribute.
 
-            Do not post to Slack; do not run any script; do not write any file — return structured output
-            and stop.
+            Return structured output and stop.
 
             ## Run mode: ${{ steps.mode.outputs.mode }}
 
-            - `full`: follow every rule below.
             - `routine`: a scheduled brief with no new IR/news since the last context update. Keep it to a short
               status check: `headline` is `📊 <ticker> <name>: <one-phrase summary of where the name stands now>`;
               `materials` empty; `technical` at most 1 line; `bull` / `bear` at most 2 each, only points the
@@ -161,7 +159,7 @@ jobs:
 
             ## Inputs
 
-            An absent block means no data — do not mention it.
+            An absent block means no data, or data too stale or thin to read — do not mention it or fill it in.
 
             - **`context_body`**: 直近の重大トピック is the fresh layer; the rest is structural background. Absent →
               brief on price/tape facts alone.
@@ -178,8 +176,7 @@ jobs:
               market's.
             - **`premarket`**: lead on the field `context_body` or `ticker_note` shows this name is most exposed to;
               other fields it is exposed to only confirm; skip the rest. No exposure shown → risk appetite alone,
-              crediting no move to a single index. `status: stale` → backdrop only; `us_session: carried_over` → not
-              fresh.
+              crediting no move to a single index. `us_session: carried_over` → not fresh.
             - **`event_context`**: weigh each event as a driver of the tape before crediting a move to a material;
               never list it as a material. On an SQ当日, state in `technical` that today's tape overlaps the SQ; a
               coming SQ or SQ明け goes in `watch`. The further `当銘柄のSQ連動度` runs above 1, the more weight the
@@ -187,12 +184,14 @@ jobs:
             - **`event_reactions`**: report how the market took a material — a good-news item that sold off or faded
               is itself a fact. `partial: true` = the second session is not in yet.
             - **`earnings`** → a `watch` or `bear` fact; `estimated: true` → a guess from last year's same quarter:
-              give it as a rough timing (`…頃の見込み`), never as 確定日. **`earnings_result`** with `status: fresh`: lead on
+              give it as a rough timing (`…頃の見込み`), never as 確定日. **`earnings_result`** (present only when fresh): lead on
               `yoy_pct`; `qoq_pct` and `progress_pct` only confirm; `actual` / `year_ago` only show a 赤字・黒字
               turn where a `*_pct` is null. Say in words, without numbers, whether the quarter grew or shrank and
               whether progress runs ahead of or behind pace. `progress_pct: null` → do not speak of progress. Read
-              the price reaction through **## 決算の特色・クセ** in `context_body`. Any other status → skip.
-            - **`revisions`**: nothing before `history_since` is stored. Analyst consensus figures are not
+              the price reaction through **## 決算の特色・クセ** in `context_body`.
+            - **`revisions`**: a company forecast revision within the holding horizon is an earnings fact for
+              `bull` (up) or `bear` (down); an older one is background. Nothing before `history_since` is
+              stored. Analyst consensus figures are not
               collected. Only when `earnings_result.consensus_mentions` is present, you may state the result or
               guidance came in above or below 市場予想 exactly as a mention's `text` says, citing it inline
               (株探, `date`) — the direction only, never a figure from `text`; a `text` that states no direction →
@@ -215,7 +214,7 @@ jobs:
 
             ## Web research (supplementary)
 
-            The collected inputs are primary. You may use WebSearch/WebFetch to deepen `bull` / `bear` with
+            You may use WebSearch/WebFetch to deepen `bull` / `bear` with
             一次情報 (会社 IR/取引所/当局), 海外報道, or アナリスト見解: at most 4 search+fetch calls total; only to
             corroborate or deepen a material already in the inputs; cite the source inline (媒体名, 日付); if
             nothing solid turns up, write nothing — never invent a source or a fact.

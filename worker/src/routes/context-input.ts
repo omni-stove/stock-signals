@@ -6,16 +6,20 @@
 //   status:"no-update" … 新規 IR/ニュースが両方 0
 //   status:"ok"        … 新規あり (items に新規 IR/ニュース)
 //
+// news_items は銘柄ページのニュース (source=ticker) と、見出しが当該銘柄に当たる market_news
+// (source=market) を fetched_at 順に混ぜたもの。両方を 1 本の news カーソルで読む。
+//
 // カーソル未確立 (初回・行なし) は since 省略で backlog を引く。次カーソル = 引いた行の max fetched_at、
 // 0 件の kind は現行カーソルを据え置く。
 
 import { eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
-import { pullArticles } from "../lib/articles";
-import { nextCursor } from "../lib/context-input";
+import { pullArticles, pullMarketNews } from "../lib/articles";
+import { mergeNews, nextCursor } from "../lib/context-input";
 import { db } from "../lib/db";
 import type { Env } from "../lib/env";
 import { contexts } from "../lib/schema";
+import { tickerTerms } from "../lib/watchlist";
 
 export const contextInput = new Hono<{ Bindings: Env }>();
 
@@ -43,9 +47,24 @@ contextInput.get("/context-input", async (c: Context<{ Bindings: Env }>) => {
 	const irCursor = row?.irLastFetchedAt ?? null;
 	const newsCursor = row?.newsLastFetchedAt ?? null;
 
-	// カーソル以降の新規を IR / ニュース別に引く (本文 R2 同梱)。
+	// カーソル以降の新規を IR / ニュース別に引く (本文 R2 同梱)。ニュースは銘柄ページ分と、
+	// 見出しが当該銘柄に当たる市場テーマニュースを同じ news カーソルで混ぜる。
 	const irRows = await pullArticles(env, code, irCursor, LIMIT, false);
-	const newsRows = await pullArticles(env, code, newsCursor, LIMIT, true);
+	const tickerNews = await pullArticles(env, code, newsCursor, LIMIT, true);
+	const marketRows = await pullMarketNews(
+		env,
+		tickerTerms(code),
+		newsCursor,
+		LIMIT,
+	);
+	const news = mergeNews(
+		code,
+		{ rows: tickerNews, full: tickerNews.length >= LIMIT },
+		{ rows: marketRows, full: marketRows.length >= LIMIT },
+		newsCursor,
+		LIMIT,
+	);
+	const newsRows = news.items;
 
 	// 両方 0 → no-update (force 時は既存 body 再生成のため ok で返す)。
 	if (irRows.length === 0 && newsRows.length === 0 && !force) {
@@ -63,7 +82,7 @@ contextInput.get("/context-input", async (c: Context<{ Bindings: Env }>) => {
 		context_body: body,
 		cursors: {
 			ir: { current: irCursor, next: nextCursor(irRows, irCursor) },
-			news: { current: newsCursor, next: nextCursor(newsRows, newsCursor) },
+			news: { current: newsCursor, next: news.next },
 		},
 		ir_count: irRows.length,
 		news_count: newsRows.length,

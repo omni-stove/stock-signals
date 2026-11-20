@@ -86,12 +86,11 @@ jobs:
 
             Report only what these inputs show now; never hindsight or a later result.
 
-            Do not post to Slack; do not run any script; do not write any file — return structured output
-            and stop.
+            Return structured output and stop.
 
             ## Inputs
 
-            What leads, what only confirms, what to skip. `unavailable` or empty → skip that field.
+            `unavailable` or empty → skip that field.
 
             - **`market_phase`**: `premarket` → the gap isn't in yet; 場中 → `sectors` and `live_indexes` are live,
               read breadth directly; `closed` → report today's close plus tonight's NY setup.
@@ -106,22 +105,23 @@ jobs:
               much larger move); never list them all. `earnings: after_this_close` → the reaction comes in today's
               session; `in_close` → the close already reflects it.
             - **`live_indexes`**: `stale` → demote; pre-open → skip.
-            - **`sectors`** is how the watchlist itself moved. `backdrop.tone` is SOX-derived; read it only for a
-              sector that tracks SOX.
+            - **`sectors`** is how the watchlist itself moved: in-session or `closed` it leads on breadth;
+              pre-open it is the prior session and only confirms. `backdrop.tone` is SOX-derived; read it only for
+              a sector that tracks SOX.
             - **`event_context`**: a `特になし` tail → ignore.
-            - **`market_news`**: pick the 1–2 that bear on today's tape; ignore the rest.
-            - **`investor_flows`**: report it only on the morning it is new or when the foreigners' streak flips. `net` is positive for net buying; `foreigners_streak_weeks` is positive for consecutive net-buying weeks and negative for consecutive net-selling weeks, so a sign change is a flip.
+            - **`market_news`**: pick the 1–2 that bear on today's tape.
+            - **`investor_flows`**: report it only on the morning it is new or when the foreigners' streak flips. `net` is positive for net buying; `foreigners_streak_weeks` is positive for consecutive net-buying weeks and negative for consecutive net-selling weeks.
             - **`market_short_ratio`**: well above its 5-day average marks heavy hedging and squeeze fuel.
 
             ## Output
 
-            Japanese, facts only, no figures.
+            Japanese.
 
             - `headline`: `🌅 マーケットブリーフ: <one-phrase summary of last night and today>`.
             - `body`: 3–6 lines. Lead with the strongest fact of the morning. Say whether the leading `premarket`
               field / 日経先物 / live Asia / セクター平均 agree or split — a split tape is worth saying plainly.
               One line for today's calendar when an event fired. Close with the single move or event most worth
-              watching today, as a fact to watch, not an instruction. When every input is stale or unavailable,
+              watching today. When every input is stale or unavailable,
               return one line saying so instead.
 
             ## 数値コンテキスト

@@ -101,7 +101,7 @@ jobs:
 
             ## Inputs
 
-            An absent block means no data — do not mention it.
+            An absent block means no data, or data too stale or thin to read — do not mention it or fill it in.
 
             **Primary — where the fault lines come from:**
 
@@ -114,7 +114,7 @@ jobs:
             - **`market_brief`**: broad weakness in it raises the 確度 of the macro scenarios and shortens their
               trigger horizon. `date` before today → weigh it lightly.
             - **`event_context`**: an event inside the next few sessions is a trigger candidate; a
-              `当銘柄のSQ連動度` well above 1 makes the SQ one; `特になし` → ignore.
+              `当銘柄のSQ連動度` well above 1 makes the SQ one.
             - **`ticker_note`**: qualifies the other inputs; never a scenario of its own.
             - **`sector` / `sector_role`** (this ticker in `worker/src/lib/watchlist.ts`) set the systematic
               exposure and which part of the cycle hits first.
@@ -124,17 +124,18 @@ jobs:
             - **Medium-term fragility** — how much gain holders could give back and how much good news the price
               carries: `trend`, `relative`, `valuation` against its range and peers, a good-news disclosure in
               `event_reactions` that sold off (exhausted buyers), a `down` revision or a forecast left unchanged
-              into a strong cycle in `revisions`. `sector` separates a name-specific run-up from the sector's.
+              into a strong cycle in `revisions`, an `earnings_result` that shrank or runs behind pace (read the
+              reaction through 決算の特色・クセ in `context_body`). `sector` separates a name-specific run-up from the sector's.
             - **Supply shocks**: `supply.items[]` (lock-up dates are rough; `ratio_pct` below `prev_ratio_pct` = a
               large holder selling down), rising `short_interest.positions` (institutions building shorts; a running
-              `lending.fee` is squeeze fuel, not a crash path), and `forced` with a pending 投げ in its stated
-              session.
+              `lending.fee` is squeeze fuel, not a crash path; an old `positions.calc_date` is weak evidence), and
+              `forced` with a pending 投げ in its stated session. A `supply` item older than a few weeks is
+              background only.
             - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings` (`earnings.estimated: true` →
               a guess from last year's same quarter: treat the timing as approximate, never as a 確定日);
               `premarket` — build a macro
               scenario on each field `context_body`, `ticker_note` or `sector_role` shows this name is exposed to,
-              most exposed first; none shown → general risk appetite only. `status: stale` → weigh lightly;
-              `us_session: carried_over` → not a fresh sign. `market_phase: premarket` makes a tonight→open gap-down
+              most exposed first; none shown → general risk appetite only. `us_session: carried_over` → not a fresh sign. `market_phase: premarket` makes a tonight→open gap-down
               its own scenario.
 
             ## Building the scenarios
@@ -166,8 +167,9 @@ jobs:
             first line, so do not add `*`.
 
             - One block per scenario. First line: `<rank>. <name> [<固有 or マクロ>] 確度:<高, 中, or 低>`; then a
-              きっかけ line and a 先行サイン line.
-            - The last block's first line is exactly `総括`; its body starts on the second line.
+              きっかけ line and a 先行サイン line, each after a newline.
+            - Exact format, verbatim: exactly one 総括 block, placed last, whose first line is `総括` alone; its
+              body starts on the second line. The posting step counts every block before it as a scenario.
           # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず
           # Read + WebSearch/WebFetch (追加取材) のみ許可。
           # --json-schema で出力の形を縛る。blocks = scenario + 総括 の Slack section 配列 (各ブロックの中身は prompt の

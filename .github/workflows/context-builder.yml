@@ -94,7 +94,8 @@ jobs:
           curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
             "${WORKER_URL%/}/context-input?code=${TICKER}${FORCE:+&force=1}" > "$RUNNER_TEMP/ctxin.raw.json"
           META="$(bash scripts/watchlist-meta.sh "$TICKER")"
-          jq --argjson meta "$META" '. + {ticker_meta:$meta}' \
+          jq --argjson meta "$META" --arg today "$(TZ=Asia/Tokyo date +%F)" \
+            '. + {ticker_meta:$meta, today:$today}' \
             "$RUNNER_TEMP/ctxin.raw.json" > "$RUNNER_TEMP/ctxin.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
@@ -127,42 +128,45 @@ jobs:
             detail (model numbers, spec figures, release dates, entity/person names, trademark symbols) and
             collapse variant lists into the one line that carries the call. When in doubt, cut.
 
+            Judge each item only on what it states now, never on a later outcome.
+
+            Do not post to Slack; do not upsert; do not run any script; do not write any file — return
+            structured output and stop.
+
             ## Inputs
 
-            The input JSON is embedded inline below (`ticker_meta` with the ticker's `name` / `sector` /
-            `note`; the existing context body; the two cursors; the new IR/news). Do not post to
-            Slack; do not upsert; do not run any script; do not write any file — return structured output and stop.
+            The input JSON is embedded inline below. Ignore `ir_count`, `news_count`, and `cursors.*.current`.
+
+            - **`status`**: `no-update`, a value you can't read, or unreadable input → return
+              `{status:"no-update"}` (no title, sections, or cursors) and stop. `ok` → continue to step 1.
+              `ok` with both item lists empty is a forced regeneration — never return no-update; rebuild the
+              existing body under the current rules (step 2).
+            - **`ir_items`** (official IR + TDnet + `rating`) lead. The same filing can arrive from both official
+              IR and TDnet; treat it as one item. A body that runs past its title carries text taken from an
+              earnings filing (決算短信, 業績予想の修正, 説明資料): read its qualitative statements — demand outlook
+              by end market, reasons for a revision, the stance behind the guidance — as material for `earnings`,
+              `earnings_pattern`, and `topics`. Use any figure in it only to see the direction; never copy an
+              amount, percentage, growth rate, or forecast value into any section, write the direction in words
+              instead. The text is cut at a fixed length; do not guess what follows the cut. A body that is only
+              the title means the filing text was unavailable — judge on the title alone and never fill in the
+              filing contents from memory.
+            - **`news_items`** (per-ticker news, noisier) only confirm: keep one only when an IR item backs it,
+              otherwise drop it. Both item lists are already filtered to since each cursor and ordered oldest-first.
+            - **`context_body`**: the existing body, the base to rebuild from; a fresh item revises it, never the
+              reverse. Empty → first run; build the body from the items alone.
+            - **`ticker_meta`**: `name` goes into `title` only; `sector` and `note` qualify what a fact means for
+              this name, never override an item.
+            - **`today`** (JST): the date a topic's age is measured against.
+            - **`cursors.ir.next`** / **`cursors.news.next`**: copied into `ir_cursor` / `news_cursor`; never read
+              for judgment.
 
             ## Steps
 
-            ### 1. Read the input JSON and branch on `status`
-
-            Let `ticker_meta.note` qualify what a fact means for this name, never override an item.
-
-            - input `status: "no-update"`, or any status you can't read, or unreadable input → return
-              `{status:"no-update"}` (no body, no cursors) and stop.
-            - input `status: "ok"` → continue to step 2.
-
-            `ir_items` are official IR + TDnet + `rating`, lead on them. `news_items` are per-ticker news, noisier
-            — confirm against an IR item or drop. Both are already filtered to since each cursor and ordered
-            oldest-first. The same filing can arrive from both official IR and TDnet; treat it as one item.
-
-            An `ir_items` body that runs past its title carries text taken from an earnings filing (決算短信,
-            業績予想の修正, 説明資料). Read its qualitative statements — demand outlook by end market, reasons for
-            a revision, the stance behind the guidance — as material for `earnings`, `earnings_pattern`, and
-            `topics`. Use any figure in it only to see the direction; never copy an amount, percentage, growth
-            rate, or forecast value into any section, write the direction in words instead. The text is cut at a
-            fixed length; do not guess what follows the cut. A body that is only the title means the filing text
-            was unavailable — judge on the title alone and never fill in the filing contents from memory. Empty `context_body` means first run — build the body from scratch (step 3).
-            `status: "ok"` with both item lists empty is a forced regeneration — never return no-update;
-            rebuild the existing body under the current rules (step 3).
-
-            ### 2. Read each new item and select what is material to the context
+            ### 1. Read each new item and select what is material to the context
 
             Keep an item only when it shifts the swing call: a management or capital decision, a generation
             move in the product lineup or roadmap, a structural supply/demand turn that outlives a session, or
-            earnings/guidance against expectations. Judge each on what the item itself states now, never on a
-            later outcome. Reduce each to its judgment-bearing fact. Never a buy/sell view, the day's tape, or a
+            earnings/guidance against expectations. Reduce each to its judgment-bearing fact. Never a buy/sell view, the day's tape, or a
             restatement of something already recorded.
 
             A fresh material fact enters `topics` while its near-term effect is live, then leaves once that
@@ -171,7 +175,7 @@ jobs:
             新規) at a firm not marked 信頼度: 低; a target-price revision alone is not material. Never keep a
             standing list of ratings or target prices in any section.
 
-            ### 3. Regenerate the whole set of sections
+            ### 2. Regenerate the whole set of sections
 
             Rebuild every section, not incremental edits, as each output field defines it.
 
@@ -198,7 +202,7 @@ jobs:
                     "business":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 事業の骨格. Rarely-changing structural facts: what the company is, where it sits in the value chain, production base, technology lineage. A few lines that tell a continuation from a reversal, not a company profile."},
                     "products":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 商品ラインナップ / 技術ロードマップ. Current generation and where the next one stands; one line per product line, named by generation and market position only."},
                     "management":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 経営判断・資本政策. Capex, capacity, M&A, alliances, capital policy; accumulate and revise on material events."},
-                    "topics":{"type":"array","maxItems":10,"description":"Existing heading 直近の重大トピック. Newest first by date, about 6 items. Merge items telling one running story into the newest. Drop an item once its date is about 14 days old or its effect is absorbed into a structural section; keeping it requires the effect to still be live, not merely plausible.",
+                    "topics":{"type":"array","maxItems":10,"description":"Existing heading 直近の重大トピック. Newest first by date, about 6 items. Merge items telling one running story into the newest. Drop an item once its date is about 14 days before today or its effect is absorbed into a structural section; keeping it requires the effect to still be live, not merely plausible.",
                       "items":{"type":"object","additionalProperties":false,"required":["date","summary","effect"],
                         "properties":{
                           "date":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},

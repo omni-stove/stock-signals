@@ -18,7 +18,7 @@ import { macroEvents } from "./schema";
 import { addDays, fetchHtml, jstDate, sleep } from "./utils";
 import { WATCHLIST_NAMES } from "./watchlist";
 
-export interface IndexChangesEnv {
+interface IndexChangesEnv {
 	DB: D1Database;
 	USER_AGENT: string;
 	MIN_INTERVAL_MS: string;
@@ -32,15 +32,15 @@ const NIKKEI_NEWS_BASE = "https://indexes.nikkei.co.jp/nkave/archives/news/";
 const NIKKEI_MAX_PER_DAY = 10;
 const FETCH_TIMEOUT_MS = 20_000;
 
-export const NIKKEI225 = "日経225";
-export const JPX400 = "JPX日経400";
+const NIKKEI225 = "日経225";
+const JPX400 = "JPX日経400";
 
-export interface IndexNotice {
+interface IndexNotice {
 	url: string;
 	publishedAt: string; // YYYY-MM-DD
 }
 
-export interface IndexChange {
+interface IndexChange {
 	code: string;
 	action: "add" | "remove";
 	date: string; // 実施日 YYYY-MM-DD
@@ -53,7 +53,7 @@ const NOTICE_HREF = /\/news\/\d+\/(\d{4})(\d{2})(\d{2})-\d+\.html$/;
 /**
  * JPX日経400 のページから JPX日経400 の構成銘柄のお知らせを返す。公表日はお知らせ URL の日付。
  */
-export async function parseJpx400Notices(
+async function parseJpx400Notices(
 	html: string,
 	baseUrl: string,
 ): Promise<IndexNotice[]> {
@@ -72,7 +72,7 @@ export async function parseJpx400Notices(
 }
 
 /** お知らせページの最初の PDF (本文) の URL を返す。無ければ null。 */
-export async function parseNoticePdfUrl(
+async function parseNoticePdfUrl(
 	html: string,
 	baseUrl: string,
 ): Promise<string | null> {
@@ -84,7 +84,7 @@ export async function parseNoticePdfUrl(
 }
 
 /** 日経のお知らせ本文 PDF の URL (date の n 本目)。 */
-export function nikkeiNewsUrl(date: string, n: number): string {
+function nikkeiNewsUrl(date: string, n: number): string {
 	return `${NIKKEI_NEWS_BASE}${date.replace(/-/g, "")}J_${n}.pdf`;
 }
 
@@ -209,7 +209,7 @@ function parseProse(compact: string, publishedAt: string): IndexChange[] {
  * 本文は定期入替 (追加・除外の銘柄表と実施日)・非定期の除外 (除外期日・除外対象の箇条)・
  * 入替の文章の 3 形。年の無い日付は公表日 (YYYY-MM-DD) から年を補う。読めなければ空配列。
  */
-export function parseJpx400NoticeText(
+function parseJpx400NoticeText(
 	text: string,
 	publishedAt: string,
 ): IndexChange[] {
@@ -223,7 +223,7 @@ export function parseJpx400NoticeText(
 }
 
 /** 日経のお知らせ本文のニュースタグに日経平均と銘柄入替が両方あるか。 */
-export function isNikkei225Change(text: string): boolean {
+function isNikkei225Change(text: string): boolean {
 	const line = text.normalize("NFKC").match(/ニュースタグ\s*:([^\n]*)/);
 	const tags = line
 		? line[1].split("、").map((t) => t.replace(/\s+/g, ""))
@@ -260,7 +260,7 @@ function parseNikkeiTables(text: string, publishedAt: string): IndexChange[] {
  * ニュースタグに日経平均と銘柄入替が無ければ空配列。銘柄入れ替えの表と、経営統合などに伴う
  * 入替の文章を読む。年の無い日付は公表日 (YYYY-MM-DD) から年を補う。
  */
-export function parseNikkeiNewsText(
+function parseNikkeiNewsText(
 	text: string,
 	publishedAt: string,
 ): IndexChange[] {
@@ -272,7 +272,7 @@ export function parseNikkeiNewsText(
 	]);
 }
 
-export interface IndexChangeEvent {
+interface IndexChangeEvent {
 	date: string;
 	kind: string;
 	label: string;
@@ -281,7 +281,7 @@ export interface IndexChangeEvent {
 }
 
 /** 監視銘柄の採用・除外だけを macro_events の行にする。note は公表日。 */
-export function indexChangeEvents(
+function indexChangeEvents(
 	changes: IndexChange[],
 	index: string,
 	publishedAt: string,

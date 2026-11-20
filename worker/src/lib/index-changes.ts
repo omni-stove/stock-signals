@@ -299,7 +299,10 @@ export function indexChangeEvents(
 }
 
 /** 同じ (date, kind) の 2 件を 1 行にまとめる。label・note は重複を除いて " / " でつなぐ。 */
-function mergeEvents(a: IndexChangeEvent, b: IndexChangeEvent): IndexChangeEvent {
+function mergeEvents(
+	a: IndexChangeEvent,
+	b: IndexChangeEvent,
+): IndexChangeEvent {
 	const join = (x: string, y: string) => {
 		const parts = x ? x.split(" / ") : [];
 		for (const p of y.split(" / ")) if (p && !parts.includes(p)) parts.push(p);

@@ -415,17 +415,22 @@ export async function notifyOps(env: Env, text: string): Promise<void> {
 	}
 }
 
-// 収集ソースの「HTTP 200 なのに一覧パース0件」を警告する。ソースサイトの DOM 変更で
-// 収集がエラーも出さずに止まる事故の検知用。sources は "news:285A" / "market-news" 等のラベル。
+/**
+ * 収集ソースの「HTTP 200 なのに一覧パース0件」と、決算系 PDF の抜粋が取れず本文が見出しだけに
+ * なった件数を運用チャンネルに 1 行で警告する。どちらも 0 なら送らない。
+ * sources は "news:285A" / "market-news" 等のラベル、pdfFallbacks はその回の合計件数。
+ */
 export async function notifyParseFailure(
 	env: Env,
 	sources: string[],
+	pdfFallbacks = 0,
 ): Promise<void> {
-	if (sources.length === 0) return;
-	await notifyOps(
-		env,
-		`⚠️ 収集一覧のパース0件 (DOM変更の可能性): ${sources.join(", ")}`,
-	);
+	const parts: string[] = [];
+	if (sources.length > 0)
+		parts.push(`パース0件 (DOM変更の疑い): ${sources.join(", ")}`);
+	if (pdfFallbacks > 0) parts.push(`PDF抽出失敗 ${pdfFallbacks}`);
+	if (parts.length === 0) return;
+	await notifyOps(env, `⚠️ ${parts.join(" / ")}`);
 }
 
 // fan-out で落ちた収集ジョブ (fan-out.ts の jobKey) を警告する。0 件なら no-op。
@@ -594,6 +599,36 @@ if (import.meta.vitest) {
 			const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
 			expect(body.text).toContain("パース0件");
 			expect(body.text).toContain("news:285A, market-news");
+			expect(body.text).not.toContain("PDF抽出失敗");
+			vi.unstubAllGlobals();
+		});
+
+		it("PDF 抽出失敗の件数を同じ 1 行に足す", async () => {
+			const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyParseFailure(
+				{ SLACK_WEBHOOK_URL: "https://hooks.slack.com/x" } as Env,
+				["ir:285A"],
+				2,
+			);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+			expect(body.text).toBe(
+				"⚠️ パース0件 (DOM変更の疑い): ir:285A / PDF抽出失敗 2",
+			);
+			vi.unstubAllGlobals();
+		});
+
+		it("パース0件が無くても PDF 抽出失敗があれば送る", async () => {
+			const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+			vi.stubGlobal("fetch", fetchMock);
+			await notifyParseFailure(
+				{ SLACK_WEBHOOK_URL: "https://hooks.slack.com/x" } as Env,
+				[],
+				1,
+			);
+			const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+			expect(body.text).toBe("⚠️ PDF抽出失敗 1");
 			vi.unstubAllGlobals();
 		});
 	});

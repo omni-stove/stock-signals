@@ -72,9 +72,17 @@ run.get("/", async (c) => {
 	// { results, freshTickers } を返すので共通形で扱う。
 	if (kind === "ir") {
 		const limit = parseInt(c.req.query("limit") || String(DEFAULT_LIMIT), 10);
-		const { results, freshTickers } = await collectAll(env, code, limit);
+		const { results, freshTickers, emptyParses, pdfFallbacks } =
+			await collectAll(env, code, limit);
 		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
-		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
+		return c.json({
+			ok: true,
+			kind,
+			result: results,
+			fresh: freshTickers,
+			emptyParses,
+			pdfFallbacks,
+		});
 	}
 	if (kind === "news") {
 		// per_ticker ニュース収集。dispatch=1 のときだけ signal-update と Slack 通知の副作用を起こす。
@@ -114,9 +122,17 @@ run.get("/", async (c) => {
 	}
 	if (kind === "disclosure") {
 		// 全 watchlist 銘柄の TDnet 適時開示 (kabutan nmode=3) を収集。/pull の ir カーソルに合流する。
-		const { results, freshTickers } = await collectDisclosures(env, code);
+		const { results, freshTickers, emptyParses, pdfFallbacks } =
+			await collectDisclosures(env, code);
 		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
-		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
+		return c.json({
+			ok: true,
+			kind,
+			result: results,
+			fresh: freshTickers,
+			emptyParses,
+			pdfFallbacks,
+		});
 	}
 	if (kind === "ratings") {
 		// 証券会社レーティング (kabutan 日報) を収集 → articles に rating:% で保存。/pull の ir カーソルに合流する。

@@ -289,9 +289,7 @@ export async function collectMemoryPrices(
 				},
 			}),
 	);
-	await d.batch(
-		stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]],
-	);
+	await d.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]);
 	return {
 		dates: [...new Set(quotes.map((q) => q.date))],
 		items: quotes.length,
@@ -323,7 +321,7 @@ export async function readMemoryPrices(
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-// 最新公表日に載った品目ごとの最新値・前回比・直近 20 公表日での変化率。
+// 品目ごとの最新公表日が STALE_BUSINESS_DAYS 以内の品目の最新値・前回比・直近 20 公表日での変化率。
 // change_pct は取得元の Session Change で、欠けていれば保存済みの前回公表日の値から出す。
 // change_20d_pct は 20 公表日前の値が無ければ null。
 export function buildMemoryPricesBlock(
@@ -346,7 +344,8 @@ export function buildMemoryPricesBlock(
 	for (const [item, list] of byItem) {
 		list.sort((a, b) => (a.date < b.date ? 1 : -1));
 		const [head, prev] = list;
-		if (head.date !== latest) continue;
+		if (tseBusinessDaysBetween(head.date, today) > STALE_BUSINESS_DAYS)
+			continue;
 		items.push({
 			item,
 			session_avg: head.session_avg,

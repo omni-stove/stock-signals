@@ -6,7 +6,8 @@
 //
 // 日足 (TOPIX・日経225 を含む)・5分足・強制決済スコア・fundamentals は、東証カレンダー
 // (market-calendar.ts) で求めた今日以前の最新営業日まで来ているかで判定する。週次・日次の
-// 公表データと決算予定日の取得は、最新日から今日までの東証営業日数で判定する。
+// 公表データ (メモリのスポット価格を含む) と決算予定日の取得は、最新日から今日までの東証営業日数で
+// 判定する。TSMC の月次売上は、最新月の月末から今日までの暦日数で判定する。
 
 import { and, desc, gte, inArray, max, sql } from "drizzle-orm";
 import { db } from "./db";
@@ -15,6 +16,7 @@ import {
 	latestTseBusinessDay,
 	tseBusinessDaysBetween,
 } from "./market-calendar";
+import { STALE_BUSINESS_DAYS as MEMORY_PRICES_MAX_LAG } from "./memory-prices";
 import {
 	daily,
 	earnings,
@@ -24,10 +26,13 @@ import {
 	macroEvents,
 	margin,
 	marketShortRatio,
+	memoryPrices,
 	premarketBackdrop,
 	prices,
+	twMonthlyRevenue,
 } from "./schema";
 import { DAILY_CODES, WATCHLIST } from "./timeseries";
+import { isTwMonthlyRevenueStale } from "./tw-monthly-revenue";
 import { jstDate } from "./utils";
 
 export interface FreshnessSnapshot {
@@ -40,7 +45,9 @@ export interface FreshnessSnapshot {
 	margin: string | null; // 信用残の最新集計基準日
 	investorFlows: string | null; // 投資部門別の最新 week_end
 	marketShortRatio: string | null;
-	earnings: Record<string, string | null>; // ticker → 決算予定日の最新取得の JST 日付
+	memoryPrices: string | null; // メモリのスポット価格の最新公表日
+	twMonthlyRevenue: string | null; // TSMC 月次売上の最新月 (YYYY-MM)
+	earnings:Record<string, string | null>; // ticker → 決算予定日の最新取得の JST 日付
 	nextMacro: string | null; // 今日以降で最も近い FOMC/日銀
 }
 
@@ -55,6 +62,7 @@ const MAX_LAG_DAYS = {
 	margin: 10,
 	investorFlows: 12,
 	marketShortRatio: 3,
+	memoryPrices: MEMORY_PRICES_MAX_LAG,
 	earnings: 2,
 } as const;
 
@@ -85,6 +93,13 @@ export function staleSources(s: FreshnessSnapshot, today: string): string[] {
 		out.push(label("investor-flows", s.investorFlows));
 	if (lagOver(s.marketShortRatio, MAX_LAG_DAYS.marketShortRatio))
 		out.push(label("market-short-ratio", s.marketShortRatio));
+	if (lagOver(s.memoryPrices, MAX_LAG_DAYS.memoryPrices))
+		out.push(label("memory-prices", s.memoryPrices));
+	if (
+		s.twMonthlyRevenue == null ||
+		isTwMonthlyRevenueStale(s.twMonthlyRevenue, today)
+	)
+		out.push(label("tw-monthly-revenue", s.twMonthlyRevenue));
 	for (const [code, last] of Object.entries(s.earnings))
 		if (lagOver(last, MAX_LAG_DAYS.earnings))
 			out.push(label(`earnings:${code}`, last));
@@ -191,6 +206,18 @@ export async function readFreshness(
 				.from(marketShortRatio)
 				.get(),
 		),
+		memoryPrices: await one(
+			d
+				.select({ v: max(memoryPrices.date) })
+				.from(memoryPrices)
+				.get(),
+		),
+		twMonthlyRevenue: await one(
+			d
+				.select({ v: max(twMonthlyRevenue.month) })
+				.from(twMonthlyRevenue)
+				.get(),
+		),
 		earnings: maxByTicker(
 			earningsRows.map((r) => ({ ticker: r.ticker, last: toJstDate(r.last) })),
 			WATCHLIST,
@@ -240,6 +267,8 @@ if (import.meta.vitest) {
 			margin: "2026-11-06",
 			investorFlows: "2026-11-06",
 			marketShortRatio: daily,
+			memoryPrices: daily,
+			twMonthlyRevenue: daily.slice(0, 7),
 			earnings: all(daily, WATCHLIST),
 			nextMacro: "2026-12-16",
 		});
@@ -301,6 +330,31 @@ if (import.meta.vitest) {
 				"us-peers (騰落が全銘柄なし)",
 				"margin (最新 2026-10-23)",
 				"macro-events (今後の FOMC/日銀なし)",
+			]);
+		});
+
+		it("メモリのスポット価格は 5 営業日を超えたら挙げる", () => {
+			const s = fresh();
+			s.memoryPrices = "2026-11-06"; // 5 営業日
+			expect(staleSources(s, TODAY)).toEqual([]);
+			s.memoryPrices = "2026-11-05"; // 6 営業日
+			expect(staleSources(s, TODAY)).toEqual([
+				"memory-prices (最新 2026-11-05)",
+			]);
+			s.memoryPrices = null;
+			expect(staleSources(s, TODAY)).toEqual(["memory-prices (最新 なし)"]);
+		});
+
+		it("TSMC 月次売上は最新月の月末から 45 日を超えたら挙げる", () => {
+			const s = fresh();
+			s.twMonthlyRevenue = "2026-09"; // 月末から 44 日
+			expect(staleSources(s, TODAY)).toEqual([]);
+			expect(staleSources(s, "2026-11-16")).toContain(
+				"tw-monthly-revenue (最新 2026-09)",
+			);
+			s.twMonthlyRevenue = null;
+			expect(staleSources(s, TODAY)).toEqual([
+				"tw-monthly-revenue (最新 なし)",
 			]);
 		});
 	});

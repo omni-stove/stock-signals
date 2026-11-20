@@ -112,6 +112,10 @@ jobs:
             - **`market_news`**: pick the 1–2 that bear on today's tape.
             - **`investor_flows`**: report it only on the morning it is new or when the foreigners' streak flips. `net` is positive for net buying; `foreigners_streak_weeks` is positive for consecutive net-buying weeks and negative for consecutive net-selling weeks.
             - **`market_short_ratio`**: well above its 5-day average marks heavy hedging and squeeze fuel.
+            - **`memory_prices`** / **`tw_monthly_revenue`**: when you discuss semiconductor supply and demand,
+              you may cite the direction of memory spot prices (`change_pct`, `change_20d_pct` per item) and of
+              TSMC's monthly revenue (`yoy_pct`, `yoy_trend`) as grounds; they only confirm and never lead over
+              `premarket` or `sectors`. Never write their figures. `status: stale` or `none` → do not mention it.
 
             ## Output
 
@@ -148,7 +152,7 @@ jobs:
       # skill の構造化出力 (structured_output) を Slack に投稿する (curl/jq/フォールバックは script が持つ)。
       # /slack/post が kind=market-brief を見て briefs (ticker='market') に upsert する。
       # 第2引数 = LLM に渡したのと同じ marketctx。post-market.sh が 📐 数値 (前夜米国・為替・金利・VIX・
-      # 場中指数・空売り比率・投資部門別) を実在値から決定論で組む (LLM は数値を出さない)。
+      # 場中指数・空売り比率・投資部門別・メモリのスポット価格・TSMC 月次売上) を実在値から決定論で組む (LLM は数値を出さない)。
       - name: Post market-brief to Slack
         run: |
           printf '%s' "$MARKET_JSON" > "$RUNNER_TEMP/market.json"

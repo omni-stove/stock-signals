@@ -127,7 +127,8 @@ function isJstMonthStart(scheduledTime: number): boolean {
 }
 
 // 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率)・投資部門別売買 (週次)・
-// 大量保有報告書 (EDINET)。公表が夕方以降のものなので引け後 intake (18:00) の先頭で回す。
+// 大量保有報告書 (EDINET)・メモリのスポット価格 (DRAMeXchange)・TSMC の月次売上 (MOPS)。
+// 公表が夕方以降のもの、または 1 日 1 回取れば足りるものなので引け後 intake (18:00) の先頭で回す。
 async function collectFlows(env: Env): Promise<void> {
 	const { results, failed } = await fanOut(env, [
 		{ kind: "short-interest", part: "lending" },
@@ -139,6 +140,8 @@ async function collectFlows(env: Env): Promise<void> {
 		{ kind: "short-interest", part: "market" },
 		{ kind: "investor-flows" },
 		{ kind: "large-holdings" },
+		{ kind: "memory-prices" },
+		{ kind: "tw-monthly-revenue" },
 	]);
 	if (failed.length > 0) console.error("flows jobs failed:", failed);
 	await notifyJobFailure(env, "flows", failed);

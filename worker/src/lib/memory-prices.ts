@@ -19,7 +19,7 @@ export interface MemoryPricesEnv {
 const URL_DRAMEXCHANGE = "https://www.dramexchange.com/";
 const SOURCE = "DRAMeXchange";
 // 最新公表日から今日までの東証営業日数がこれを超えたら stale。
-const STALE_BUSINESS_DAYS = 5;
+export const STALE_BUSINESS_DAYS = 5;
 // 変化率を取る公表日の幅。
 const CHANGE_WINDOW = 20;
 // 品目数 (DRAM + NAND で十数品目) × 変化率の幅に余裕を持たせた読み出し行数。
@@ -60,7 +60,7 @@ const MONTHS: Record<string, number> = {
 
 // "Last Update: Nov 19 2026 18:10 (GMT+8)" / "Last Update:2026/11/19 18:10" を JST の暦日にする。
 // 時刻があれば GMT+8 として JST に直す (台湾の 23 時台は JST で翌日になる)。読めなければ null。
-export function parseLastUpdate(text: string): string | null {
+function parseLastUpdate(text: string): string | null {
 	const named = text.match(
 		/Last\s*Update\s*:?\s*([A-Za-z]{3,9})\.?\s*(\d{1,2}),?\s+(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/i,
 	);
@@ -237,7 +237,7 @@ const HEADER_RE = /Session\s*(?:<br\s*\/?>\s*)?Average/gi;
 
 // DRAMeXchange トップの HTML から DRAM Spot / NAND Flash Spot の品目を読む。
 // 表題か "Last Update" が読めない表は日付を決められないので捨てる。
-export async function parseMemoryPrices(
+async function parseMemoryPrices(
 	html: string,
 ): Promise<MemoryPriceQuote[]> {
 	const lower = asciiLower(html);

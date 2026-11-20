@@ -4,7 +4,7 @@
 //
 // 取得は D1 直読み。出力構造:
 //   { asof, market_phase, event_context, premarket, us_peers, live_indexes, sectors, market_news,
-//     investor_flows, market_short_ratio }
+//     investor_flows, market_short_ratio, memory_prices, tw_monthly_revenue }
 //
 // premarket は judge-context と違い us_indexes / date と vix_peak (直近 30 日の VIX 高値と現値の乖離) も載せる
 // (市場全体のマーケットブリーフに使うため)。
@@ -19,6 +19,10 @@ import { buildEventContext, type MacroEventRow } from "../lib/event-context";
 import { buildInvestorFlows, readInvestorFlows } from "../lib/investor-flows";
 import { buildLiveIndexesBlock, type LiveIndexRow } from "../lib/live-indexes";
 import { resolveMarketPhase } from "../lib/market-phase";
+import {
+	buildMemoryPricesBlock,
+	readMemoryPrices,
+} from "../lib/memory-prices";
 import {
 	buildPremarketBlock,
 	buildUsPeersBlock,
@@ -43,6 +47,10 @@ import {
 	buildMarketShortRatio,
 	readMarketShortRatio,
 } from "../lib/short-interest";
+import {
+	buildTwMonthlyRevenueBlock,
+	readTwMonthlyRevenue,
+} from "../lib/tw-monthly-revenue";
 import { WATCHLIST_META } from "../lib/watchlist";
 
 // 寄り前の地合い (premarket 最新 1 行) と場中の指数 (日経225/KOSPI の最新現値) を読む。
@@ -195,6 +203,14 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 		investor_flows: buildInvestorFlows(await readInvestorFlows(env.DB)),
 		market_short_ratio: buildMarketShortRatio(
 			await readMarketShortRatio(env.DB),
+		),
+		memory_prices: buildMemoryPricesBlock(
+			await readMemoryPrices(env.DB),
+			today,
+		),
+		tw_monthly_revenue: buildTwMonthlyRevenueBlock(
+			await readTwMonthlyRevenue(env.DB),
+			today,
 		),
 	});
 });

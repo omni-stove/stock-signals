@@ -143,9 +143,17 @@ jobs:
               `{status:"no-update"}` (no body, no cursors) and stop.
             - input `status: "ok"` → continue to step 2.
 
-            `ir_items` are official IR + TDnet + `rating`, lead on them. `news_items` are per-ticker news, noisier
-            — confirm against an IR item or drop. Both are already filtered to since each cursor and ordered
-            oldest-first. The same filing can arrive from both official IR and TDnet; treat it as one item.
+            `ir_items` are official IR + TDnet + `rating`, lead on them. `news_items` with `source: "ticker"`
+            are per-ticker news, noisier — confirm against an IR item or drop. Both are already filtered to
+            since each cursor and ordered oldest-first. The same filing can arrive from both official IR and
+            TDnet; treat it as one item.
+
+            `news_items` with `source: "market"` are cross-industry market news (trade policy, export controls,
+            sanctions, subsidies, tariffs, sector themes) whose headline names a product or business this ticker
+            has. Treat one only as industry-wide material: write it into `topics` only when its body shows the
+            path to this ticker — its orders, the customers or regions it ships to, or the controlled items
+            matching its products. When the body shows no such path, or the body is null, ignore the item; never
+            infer a path from what you know about the company, and never put it into a structural section.
 
             An `ir_items` body that runs past its title carries text taken from an earnings filing (決算短信,
             業績予想の修正, 説明資料). Read its qualitative statements — demand outlook by end market, reasons for

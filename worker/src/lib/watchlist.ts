@@ -66,7 +66,14 @@ export const TICKERS: Ticker[] = [
 		sector: "semiconductor",
 		sector_role: "tester",
 		aliases: ["アドバンテスト", "Advantest"],
-		keywords: ["半導体テスター", "SoCテスター", "メモリテスター", "HBM"],
+		// 「半導体」「輸出規制」単独は全銘柄の政策見出しに誤爆するので入れず、製造装置で当てる。
+		keywords: [
+			"半導体テスター",
+			"SoCテスター",
+			"メモリテスター",
+			"HBM",
+			"半導体製造装置",
+		],
 		ir_url: "https://www.advantest.com/ja/news",
 		ir: { site: "advantest", list_url: "https://www.advantest.com/ja/news/" },
 		news_url: "https://kabutan.jp/stock/news?code=6857",
@@ -78,7 +85,13 @@ export const TICKERS: Ticker[] = [
 		sector: "semiconductor",
 		sector_role: "inspection",
 		aliases: ["レーザーテック", "Lasertec"],
-		keywords: ["EUV", "マスク検査", "フォトマスク", "半導体検査"],
+		keywords: [
+			"EUV",
+			"マスク検査",
+			"フォトマスク",
+			"半導体検査",
+			"半導体製造装置",
+		],
 		ir_url: "https://www.lasertec.co.jp/news/",
 		ir: { site: "lasertec", list_url: "https://www.lasertec.co.jp/news/" },
 		news_url: "https://kabutan.jp/stock/news?code=6920",
@@ -97,6 +110,8 @@ export const TICKERS: Ticker[] = [
 			"電子部品",
 			"インダクタ",
 			"通信デバイス",
+			"受動部品",
+			"コンデンサ",
 		],
 		ir_url: "https://www.yuden.co.jp/ir/",
 		ir: { site: "yuden", list_url: "https://www.yuden.co.jp/ir/" },
@@ -130,16 +145,21 @@ export const WATCHLIST_META: WatchlistMeta[] = TICKERS.map((t) => ({
 	sector_role: t.sector_role,
 }));
 
+// 銘柄の照合語 (name + aliases + keywords)。未知の code は空配列。matchTickers が見る語集合そのもので、
+// routes/context-input が market_news を SQL で粗く絞り込むのにも使う。
+export function tickerTerms(code: string): string[] {
+	const tk = TICKERS.find((t) => t.code === code);
+	return tk ? [tk.name, ...tk.aliases, ...tk.keywords] : [];
+}
+
 // text (ニュース見出し等) に言及がある watchlist 銘柄の code を返す。
 // 名前・aliases (銘柄名の別名) と keywords (製品・業界ワード。例: HBM→テスター需要) を
 // 小文字化した部分一致で見る。市場テーマニュース (market-news.ts) が「この見出しはどの銘柄の
-// 材料か」を引き、当たった銘柄の個別判定を起動するのに使う。
+// 材料か」を引いて当たった銘柄の個別判定を起動し、context-input が当該銘柄の news_items に混ぜるのに使う。
 export function matchTickers(text: string): string[] {
 	const t = text.toLowerCase();
 	return TICKERS.filter((tk) =>
-		[tk.name, ...tk.aliases, ...tk.keywords].some((w) =>
-			t.includes(w.toLowerCase()),
-		),
+		tickerTerms(tk.code).some((w) => t.includes(w.toLowerCase())),
 	).map((tk) => tk.code);
 }
 
@@ -200,6 +220,39 @@ if (import.meta.vitest) {
 		});
 		it("言及がなければ空配列", () => {
 			expect(matchTickers("東京株式（前引け）＝反発")).toEqual([]);
+		});
+		it("製造装置の政策見出しは装置銘柄にだけ当たり、メモリ・部品銘柄には当たらない", () => {
+			expect(matchTickers("米、対中半導体製造装置の輸出規制を拡大")).toEqual([
+				"6857",
+				"6920",
+			]);
+		});
+		it("メモリの政策見出しは既存のメモリ系語で 285A に当たる", () => {
+			expect(matchTickers("米、対中NAND輸出規制を検討")).toEqual(["285A"]);
+		});
+		it("電子部品の政策見出しは 6976 に当たる", () => {
+			expect(matchTickers("中国、日本製電子部品に追加関税")).toEqual(["6976"]);
+		});
+		it("「半導体」「輸出規制」だけの見出しはどの銘柄にも当てない", () => {
+			expect(matchTickers("米、半導体の輸出規制を強化")).toEqual([]);
+		});
+	});
+
+	describe("tickerTerms", () => {
+		it("name + aliases + keywords を返す", () => {
+			const tk = TICKERS[0];
+			expect(tickerTerms(tk.code)).toEqual([
+				tk.name,
+				...tk.aliases,
+				...tk.keywords,
+			]);
+		});
+		it("未知の code は空配列", () => {
+			expect(tickerTerms("0000")).toEqual([]);
+		});
+		it("照合語は SQL LIKE のワイルドカード (% _) を含まない", () => {
+			for (const tk of TICKERS)
+				for (const w of tickerTerms(tk.code)) expect(w).not.toMatch(/[%_]/);
 		});
 	});
 }

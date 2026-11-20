@@ -97,7 +97,9 @@ jobs:
               read breadth directly; `closed` → report today's close plus tonight's NY setup.
             - **`premarket`** leads pre-open. Lead on the field the watchlist's sectors are most exposed to, judged
               from `sectors` and each name's `sector_role`; the others only confirm. `vix_peak`: state whether the
-              fear spike is building or unwinding, never as a bottom or timing call. `status: stale` → demote it;
+              fear spike is building or unwinding; `unwind: true` → say the fear spike has run its course from a
+              high of 30 or more, a setup after which US and Japanese stocks have historically tended to rise;
+              `unwind: false` → never call a bottom or timing. `status: stale` → demote it;
               `unavailable` → report from `sectors` and `event_context` alone; `us_session: carried_over` → say so
               and do not report it as fresh overnight news.
             - **`us_peers`**: name a peer only when it carries `earnings` or splits from SOX (opposite sign, or a

@@ -40,7 +40,7 @@ BODY="$(printf '%s' "$SIGNAL_JSON" | jq -r '(.body // []) | join("\n")')"
 [[ -n "$HEADLINE" ]] || { echo "post-market.sh: empty headline in $SIGNAL_FILE" >&2; exit 1; }
 
 # --- 数値行 (決定論) ----------------------------------------------------------
-# 1 行目 = 前夜米国 (SOX/NASDAQ/Dow/日経先物/ドル円/米10年債/VIX。VIX には直近高値からの乖離を添え、
+# 1 行目 = 前夜米国 (SOX/NASDAQ/Dow/日経先物/ドル円/米10年債/VIX。VIX には直近高値からの乖離 (unwind なら「恐怖の一巡」) を添え、
 #   休場明け・stale は日付の横に添える)、
 # 2 行目 = 場中の指数 (status=ok のものだけ)、3 行目 = セクター平均 (前日比・5日)、
 # 4 行目 = 空売り比率 (5日平均) と海外投資家の週次売買 (連続週)。値の無い項目・行は出さない。
@@ -61,7 +61,7 @@ if [[ -n "$MARKETCTX_FILE" && -s "$MARKETCTX_FILE" ]] && jq -e . "$MARKETCTX_FIL
           ($p.vix_price | if . != null then "VIX \(.)" + ([ ($p.vix_change_pct | if . != null then "\(signed)%" else empty end),
               ($p.vix_peak // null | if . == null then empty
                 elif .from_peak_pct == 0 then "\(.window_days)日高値"
-                else "\(.window_days)日高値 \(.peak)から\(.from_peak_pct | signed)%" end) ]
+                else "\(.window_days)日高値 \(.peak)から\(.from_peak_pct | signed)%" + (if .unwind then "・恐怖の一巡" else "" end) end) ]
               | if length > 0 then "（" + join("・") + "）" else "" end) else empty end) ] as $items
       | select($items | length > 0)
       | [ $p.date, (if $p.us_session == "carried_over" then "休場明けの前回終値" else empty end),

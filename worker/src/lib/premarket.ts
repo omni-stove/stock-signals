@@ -480,12 +480,17 @@ export function buildPremarketBlock(
 // ── VIX の直近高値 (/market-context 用) ─────────────────────────────────────
 // premarket_backdrop の直近 VIX_PEAK_WINDOW_DAYS 日分の vix_price から高値を取り、現値の高値からの乖離 (%) を出す。
 // 高値は現値も含めて取るので from_peak_pct は 0 以下。現値・履歴が無ければ null。
+// unwind = 高値が VIX_UNWIND_MIN_PEAK 以上で、現値がそこから VIX_UNWIND_DROP_PCT% 以上下げた (恐怖の一巡)。
 export const VIX_PEAK_WINDOW_DAYS = 30;
+// VIX の MACD クロスは使わない: 1995〜2026 の日足でクロス後の日経騰落が平常時と変わらなかった。
+const VIX_UNWIND_MIN_PEAK = 30;
+const VIX_UNWIND_DROP_PCT = 20;
 
 type VixPeak = {
 	window_days: number;
 	peak: number;
 	from_peak_pct: number;
+	unwind: boolean;
 };
 
 export function buildVixPeak(
@@ -497,10 +502,12 @@ export function buildVixPeak(
 		current,
 		...history.filter((v): v is number => v != null && v > 0),
 	);
+	const fromPeakPct = Math.round((current / peak - 1) * 1000) / 10;
 	return {
 		window_days: VIX_PEAK_WINDOW_DAYS,
 		peak,
-		from_peak_pct: Math.round((current / peak - 1) * 1000) / 10,
+		from_peak_pct: fromPeakPct,
+		unwind: peak >= VIX_UNWIND_MIN_PEAK && fromPeakPct <= -VIX_UNWIND_DROP_PCT,
 	};
 }
 
@@ -755,7 +762,13 @@ if (import.meta.vitest) {
 				window_days: VIX_PEAK_WINDOW_DAYS,
 				peak: 32.4,
 				from_peak_pct: -25,
+				unwind: true,
 			});
+		});
+		it("高値 30 以上から 20% 以上下げた時だけ unwind", () => {
+			expect(buildVixPeak([30], 24)?.unwind).toBe(true);
+			expect(buildVixPeak([30], 24.1)?.unwind).toBe(false);
+			expect(buildVixPeak([29.9], 20)?.unwind).toBe(false);
 		});
 		it("現値が高値なら乖離 0", () => {
 			expect(buildVixPeak([15, 18], 21.5)?.from_peak_pct).toBe(0);

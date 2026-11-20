@@ -8,7 +8,7 @@
     },
     "worker": {
       "project": ["src/**/*.ts"],
-      "entry": ["src/lib/seaj-sales.ts"]
+      "entry": ["src/lib/seaj-sales.ts", "src/lib/index-changes.ts"]
     }
   }
 }

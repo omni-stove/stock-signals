@@ -216,6 +216,10 @@ run.get("/", async (c) => {
 	if (kind === "index-changes") {
 		// 日経225・JPX日経400 の採用・除外のうち監視銘柄の分 (前営業日以降の公表) → D1 macro_events。
 		const result = await collectIndexChanges(env);
+		// 取得・解析の失敗は errors に入って正常終了するため、ここで失敗にしないと fanOut が成功扱いにして通知されない。
+		const errors = result.errors;
+		if (Array.isArray(errors) && errors.length > 0)
+			return c.json({ ok: false, kind, result }, 502);
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "prices" || kind === "daily" || kind === "fundamentals") {

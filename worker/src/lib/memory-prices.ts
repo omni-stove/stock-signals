@@ -2,7 +2,7 @@
 //
 // DRAMeXchange のトップに載る DRAM Spot / NAND Flash Spot の表から、品目・Session Average・
 // Session Change を取り memory_prices に (date, item) で upsert する。同じトップにある
-// Wafer Spot などの表は公表間隔が違い前回比の意味が揃わないため取らない。
+// Module / Wafer / Memory Card などの表は公表間隔が違い前回比の意味が揃わないため取らない。
 
 import { desc } from "drizzle-orm";
 import { db } from "./db";
@@ -41,6 +41,10 @@ const SECTION_TITLES: { re: RegExp; section: Section }[] = [
 	{ re: /Wafer\s+Spot\s+Price/gi, section: "other" },
 	{ re: /GDDR\s+Spot\s+Price/gi, section: "other" },
 	{ re: /Contract\s+Price/gi, section: "other" },
+	{
+		re: /(?:Module|LPDDR|eMMC|Memory\s+Card)\s+(?:Spot\s+)?Price/gi,
+		section: "other",
+	},
 ];
 
 const MONTHS: Record<string, number> = {
@@ -370,35 +374,217 @@ export function buildMemoryPricesBlock(
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
 
-	// DRAMeXchange トップの表の組み (表題・Last Update・見出し行・データ行) を縮めたもの。
+	// 表の組み (表題・Last Update・見出し行・データ行) だけを持つ合成の表。
 	const row = (item: string, avg: string, chg: string) =>
 		`<tr><td class="tab_tr_l">${item}</td><td>4.900</td><td>4.300</td><td>4.800</td><td>4.400</td><td>${avg}</td><td>${chg}</td></tr>`;
 	const header =
 		"<tr><td>Item</td><td>Daily High</td><td>Daily Low</td><td>Session High</td><td>Session Low</td><td>Session<br>Average</td><td>Session<br>Change</td></tr>";
-	const PAGE = `<html><body>
-<table width="100%"><tr><td>
-  <div class="title">DRAM Spot Price</div>
-  <div class="update">Last Update: Nov 19 2026 18:10 (GMT+8)</div>
-  <table class="tab_box">
-    ${header}
-    ${row("DDR5 16Gb (2Gx8) 4800/5600", "12.500", '<img src="/images/up.gif"> 1.25 %')}
-    ${row("DDR4 16Gb (2Gx8) 3200", "9.875", '<img src="/images/down.gif"> 0.48 %')}
-    ${row("DDR4 8Gb (1Gx8) 3200", "4.613", "-0.32 %")}
-    ${row("DDR3 4Gb 512Mx8 1600/1866", "1.450", "0.00 %")}
-  </table>
-</td><td>
-  <div class="title">NAND Flash Spot Price</div>
-  <div class="update">Last Update: Nov 19 2026 18:10 (GMT+8)</div>
-  <table class="tab_box">
-    ${header}
-    ${row("SLC 2Gb 256MBx8", "2.220", "0.45 %")}
-    ${row("MLC 64Gb 8GBx8", "3.150", "--")}
-  </table>
-</td></tr></table>
-<div class="title">Wafer Spot Price</div>
-<div class="update">Last Update: Nov 19 2026 11:00 (GMT+8)</div>
-<table class="tab_box">${header}${row("512Gb TLC", "4.100", "1.00 %")}</table>
-</body></html>`;
+	// 2026-11-20 に取得したトップから DRAM Spot / Flash Spot / Memory Card の表を数行ずつ切り出したもの。
+	const PAGE = `<!-- DRAM Spot Price -->
+<a id="dram" name="dram"></a>
+<div class="left_tab">
+<table width="100%" cellspacing="0" cellpadding="0" border="0">
+<tbody>
+<tr>
+<td style="height: 25px" class="title_left">
+<a href="/Price/Dram_Spot" rel="nofollow">
+<font face="Arial, Helvetica, sans-serif">DRAM Spot Price</font>
+<img border="0" align="absmiddle" style="padding-LEFT: 5px" src="/Common/Images/Home/more2.gif">
+</a>
+</td>
+<td style="height: 25px" class="title_right" id="NationalDramSpotPrice_show_day">
+<span class="tab_time">Last Update: Nov.20 2026    14:40 (GMT+8) <a target="blank" href="/Service/Spot_Price_Notice"><span class="tab_notice">&lt;Price Notice&gt;</span></a></span>
+</td>
+</tr>
+</tbody>
+</table>
+<div style="background-color: #DC4838; color: #ffffff; font-size: 12px; line-height: 13px; -webkit-text-size-adjust: none; padding: 2px; border-right: 1px solid #FFFFFF;" id="DramSpotNotice">
+<a href='/Service/Spot_Price_Notice' class='spotlink' class='spotlink' target='_blank'>Early notice was announced at 14:20 (20 minutes in advance) ,next session will start at 17:50.</a>
+</div>
+<table width="100%" cellspacing="0" cellpadding="0" border="0">
+<tbody id="tb_NationalDramSpotPrice">
+<tr>
+<td width="37%" class="tab_title">Item</td>
+<td width="8%" class="tab_title">Daily High</td>
+<td width="8%" class="tab_title">Daily Low</td>
+<td width="9%" class="tab_title">Session High</td>
+<td width="9%" class="tab_title">Session Low</td>
+<td width="9%" class="tab_title">Session Average</td>
+<td width="12%" class="tab_title">Session Change</td>
+<td width="8%" class="tab_title">History</td>
+</tr>
+<tr>
+<td class="tab_tr_gray2">
+<a original-title="SK Hynix、Samsung" href="/Price/Dram_Spot">
+<img border="0" style="vertical-align: middle;" src="/Common/Images/chip.gif">
+DDR5 16Gb (2Gx8) 4800/5600
+</a>
+</td>
+<td class="tab_tr_gray">72.00</td>
+<td class="tab_tr_gray">45.20</td>
+<td class="tab_tr_gray">72.00</td>
+<td class="tab_tr_gray">45.20</td>
+<td class="tab_tr_gray">60.667</td>
+<td class="tab_tr_font9">
+<img src="/Common/Images/stable.gif">
+<br>
+0.00 %
+</td>
+<td class="tab_tr_gray">
+<img width="20" height="18" border="0" align="absmiddle" src="/Common/Images/Home/flash.gif" onclick="OpenChart('//chart.dramexchange.com/chart.php?class=spot&amp;item=dram&amp;type=475&amp;days=30')" style="cursor: pointer;" title="Historical&nbsp;Price&nbsp;Chart">
+</td>
+</tr>
+<tr>
+<td class="tab_tr_gray2">
+<a original-title="Samsung" href="/Price/Dram_Spot">
+<img border="0" style="vertical-align: middle;" src="/Common/Images/chip.gif">
+DDR5 16Gb (2Gx8) eTT
+</a>
+</td>
+<td class="tab_tr_gray">31.80</td>
+<td class="tab_tr_gray">30.20</td>
+<td class="tab_tr_gray">31.80</td>
+<td class="tab_tr_gray">30.20</td>
+<td class="tab_tr_gray">31.000</td>
+<td class="tab_tr_font9">
+<img src="/Common/Images/up.gif">
+<br>
+0.26 %
+</td>
+<td class="tab_tr_gray">
+<img width="20" height="18" border="0" align="absmiddle" src="/Common/Images/Home/flash.gif" onclick="OpenChart('//chart.dramexchange.com/chart.php?class=spot&amp;item=dram&amp;type=476&amp;days=30')" style="cursor: pointer;" title="Historical&nbsp;Price&nbsp;Chart">
+</td>
+</tr>
+<tr>
+<td class="tab_tr_gray2">
+<a original-title="Samsung、SK Hynix、Micron" href="/Price/Dram_Spot">
+<img border="0" style="vertical-align: middle;" src="/Common/Images/chip.gif">
+DDR4 16Gb (2Gx8) 3200
+</a>
+</td>
+<td class="tab_tr_gray">110.00</td>
+<td class="tab_tr_gray">44.00</td>
+<td class="tab_tr_gray">110.00</td>
+<td class="tab_tr_gray">44.00</td>
+<td class="tab_tr_gray">78.625</td>
+<td class="tab_tr_font9">
+<img src="/Common/Images/down.gif">
+<br>
+-0.16 %
+</td>
+<td class="tab_tr_gray">
+<img width="20" height="18" border="0" align="absmiddle" src="/Common/Images/Home/flash.gif" onclick="OpenChart('//chart.dramexchange.com/chart.php?class=spot&amp;item=dram&amp;type=473&amp;days=30')" style="cursor: pointer;" title="Historical&nbsp;Price&nbsp;Chart">
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- DRAM Spot Price -->
+<!-- Flash Spot Price -->
+<a id="flash" name="flash"></a>
+<div class="left_tab">
+<table width="100%" cellspacing="0" cellpadding="0" border="0">
+<tbody>
+<tr>
+<td style="height: 25px" class="title_left">
+<a href="/Price/Flash_Spot" rel="nofollow">
+<font face="Arial, Helvetica, sans-serif">Flash Spot Price</font>
+<img border="0" align="absmiddle" style="padding-LEFT: 5px" src="/Common/Images/Home/more2.gif">
+</a>
+</td>
+<td style="height: 25px" class="title_right" id="NationalFlashSpotPrice_show_day">
+<span class="tab_time">Last Update: Nov.9 2026    14:40 (GMT+8) <a target="blank" href="/Service/Spot_Price_Notice"><span class="tab_notice">&lt;Price Notice&gt;</span></a></span>
+</td>
+</tr>
+</tbody>
+</table>
+<table width="100%" cellspacing="0" cellpadding="0" border="0">
+<tbody id="tb_NationalFlashSpotPrice">
+<tr>
+<td width="37%" class="tab_title">Item</td>
+<td width="8%" class="tab_title">Daily High</td>
+<td width="8%" class="tab_title">Daily Low</td>
+<td width="9%" class="tab_title">Session High</td>
+<td width="9%" class="tab_title">Session Low</td>
+<td width="9%" class="tab_title">Session Average</td>
+<td width="12%" class="tab_title">Session Change</td>
+<td width="8%" class="tab_title">History</td>
+</tr>
+<tr>
+<td class="tab_tr_gray2">
+<a original-title="Samsung,SK Hynix, Micron ,Kioxia" href="/Price/Flash_Spot">
+<img border="0" style="vertical-align: middle;" src="/Common/Images/slc.gif"> SLC 2Gb 256MBx8
+</a>
+</td>
+<td class="tab_tr_gray">4.70</td>
+<td class="tab_tr_gray">4.35</td>
+<td class="tab_tr_gray">4.70</td>
+<td class="tab_tr_gray">4.35</td>
+<td class="tab_tr_gray">4.500</td>
+<td class="tab_tr_font9">
+<img src="/Common/Images/up.gif"><br>
+1.01 %
+</td>
+<td class="tab_tr_gray">
+<img width="20" height="18" border="0" align="absmiddle" src="/Common/Images/Home/flash.gif" onclick="OpenChart('//chart.dramexchange.com/chart.php?class=spot&amp;item=flash&amp;type=55&amp;days=30')" style="cursor: pointer;" title="Historical&nbsp;Price&nbsp;Chart">
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Memory Card Price -->
+<a id="memory" name="memory"></a>
+<div class="left_tab">
+<table width="100%" cellspacing="0" cellpadding="0" border="0">
+<tbody>
+<tr>
+<td style="height: 25px" class="title_left">
+<a href="/Price/MemoryCard_Spot" rel="nofollow">
+<font face="Arial, Helvetica, sans-serif">Memory Card Price</font>
+<img border="0" align="absmiddle" style="padding-LEFT: 5px" src="/Common/Images/Home/more2.gif">
+</a>
+</td>
+<td style="height: 25px" class="title_right" id="MemCardSpotPrice_show_day">
+<span class="tab_time">Last Update: Nov.9 2026    14:40 (GMT+8) <a target="blank" href="/Service/Spot_Price_Notice"><span class="tab_notice">&lt;Price Notice&gt;</span></a></span>
+</td>
+</tr>
+</tbody>
+</table>
+<table width="100%" cellspacing="0" cellpadding="0" border="0">
+<tbody id="tb_MemCardSpotPrice">
+<tr>
+<td width="37%" class="tab_title">Item</td>
+<td width="8%" class="tab_title">Daily High</td>
+<td width="8%" class="tab_title">Daily Low</td>
+<td width="9%" class="tab_title">Session High</td>
+<td width="9%" class="tab_title">Session Low</td>
+<td width="9%" class="tab_title">Session Average</td>
+<td width="12%" class="tab_title">Session Change</td>
+<td width="8%" class="tab_title">History</td>
+</tr>
+<tr>
+<td class="tab_tr_gray2">
+<a original-title="" href="/Price/MemoryCard_Spot">
+<img border="0" style="vertical-align: middle;" src="/Common/Images/memory.gif">
+MicroSD 16GB
+</a>
+</td>
+<td class="tab_tr_gray">2.70</td>
+<td class="tab_tr_gray">2.40</td>
+<td class="tab_tr_gray">2.70</td>
+<td class="tab_tr_gray">2.40</td>
+<td class="tab_tr_gray">2.525</td>
+<td class="tab_tr_font9">
+<img src="/Common/Images/down.gif"><br>
+-2.89 %
+</td>
+<td class="tab_tr_gray">
+<img width="20" height="18" border="0" align="absmiddle" src="/Common/Images/Home/flash.gif" onclick="OpenChart('//chart.dramexchange.com/chart.php?class=spot&amp;item=memory&amp;type=188&amp;days=30')" style="cursor: pointer;" title="Historical&nbsp;Price&nbsp;Chart">
+</td>
+</tr>
+</tbody>
+</table>
+</div>`;
 
 	describe("parseLastUpdate", () => {
 		it("GMT+8 の時刻を JST の暦日にする", () => {
@@ -420,45 +606,37 @@ if (import.meta.vitest) {
 	});
 
 	describe("parseMemoryPrices", () => {
-		it("DRAM / NAND Flash Spot の品目を値付きで読み、Wafer は取らない", async () => {
+		it("DRAM / NAND Flash Spot の品目を値付きで読み、Memory Card は取らない", async () => {
 			expect(await parseMemoryPrices(PAGE)).toEqual([
 				{
-					date: "2026-11-19",
+					date: "2026-11-20",
 					item: "DDR5 16Gb (2Gx8) 4800/5600",
-					sessionAvg: 12.5,
-					changePct: 1.25,
-				},
-				{
-					date: "2026-11-19",
-					item: "DDR4 16Gb (2Gx8) 3200",
-					sessionAvg: 9.875,
-					changePct: -0.48,
-				},
-				{
-					date: "2026-11-19",
-					item: "DDR4 8Gb (1Gx8) 3200",
-					sessionAvg: 4.613,
-					changePct: -0.32,
-				},
-				{
-					date: "2026-11-19",
-					item: "DDR3 4Gb 512Mx8 1600/1866",
-					sessionAvg: 1.45,
+					sessionAvg: 60.667,
 					changePct: 0,
 				},
 				{
-					date: "2026-11-19",
-					item: "SLC 2Gb 256MBx8",
-					sessionAvg: 2.22,
-					changePct: 0.45,
+					date: "2026-11-20",
+					item: "DDR5 16Gb (2Gx8) eTT",
+					sessionAvg: 31,
+					changePct: 0.26,
 				},
 				{
-					date: "2026-11-19",
-					item: "MLC 64Gb 8GBx8",
-					sessionAvg: 3.15,
-					changePct: null,
+					date: "2026-11-20",
+					item: "DDR4 16Gb (2Gx8) 3200",
+					sessionAvg: 78.625,
+					changePct: -0.16,
+				},
+				{
+					date: "2026-11-09",
+					item: "SLC 2Gb 256MBx8",
+					sessionAvg: 4.5,
+					changePct: 1.01,
 				},
 			]);
+		});
+		it("符号の無い値は下げ矢印の画像で負にする", async () => {
+			const html = `<div>DRAM Spot Price</div><div>Last Update: Nov.20 2026 14:40 (GMT+8)</div><table>${header}${row("DDR4 8Gb (1Gx8) 3200", "43.750", '<img src="/Common/Images/down.gif"><br>0.39 %')}</table>`;
+			expect((await parseMemoryPrices(html))[0]?.changePct).toBe(-0.39);
 		});
 		it("Last Update が読めない表は捨てる", async () => {
 			const html = `<div>DRAM Spot Price</div><table>${header}${row("DDR4 8Gb (1Gx8) 3200", "4.613", "0.10 %")}</table>`;

@@ -435,44 +435,83 @@ if (import.meta.vitest) {
 	});
 
 	describe("parseBlsSchedule", () => {
-		const cpiHtml = `
-      <table class="release-list">
-        <caption><span class="tableTitle">Schedule of Releases for the Consumer Price Index</span></caption>
-        <thead>
-          <tr><th scope="col">Reference Month</th><th scope="col">Release Date</th><th scope="col">Release Time</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>August 2026</td><td>Sept. 11, 2026</td><td>08:30&nbsp;AM</td></tr>
-          <tr><td>October 2026</td><td>Nov. 10, 2026</td><td>08:30 AM</td></tr>
-          <tr><td>November 2026</td><td>Dec. 10, 2026</td><td>08:30 AM</td></tr>
-        </tbody>
-      </table>`;
-		const jobsHtml = `
-      <table class="release-list">
-        <tbody>
-          <tr><th>Reference Month</th><th>Release Date</th><th>Release Time</th></tr>
-          <tr><td>November 2026</td><td>Dec. 04, 2026</td><td>08:30 AM</td></tr>
-          <tr><td>December 2026</td><td>Jan. 08, 2027</td><td>08:30 AM</td></tr>
-          <tr><td colspan="3">(1) Release date subject to change.</td></tr>
-        </tbody>
-      </table>`;
+		// 2026-11-20 に取得した cpi.htm / empsit.htm から、外側のレイアウト表の頭と日程表の先頭 3 行を切り出したもの。
+		const cpiHtml = `<table id="main-content-table">
+<tr>
+<td id="secondary-nav-td">
+<h2>Schedule of Releases for the Consumer Price Index</h2>
+<hr>
+<table class="release-list">
+<thead>
+<tr>
+<th>Reference Month</th>
+<th>Release Date</th>
+<th>Release Time</th>
+</tr>
+</thead>
+<tbody>
+<tr class="release-list-even-row">
+<td>October 2026</td>
+<td>Nov. 10, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-odd-row">
+<td>November 2026</td>
+<td>Dec. 10, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-even-row">
+<td>December 2026</td>
+<td>Jan. 13, 2027</td>
+<td>08:30 AM</td>
+</tr>
+</tbody>
+</table>`;
+		const jobsHtml = `<table id="main-content-table">
+<tr>
+<td id="secondary-nav-td">
+<h2>Schedule of Releases for the Employment Situation</h2>
+<hr>
+<table class="release-list">
+<thead>
+<tr>
+<th>Reference Month</th>
+<th>Release Date</th>
+<th>Release Time</th>
+</tr>
+</thead>
+<tbody>
+<tr class="release-list-even-row">
+<td>October 2026</td>
+<td>Nov. 06, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-odd-row">
+<td>November 2026</td>
+<td>Dec. 04, 2026</td>
+<td>08:30 AM</td>
+</tr>
+<tr class="release-list-even-row">
+<td>December 2026</td>
+<td>Jan. 08, 2027</td>
+<td>08:30 AM</td>
+</tr>
+</tbody>
+</table>`;
 		const cpi = parseBlsSchedule(cpiHtml, "us-cpi");
 		const jobs = parseBlsSchedule(jobsHtml, "us-jobs");
 
-		it("発表日を date、対象月を label に入れる (略記 Sept. も読む)", () => {
+		it("発表日を date、対象月を label に入れ、見出し行とレイアウト表の行は拾わない", () => {
 			expect(cpi.map((e) => [e.date, e.label])).toEqual([
-				["2026-09-11", "米CPI (8月分)"],
 				["2026-11-10", "米CPI (10月分)"],
 				["2026-12-10", "米CPI (11月分)"],
+				["2027-01-13", "米CPI (12月分)"],
 			]);
 			expect(jobs.map((e) => [e.date, e.label])).toEqual([
+				["2026-11-06", "米雇用統計 (10月分)"],
 				["2026-12-04", "米雇用統計 (11月分)"],
 				["2027-01-08", "米雇用統計 (12月分)"],
 			]);
-		});
-
-		it("見出し行・脚注行は拾わない", () => {
-			expect(jobs).toHaveLength(2);
 		});
 
 		it("jst_effect_date は東証の翌営業日 (週末・祝日を飛ばす)", () => {

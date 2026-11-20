@@ -348,6 +348,7 @@ export function buildMemoryPricesBlock(
 			continue;
 		items.push({
 			item,
+			date: head.date,
 			session_avg: head.session_avg,
 			change_pct: head.change_pct ?? pct(head.session_avg, prev?.session_avg),
 			change_20d_pct: pct(head.session_avg, list[CHANGE_WINDOW]?.session_avg),

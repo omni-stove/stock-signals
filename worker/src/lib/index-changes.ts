@@ -260,10 +260,7 @@ function parseNikkeiTables(text: string, publishedAt: string): IndexChange[] {
  * ニュースタグに日経平均と銘柄入替が無ければ空配列。銘柄入れ替えの表と、経営統合などに伴う
  * 入替の文章を読む。年の無い日付は公表日 (YYYY-MM-DD) から年を補う。
  */
-function parseNikkeiNewsText(
-	text: string,
-	publishedAt: string,
-): IndexChange[] {
+function parseNikkeiNewsText(text: string, publishedAt: string): IndexChange[] {
 	if (!isNikkei225Change(text)) return [];
 	const normalized = text.normalize("NFKC");
 	return dedupe([

@@ -10,7 +10,7 @@ import { scanTables } from "./html";
 import { extractPdfText } from "./pdf-text";
 import { seajSales } from "./schema";
 
-export interface SeajSalesEnv {
+interface SeajSalesEnv {
 	DB: D1Database;
 	USER_AGENT: string;
 }
@@ -24,13 +24,13 @@ const TREND_MONTHS = 3;
 // 前年同月比を保存済みの行から出すのに 12 か月前まで要る。
 const READ_LIMIT = 24;
 
-export interface SeajRelease {
+interface SeajRelease {
 	month: string; // 対象月 YYYY-MM
 	pdfUrl: string;
 	publishedAt: string | null; // リリース日 YYYY-MM-DD
 }
 
-export interface SeajSalesRow {
+interface SeajSalesRow {
 	month: string;
 	sales: number; // 億円
 	yoy_pct: number | null;
@@ -55,7 +55,7 @@ const RELEASE_DATE = /(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/;
  * SEAJ 統計ページの HTML (デコード済み) から、日本製半導体製造装置の販売高速報 PDF のうち
  * 対象月が最も新しいものを返す。PDF の URL は baseUrl で絶対化する。見つからなければ null。
  */
-export async function parseSeajRelease(
+async function parseSeajRelease(
 	html: string,
 	baseUrl: string,
 ): Promise<SeajRelease | null> {
@@ -86,7 +86,7 @@ export async function parseSeajRelease(
 	return best;
 }
 
-export interface ParsedSeajMonth {
+interface ParsedSeajMonth {
 	month: string;
 	sales: number; // 億円
 	yoyPct: number | null;
@@ -103,7 +103,7 @@ const PCT_RE = /([-−▲]?)(\d+(?:\.\d+)?)\s*[%％]/g;
  * 速報 PDF のテキストから表の各月 (販売高・前月比・前年比) を読む。販売高は億円に直す。
  * 単位か列見出し (前月比・前年比) が読めなければ空配列。比率が 2 列揃わない行は比率を null にする。
  */
-export function parseSeajSalesText(text: string): ParsedSeajMonth[] {
+function parseSeajSalesText(text: string): ParsedSeajMonth[] {
 	const unit = text.match(UNIT_RE);
 	if (!unit) return [];
 	const head = text.slice(unit.index ?? 0);
@@ -134,7 +134,7 @@ export function parseSeajSalesText(text: string): ParsedSeajMonth[] {
  * 欠けた前年同月比・前月比を、同じ速報の他の月か保存済みの行の販売高から出して埋める。
  * 比較する月の販売高が無ければ null のまま。
  */
-export function fillSeajChanges(
+function fillSeajChanges(
 	parsed: ParsedSeajMonth[],
 	stored: SeajSalesRow[],
 ): ParsedSeajMonth[] {
@@ -223,9 +223,10 @@ export async function readSeajSales(DB: D1Database): Promise<SeajSalesRow[]> {
 		.all();
 }
 
-function daysSinceMonthEnd(month: string, today: string): number {
+/** 最新月 (YYYY-MM) の月末から today (YYYY-MM-DD) までが STALE_DAYS 日を超えていれば true。 */
+export function isSeajSalesStale(month: string, today: string): boolean {
 	const [y, m] = month.split("-").map(Number);
-	return (Date.parse(today) - Date.UTC(y, m, 0)) / 86_400_000;
+	return (Date.parse(today) - Date.UTC(y, m, 0)) / 86_400_000 > STALE_DAYS;
 }
 
 /**
@@ -240,7 +241,7 @@ export function buildSeajSalesBlock(
 	if (rows.length === 0) return { status: "none" };
 	const sorted = [...rows].sort((a, b) => (a.month < b.month ? 1 : -1));
 	const head = sorted[0];
-	if (daysSinceMonthEnd(head.month, today) > STALE_DAYS)
+	if (isSeajSalesStale(head.month, today))
 		return { status: "stale", month: head.month };
 	return {
 		status: "ok",

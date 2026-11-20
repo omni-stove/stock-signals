@@ -1,5 +1,5 @@
 // Cloudflare Worker: 手動起動 (dev検証/オンデマンド) ルート。
-//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|peer-earnings-jp|macro-events|margin|short-interest|investor-flows|large-holdings|memory-prices|tw-monthly-revenue|premarket&code=285A[&limit=N][&part=]
+//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|peer-earnings-jp|macro-events|margin|short-interest|investor-flows|large-holdings|memory-prices|tw-monthly-revenue|seaj-sales|index-changes|premarket&code=285A[&limit=N][&part=]
 //   short-interest は part=lending|positions|market で 1 つだけ取れる。cron は重い収集をここへ
 //   1 ジョブずつ投げる (lib/fan-out.ts)。
 //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
@@ -16,6 +16,7 @@ import { collectDisclosures } from "../lib/disclosure";
 import { collectEarnings } from "../lib/earnings";
 import type { Env } from "../lib/env";
 import { dispatchSignalUpdate } from "../lib/github-dispatch";
+import { collectIndexChanges } from "../lib/index-changes";
 import { collectInvestorFlows } from "../lib/investor-flows";
 import { collectAll } from "../lib/ir-collect";
 import { DEFAULT_LIMIT } from "../lib/ir-sources";
@@ -32,6 +33,7 @@ import {
 } from "../lib/peer-earnings";
 import { collectBackdrop } from "../lib/premarket";
 import { collectRatings } from "../lib/ratings";
+import { collectSeajSales } from "../lib/seaj-sales";
 import {
 	collectShortInterest,
 	type ShortInterestPart,
@@ -204,6 +206,20 @@ run.get("/", async (c) => {
 	if (kind === "tw-monthly-revenue") {
 		// TSMC の月次売上 (MOPS) の未保存月 → D1 tw_monthly_revenue。
 		const result = await collectTwMonthlyRevenue(env);
+		return c.json({ ok: true, kind, result });
+	}
+	if (kind === "seaj-sales") {
+		// SEAJ の日本製半導体製造装置 販売高速報 (3 か月移動平均) → D1 seaj_sales。
+		const result = await collectSeajSales(env);
+		return c.json({ ok: true, kind, result });
+	}
+	if (kind === "index-changes") {
+		// 日経225・JPX日経400 の採用・除外のうち監視銘柄の分 (前営業日以降の公表) → D1 macro_events。
+		const result = await collectIndexChanges(env);
+		// 取得・解析の失敗は errors に入って正常終了するため、ここで失敗にしないと fanOut が成功扱いにして通知されない。
+		const errors = result.errors;
+		if (Array.isArray(errors) && errors.length > 0)
+			return c.json({ ok: false, kind, result }, 502);
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "prices" || kind === "daily" || kind === "fundamentals") {

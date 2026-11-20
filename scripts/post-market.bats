@@ -168,7 +168,7 @@ run_pm_ctx() {
 @test "numbers: unavailable blocks add no context block" {
   run_pm_ctx '{"premarket":{"status":"unavailable"},"live_indexes":{"status":"unavailable","indexes":[]},
     "sectors":{"status":"unavailable","sectors":[]},"market_short_ratio":{"status":"unavailable"},"investor_flows":{"status":"unavailable"},
-    "memory_prices":{"status":"none"},"tw_monthly_revenue":{"status":"unavailable"}}'
+    "memory_prices":{"status":"none"},"tw_monthly_revenue":{"status":"unavailable"},"seaj_sales":{"status":"none"}}'
   [ "$status" -eq 0 ]
   [ "$(payload | jq -r '.blocks | length')" -eq 1 ]
 }
@@ -202,4 +202,30 @@ run_pm_ctx() {
   [ "$status" -eq 0 ]
   t="$(payload | jq -r '.blocks[1].elements[0].text')"
   [[ "$t" != *TSMC* ]]
+}
+
+@test "numbers: SEAJ equipment sales get a yoy line" {
+  run_pm_ctx '{"seaj_sales":{"status":"ok","source":"SEAJ","unit":"億円","month":"2026-09","sales":6290.4,"yoy_pct":48.2,"mom_pct":5.2}}'
+  [ "$status" -eq 0 ]
+  local t; t="$(payload | jq -r '.blocks[1].elements[0].text')"
+  grep -qxF 'SEAJ 装置販売: 2026-09 前年比 +48.2%' <<<"$t"
+
+  run_pm_ctx '{"seaj_sales":{"status":"ok","month":"2026-09","sales":6290.4,"yoy_pct":-3.5}}'
+  [ "$status" -eq 0 ]
+  t="$(payload | jq -r '.blocks[1].elements[0].text')"
+  grep -qxF 'SEAJ 装置販売: 2026-09 前年比 -3.5%' <<<"$t"
+}
+
+@test "numbers: stale SEAJ block, or a SEAJ month without yoy, adds no line" {
+  run_pm_ctx '{"premarket":{"status":"ok","date":"2026-11-13","sox_change_pct":1},
+    "seaj_sales":{"status":"stale","month":"2026-07"}}'
+  [ "$status" -eq 0 ]
+  local t; t="$(payload | jq -r '.blocks[1].elements[0].text')"
+  [[ "$t" != *SEAJ* ]]
+
+  run_pm_ctx '{"premarket":{"status":"ok","date":"2026-11-13","sox_change_pct":1},
+    "seaj_sales":{"status":"ok","month":"2026-09","sales":6290.4,"yoy_pct":null}}'
+  [ "$status" -eq 0 ]
+  t="$(payload | jq -r '.blocks[1].elements[0].text')"
+  [[ "$t" != *SEAJ* ]]
 }

@@ -99,13 +99,18 @@ watchlist (4銘柄) と URL テンプレートは各 src (`timeseries.ts` / `new
 
 ## 指数採用・除外イベントの手動投入
 
-監視銘柄の指数採用・除外 (例: 日経225採用) は日付計算できないので、公表を見たら D1 `macro_events` に
-`kind=index_change:<code>`・`date=実施日` で手で入れる。`event-context.ts` が実施 21 日前から
-パッシブ先回りの窓として prompt に出す。リポジトリルートから:
+日経225・JPX日経400 の監視銘柄の採用・除外は eod cron (`kind=index-changes`) が前営業日以降の公表分を
+D1 `macro_events` に `kind=index_change:<code>`・`date=実施日` で入れる。`event-context.ts` が実施 21 日前から
+パッシブ先回りの窓として prompt に出す。
+
+それ以外の指数 (例: MSCI・FTSE・TOPIX の浮動株比率見直し) は自動では取れないので、公表を見たら同じ形で
+手で入れる。リポジトリルートから:
 
 ```sh
 pnpm -C worker exec wrangler d1 execute stock-signals --remote --command \
   "INSERT OR REPLACE INTO macro_events (date, kind, label, impact, jst_effect_date, note, fetched_at) \
-   VALUES ('2026-10-01', 'index_change:285A', 'キオクシアHD(285A) 日経225採用', 'high', NULL, \
-           '9/4公表。実施日の引けにパッシブ買い集中見込み。', datetime('now'))"
+   VALUES ('2026-11-30', 'index_change:285A', 'キオクシアHD(285A) MSCI Japan採用', 'high', NULL, \
+           '公表日 2026-11-06', datetime('now'))"
 ```
+
+同じ実施日・銘柄に日経225・JPX日経400 の入替が重なると、自動収集が既存行の label・note に追記する。

@@ -6,7 +6,8 @@
       "project": ["scripts/**/*.ts"]
     },
     "worker": {
-      "project": ["src/**/*.ts"]
+      "project": ["src/**/*.ts"],
+      "entry": ["src/lib/seaj-sales.ts"]
     }
   }
 }

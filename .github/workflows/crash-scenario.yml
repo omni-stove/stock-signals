@@ -96,8 +96,7 @@ jobs:
 
             Judge only on what these inputs show now; never on hindsight or a later result.
 
-            Do not post to Slack; do not run any script; do not write any file — return the scenario blocks as
-            structured output and stop.
+            Return structured output and stop.
 
             ## Inputs
 
@@ -156,7 +155,7 @@ jobs:
 
             ## Web research (supplementary)
 
-            The collected inputs are primary. You may use WebSearch/WebFetch to firm up a trigger or 先行サイン
+            You may use WebSearch/WebFetch to firm up a trigger or 先行サイン
             with 一次情報 (会社 IR/取引所/当局), 海外報道, or アナリスト見解: at most 4 search+fetch calls total; only
             to corroborate a fault line already in the inputs; cite the source (媒体名, 日付) in the scenario
             line; if nothing solid turns up, write nothing — never invent a source.

@@ -121,25 +121,21 @@ jobs:
 
             Answer only on what these inputs show now; never on hindsight or a later result.
 
-            Do not post to Slack; do not run any script; do not write any file — return your reply as
-            structured output and stop.
+            Return structured output and stop.
 
             ## Inputs
 
-            **Thread JSON** `{ channel, thread_ts, kind, replies, positions, profile }`:
+            **Thread JSON**:
 
-            - **`replies`** (`[{ user, text, ts }, ...]`): the last entry is the question to answer; the earlier
+            - **`replies`**: the last entry is the question to answer; the earlier
               ones are the original analysis and any back-and-forth. Empty → ask in one line what they want to
               know, and stop.
             - **`kind`**: what the user is replying to — `crash-scenario` = a crash pre-mortem; any other value =
               a 材料ブリーフ.
-            - **`positions`** (`{ status, ref_price, positions: [{ account, side, avg_price, qty, pnl_pct }] }`):
-              the user's own holdings in this ticker. `status: none` → no holdings. `pnl_pct` is against
-              `ref_price`; null = no price.
-            - **`profile`** (`{ status, risk_tolerance, hold_style, max_position_pct, note }`): the user's own
-              preferences. `status: none` → not set; any field may be null. `risk_tolerance` `low`/`mid`/`high`,
-              `hold_style` `swing`/`day`/`mid_long`, `max_position_pct` the user's own per-name size cap (%), `note`
-              free-text 特記事項. Never turn `max_position_pct` into a size, a quantity, or an add/trim.
+            - **`positions`**: the user's own holdings in this ticker. `status: none` → no holdings. `pnl_pct` is
+              against `ref_price`.
+            - **`profile`**: the user's own preferences; `status: none` → not set. Never turn `max_position_pct`
+              into a size, a quantity, or an add/trim.
 
             **Numeric context** — an absent block means no data, or data too stale or thin to read; do not fill
             it in:
@@ -153,27 +149,22 @@ jobs:
             - **`prices` / `daily` / `margin` / `premarket`** confirm or contradict the fundamental read; never
               let them flip it alone. `us_session: carried_over` → a
               prior close the last JP session already traded on, not a fresh overnight move.
-            - **`market_brief`** (`{ headline, body, date }`): market-wide backdrop, including 投資部門別 and
+            - **`market_brief`**: market-wide backdrop, including 投資部門別 and
               空売り比率; never a material of this name. `date` before today → an earlier morning's backdrop.
-            - **`event_context`** (`需給イベント(<date>): <…>`): an event-driven tape factor (SQ, rebalance, macro,
+            - **`event_context`**: an event-driven tape factor (SQ, rebalance, macro,
               peer earnings); weigh it before crediting a move to a material.
             - **`earnings`** (next date; `estimated: true` = a guess from last year's same quarter — give it as a
-              rough timing and never call it 確定日, `estimated: false` = the date JPX published) and
-              **`earnings_result`** (present only when fresh: the quarter `period` just
-              reported on `announced_at`, `fiscal_quarter` 4 = 本決算; lead on `yoy_pct` 前年同期比, confirm with
-              `qoq_pct` 前四半期比 and `progress_pct` 通期会社予想に対する累計進捗率 (null → do not speak of
-              progress); `actual` / `year_ago` in 百万円 only show a 赤字・黒字 turn). Read them as facts and
+              rough timing and never call it 確定日) and **`earnings_result`** (present only when fresh;
+              `fiscal_quarter` 4 = 本決算; lead on `yoy_pct`, confirm with `qoq_pct` and `progress_pct`
+              通期会社予想に対する累計進捗率 (null → do not speak of progress); `actual` / `year_ago` only show a
+              赤字・黒字 turn). Read them as facts and
               answer in words — grew or shrank, ahead of or behind pace — without writing the numbers. No
               consensus is collected: never call it beat/miss unless a cited source states it.
             - **`forced`**: `summary` states the forced-flow timing; take it as given.
-            - **Medium-term and supply-demand blocks** answer questions on positioning and flows: `trend` (MA75,
-              52週高値・安値), `relative` (excess return vs TOPIX over 5/20/60 days), `event_reactions` (how each
-              recent disclosure traded vs TOPIX), `revisions` (company forecast and its 修正; no analyst consensus
-              is collected), `valuation` (予想PER/PBR, own range, sector peers; never 割安/割高 on the number
-              alone), `short_interest` (逆日歩; institutional short reports — an old `calc_date` is weak evidence),
-              `sector` (`rank` of `peers_n`, `rel_strength_pct`), `supply` (売出し/公募/CB/大株主の異動; `lockup_*` are
-              rough dates from the announcement; `large_holding_*` = EDINET 大量保有・変更報告書 with `ratio_pct` /
-              `prev_ratio_pct`).
+            - **`trend` / `relative` / `event_reactions` / `revisions` / `valuation` / `short_interest` / `sector` /
+              `supply`** answer questions on positioning and flows. Never call `valuation` 割安/割高 on the number
+              alone; an old `short_interest` `calc_date` is weak evidence; `supply.lockup_*` are rough dates from
+              the announcement.
             - The ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
             ## Answering
@@ -190,7 +181,7 @@ jobs:
 
             ## Web research (supplementary)
 
-            The collected inputs are primary. You may use WebSearch/WebFetch only to corroborate or deepen
+            You may use WebSearch/WebFetch only to corroborate or deepen
             something already in the inputs or the thread: at most 4 search+fetch calls total; cite the source
             (媒体名, 日付); if nothing solid turns up, say so — never invent a source.
 

@@ -68,8 +68,7 @@ jobs:
 
             Judge only on what these inputs show now; never on hindsight or a later result.
 
-            Do not post to Slack; do not run any script; do not write any file — return structured output
-            and stop.
+            Return structured output and stop.
 
             ## Inputs
 
@@ -109,7 +108,7 @@ jobs:
 
             ## Output
 
-            Japanese, one point per line, clipped note style, no figures.
+            Japanese, one point per line, clipped note style.
 
             - `headline`: `🎯 SQ週ブリーフ: <one phrase>` — what matters most for this SQ week today.
             - `scenarios`: 2–3 distinct paths through SQ day and into SQ明け. Each has `name` (a few words),
@@ -118,8 +117,8 @@ jobs:
               them on the opening print and the post-SQ unwind; earlier in the week, weigh the names whose SQ
               push lands on the days before SQ.
             - `sensitivity`: rank the names by how hard SQ pushes them and say where the push lands (SQ日の寄り /
-              SQ前の日々 / 明けの反転), one point per line.
-            - `watch`: 1–3 facts to check today (a print or an event), as facts to watch, not instructions.
+              SQ前の日々 / 明けの反転).
+            - `watch`: 1–3 facts to check today (a print or an event).
 
             ## SQコンテキスト
 

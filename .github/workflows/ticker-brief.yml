@@ -147,12 +147,10 @@ jobs:
             ("priced in", "unexplained" volume, a top being "in"). Ground every claim in a material,
             a number, or a sourced find; write nothing you cannot attribute.
 
-            Do not post to Slack; do not run any script; do not write any file — return structured output
-            and stop.
+            Return structured output and stop.
 
             ## Run mode: ${{ steps.mode.outputs.mode }}
 
-            - `full`: follow every rule below.
             - `routine`: a scheduled brief with no new IR/news since the last context update. Keep it to a short
               status check: `headline` is `📊 <ticker> <name>: <one-phrase summary of where the name stands now>`;
               `materials` empty; `technical` at most 1 line; `bull` / `bear` at most 2 each, only points the
@@ -216,7 +214,7 @@ jobs:
 
             ## Web research (supplementary)
 
-            The collected inputs are primary. You may use WebSearch/WebFetch to deepen `bull` / `bear` with
+            You may use WebSearch/WebFetch to deepen `bull` / `bear` with
             一次情報 (会社 IR/取引所/当局), 海外報道, or アナリスト見解: at most 4 search+fetch calls total; only to
             corroborate or deepen a material already in the inputs; cite the source inline (媒体名, 日付); if
             nothing solid turns up, write nothing — never invent a source or a fact.

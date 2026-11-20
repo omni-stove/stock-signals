@@ -255,10 +255,7 @@ export async function readTwMonthlyRevenue(
 }
 
 /** 最新月 month (YYYY-MM) の月末から today (JST の YYYY-MM-DD) までが STALE_DAYS 日を超えていれば true。 */
-export function isTwMonthlyRevenueStale(
-	month: string,
-	today: string,
-): boolean {
+export function isTwMonthlyRevenueStale(month: string, today: string): boolean {
 	const ageDays = Math.floor(
 		(Date.parse(`${today}T00:00:00Z`) -
 			Date.parse(`${monthEnd(month)}T00:00:00Z`)) /

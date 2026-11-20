@@ -19,10 +19,7 @@ import { buildEventContext, type MacroEventRow } from "../lib/event-context";
 import { buildInvestorFlows, readInvestorFlows } from "../lib/investor-flows";
 import { buildLiveIndexesBlock, type LiveIndexRow } from "../lib/live-indexes";
 import { resolveMarketPhase } from "../lib/market-phase";
-import {
-	buildMemoryPricesBlock,
-	readMemoryPrices,
-} from "../lib/memory-prices";
+import { buildMemoryPricesBlock, readMemoryPrices } from "../lib/memory-prices";
 import {
 	buildPremarketBlock,
 	buildUsPeersBlock,

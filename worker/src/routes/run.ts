@@ -190,7 +190,7 @@ run.get("/", async (c) => {
 		const result = await collectTwMonthlyRevenue(env);
 		return c.json({ ok: true, kind, result });
 	}
-	if (kind === "prices" || kind === "daily"|| kind === "fundamentals") {
+	if (kind === "prices" || kind === "daily" || kind === "fundamentals") {
 		const result = await collectTimeseries(env, kind, code);
 		return c.json({ ok: true, kind, result });
 	}

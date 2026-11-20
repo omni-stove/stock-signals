@@ -25,7 +25,7 @@ const CHANGE_WINDOW = 20;
 // 品目数 (DRAM + NAND で十数品目) × 変化率の幅に余裕を持たせた読み出し行数。
 const READ_LIMIT = 40 * (CHANGE_WINDOW + 5);
 
-export interface MemoryPriceQuote {
+interface MemoryPriceQuote {
 	date: string; // JST YYYY-MM-DD
 	item: string;
 	sessionAvg: number;
@@ -237,9 +237,7 @@ const HEADER_RE = /Session\s*(?:<br\s*\/?>\s*)?Average/gi;
 
 // DRAMeXchange トップの HTML から DRAM Spot / NAND Flash Spot の品目を読む。
 // 表題か "Last Update" が読めない表は日付を決められないので捨てる。
-async function parseMemoryPrices(
-	html: string,
-): Promise<MemoryPriceQuote[]> {
+async function parseMemoryPrices(html: string): Promise<MemoryPriceQuote[]> {
 	const lower = asciiLower(html);
 	const out: MemoryPriceQuote[] = [];
 	let lastEnd = -1;

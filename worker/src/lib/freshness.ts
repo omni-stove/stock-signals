@@ -47,7 +47,7 @@ export interface FreshnessSnapshot {
 	marketShortRatio: string | null;
 	memoryPrices: string | null; // メモリのスポット価格の最新公表日
 	twMonthlyRevenue: string | null; // TSMC 月次売上の最新月 (YYYY-MM)
-	earnings:Record<string, string | null>; // ticker → 決算予定日の最新取得の JST 日付
+	earnings: Record<string, string | null>; // ticker → 決算予定日の最新取得の JST 日付
 	nextMacro: string | null; // 今日以降で最も近い FOMC/日銀
 }
 

@@ -460,7 +460,9 @@ if (import.meta.vitest) {
 			expect(await parseMemoryPrices(html)).toEqual([]);
 		});
 		it("見出しが無いページは空", async () => {
-			expect(await parseMemoryPrices("<html><body>maintenance</body></html>")).toEqual([]);
+			expect(
+				await parseMemoryPrices("<html><body>maintenance</body></html>"),
+			).toEqual([]);
 		});
 	});
 
@@ -515,14 +517,16 @@ if (import.meta.vitest) {
 				],
 			});
 		});
-		it("最新公表日に載らなくなった品目は出さない", () => {
+		it("最新日が 5 営業日を超えて古い品目は出さず、公表日がずれた品目は両方出す", () => {
 			const rows = [
 				{ date: "2026-11-19", item: "A", session_avg: 1, change_pct: 0 },
 				{ date: "2026-11-18", item: "B", session_avg: 2, change_pct: 0 },
+				{ date: "2026-11-10", item: "C", session_avg: 3, change_pct: 0 },
 			];
 			const out = buildMemoryPricesBlock(rows, "2026-11-20");
 			expect((out.items as { item: string }[]).map((i) => i.item)).toEqual([
 				"A",
+				"B",
 			]);
 		});
 		it("行なしは none、5 営業日超の古さは stale", () => {

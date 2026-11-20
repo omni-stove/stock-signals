@@ -1,14 +1,14 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "ignoreDependencies": ["bats", "npm-run-all2"],
+  "ignoreBinaries": ["wrangler"],
   "workspaces": {
     ".": {
       "project": ["scripts/**/*.ts"]
     },
     "worker": {
       "project": ["src/**/*.ts"],
-      "entry": ["src/lib/seaj-sales.ts", "src/lib/index-changes.ts"],
-      "ignore": ["src/lib/tw-monthly-revenue.ts"]
+      "entry": ["src/lib/seaj-sales.ts", "src/lib/index-changes.ts"]
     }
   }
 }

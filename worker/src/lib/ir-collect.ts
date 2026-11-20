@@ -75,7 +75,12 @@ async function collectOne(
 	env: Env,
 	src: IrSource,
 	limit: number,
-): Promise<{ found: number; written: number; skipped: number }> {
+): Promise<{
+	found: number;
+	written: number;
+	skipped: number;
+	pdfFallbacks: number;
+}> {
 	const listHtml = await fetchHtml(src.list_url, env);
 	let items = await parseList(src.site, listHtml, src.list_url);
 	items.sort((a, b) => b.date.localeCompare(a.date));
@@ -91,6 +96,7 @@ async function collectOne(
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	let skipped = 0;
 	let pdfFetches = 0;
+	let pdfFallbacks = 0;
 	const fresh: NotifyItem[] = []; // 今回新規に保存した記事 (Slack通知対象)
 	for (const it of items) {
 		if (seen.has(it.url)) {
@@ -114,6 +120,7 @@ async function collectOne(
 				pdfFetches++;
 				await sleep(interval);
 				body = await pdfBody(env, it.title, pdfUrl);
+				if (body === it.title) pdfFallbacks++;
 			}
 			await saveArticle(env, {
 				url: it.url,
@@ -137,10 +144,11 @@ async function collectOne(
 	}
 	// 新規があればまとめてSlack通知 (Webhook未設定なら no-op)。
 	await notifySlack(env, fresh);
-	return { found: total, written: fresh.length, skipped };
+	return { found: total, written: fresh.length, skipped, pdfFallbacks };
 }
 
 // emptyParses は「一覧が HTTP 200 なのにパース0件」だった銘柄 (= 一覧 DOM 変更の疑い)。
+// pdfFallbacks は決算系 PDF を取りに行ったのに抜粋が取れず本文が見出しだけになった件数。
 export async function collectAll(
 	env: Env,
 	codeFilter: string | null,
@@ -149,6 +157,7 @@ export async function collectAll(
 	results: Record<string, unknown>;
 	freshTickers: string[];
 	emptyParses: string[];
+	pdfFallbacks: number;
 }> {
 	const sources = IR_SOURCES.filter(
 		(s) => !codeFilter || s.code === codeFilter,
@@ -156,15 +165,17 @@ export async function collectAll(
 	const results: Record<string, unknown> = {};
 	const freshTickers: string[] = []; // 今回 written > 0 だった銘柄 (= signal-report を起動すべき対象)
 	const emptyParses: string[] = [];
+	let pdfFallbacks = 0;
 	for (const src of sources) {
 		try {
 			const r = await collectOne(env, src, limit);
 			results[src.code] = r;
 			if (r.written > 0) freshTickers.push(src.code);
 			if (r.found === 0) emptyParses.push(src.code);
+			pdfFallbacks += r.pdfFallbacks;
 		} catch (e) {
 			results[src.code] = { error: (e as Error).message };
 		}
 	}
-	return { results, freshTickers, emptyParses };
+	return { results, freshTickers, emptyParses, pdfFallbacks };
 }

@@ -254,6 +254,16 @@ export async function readTwMonthlyRevenue(
 		.all();
 }
 
+/** 最新月 month (YYYY-MM) の月末から today (JST の YYYY-MM-DD) までが STALE_DAYS 日を超えていれば true。 */
+export function isTwMonthlyRevenueStale(month: string, today: string): boolean {
+	const ageDays = Math.floor(
+		(Date.parse(`${today}T00:00:00Z`) -
+			Date.parse(`${monthEnd(month)}T00:00:00Z`)) /
+			DAY_MS,
+	);
+	return ageDays > STALE_DAYS;
+}
+
 /**
  * market-context 用の TSMC 月次売上ブロック。today は JST の YYYY-MM-DD。
  *   行なし → { status: "unavailable" }
@@ -269,13 +279,8 @@ export function buildTwMonthlyRevenueBlock(
 	const byMonth = new Map(rows.map((r) => [r.month, r]));
 	const latest = [...byMonth.keys()].sort().reverse()[0];
 	const row = byMonth.get(latest) as TwMonthlyRevenueRow;
-	const ageDays = Math.floor(
-		(Date.parse(`${today}T00:00:00Z`) -
-			Date.parse(`${monthEnd(latest)}T00:00:00Z`)) /
-			DAY_MS,
-	);
 	return {
-		status: ageDays > STALE_DAYS ? "stale" : "ok",
+		status: isTwMonthlyRevenueStale(latest, today) ? "stale" : "ok",
 		company: COMPANY,
 		unit: "千NTD",
 		month: latest,

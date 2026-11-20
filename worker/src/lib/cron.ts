@@ -27,6 +27,27 @@ import {
 import { collectTimeseries, DAILY_CODES, WATCHLIST } from "./timeseries";
 import { jstDate } from "./utils";
 
+// IR・適時開示・ニュース・市場テーマニュースのパース0件と、IR・適時開示の PDF 抽出失敗件数を
+// 運用チャンネルに 1 行で警告する (notifyParseFailure)。
+async function notifyCollectHealth(
+	env: Env,
+	ir: { emptyParses: string[]; pdfFallbacks: number },
+	disc: { emptyParses: string[]; pdfFallbacks: number },
+	news: { emptyParses: string[] },
+	mnews: { emptyParse: boolean } | null,
+): Promise<void> {
+	await notifyParseFailure(
+		env,
+		[
+			...ir.emptyParses.map((c) => `ir:${c}`),
+			...disc.emptyParses.map((c) => `tdnet:${c}`),
+			...news.emptyParses.map((c) => `news:${c}`),
+			...(mnews?.emptyParse ? ["market-news"] : []),
+		],
+		ir.pdfFallbacks + disc.pdfFallbacks,
+	);
+}
+
 // 銘柄ニュース + 市場テーマニュースの新着を Slack (SLACK_NEWS_WEBHOOK_URL) に通知する。
 // IR(notifySlack) と別チャンネルに分離する。webhook 未設定/新着 0 なら no-op。best-effort。
 async function notifyFreshNews(
@@ -127,7 +148,8 @@ function isJstMonthStart(scheduledTime: number): boolean {
 }
 
 // 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率)・投資部門別売買 (週次)・
-// 大量保有報告書 (EDINET)。公表が夕方以降のものなので引け後 intake (18:00) の先頭で回す。
+// 大量保有報告書 (EDINET)・メモリのスポット価格 (DRAMeXchange)・TSMC の月次売上 (MOPS)。
+// 公表が夕方以降のもの、または 1 日 1 回取れば足りるものなので引け後 intake (18:00) の先頭で回す。
 async function collectFlows(env: Env): Promise<void> {
 	const { results, failed } = await fanOut(env, [
 		{ kind: "short-interest", part: "lending" },
@@ -139,6 +161,8 @@ async function collectFlows(env: Env): Promise<void> {
 		{ kind: "short-interest", part: "market" },
 		{ kind: "investor-flows" },
 		{ kind: "large-holdings" },
+		{ kind: "memory-prices" },
+		{ kind: "tw-monthly-revenue" },
 	]);
 	if (failed.length > 0) console.error("flows jobs failed:", failed);
 	await notifyJobFailure(env, "flows", failed);
@@ -278,13 +302,8 @@ export async function runScheduled(
 		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
 		await notifyFreshNews(env, news, mnews);
 		// 「HTTP 200 なのに一覧パース0件」= ソースサイトの DOM 変更で収集が静かに止まっている疑い。
-		// 場中 (prices, 5分毎) では鳴らさず intake (1日2回) でだけ警告し、連投を避ける。
-		await notifyParseFailure(env, [
-			...ir.emptyParses.map((c) => `ir:${c}`),
-			...disc.emptyParses.map((c) => `tdnet:${c}`),
-			...news.emptyParses.map((c) => `news:${c}`),
-			...(mnews?.emptyParse ? ["market-news"] : []),
-		]);
+		// 場中 (prices, 5分毎) では鳴らさず intake と昼スロットでだけ警告し、連投を避ける。
+		await notifyCollectHealth(env, ir, disc, news, mnews);
 		// 引け後 (18:00) は eod / flows の収集が済んでいるので、表ごとの途絶を確かめる (1日1回)。
 		if (evening) {
 			await notifyStaleSources(env, jstDate(event.scheduledTime));
@@ -310,8 +329,8 @@ export async function runScheduled(
 		});
 		// JST 12:30 相当スロットでは IR + 適時開示 intake も相乗りさせる (昼の専用 cron を持たないため)。
 		// IR・適時開示・ニュースどの新着でも signal-update を撃つので fresh を統合して dispatch する。
-		let ir: { freshTickers: string[] } | null = null;
-		let disc: { freshTickers: string[] } | null = null;
+		let ir: Awaited<ReturnType<typeof collectAll>> | null = null;
+		let disc: Awaited<ReturnType<typeof collectDisclosures>> | null = null;
 		if (isNoonIntakeSlot(event.scheduledTime)) {
 			ir = await collectAll(env, null, DEFAULT_LIMIT);
 			disc = await collectDisclosures(env, null);
@@ -339,6 +358,8 @@ export async function runScheduled(
 		);
 		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
 		await notifyFreshNews(env, news, mnews);
+		// パース0件・PDF 抽出失敗の警告は 1日1回の昼スロットでだけ流す (5分毎に鳴らさない)。
+		if (ir && disc) await notifyCollectHealth(env, ir, disc, news, mnews);
 		// JST 15:00 の引け前スロットは、新規の有無によらず全銘柄を判定する (intake と同思想)。
 		// 大引け前にその時点で判明している材料だけで「翌日の寄り越えに玉を持つか」を判断するため、
 		// ニュースの薄い銘柄も取り残さない。デバウンスも掛けない (1日1回の確定枠)。

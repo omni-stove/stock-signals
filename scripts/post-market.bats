@@ -167,7 +167,39 @@ run_pm_ctx() {
 
 @test "numbers: unavailable blocks add no context block" {
   run_pm_ctx '{"premarket":{"status":"unavailable"},"live_indexes":{"status":"unavailable","indexes":[]},
-    "sectors":{"status":"unavailable","sectors":[]},"market_short_ratio":{"status":"unavailable"},"investor_flows":{"status":"unavailable"}}'
+    "sectors":{"status":"unavailable","sectors":[]},"market_short_ratio":{"status":"unavailable"},"investor_flows":{"status":"unavailable"},
+    "memory_prices":{"status":"none"},"tw_monthly_revenue":{"status":"unavailable"}}'
   [ "$status" -eq 0 ]
   [ "$(payload | jq -r '.blocks | length')" -eq 1 ]
+}
+
+@test "numbers: memory spot prices and TSMC monthly revenue get their own lines" {
+  run_pm_ctx '{
+    "memory_prices":{"status":"ok","date":"2026-11-19","items":[
+      {"item":"DDR5 16Gb (2Gx8) 4800/5600","date":"2026-11-19","session_avg":12.5,"change_pct":1.25},
+      {"item":"DDR4 8Gb (1Gx8) 3200","date":"2026-11-19","session_avg":4.613,"change_pct":-0.32},
+      {"item":"MLC 64Gb 8GBx8","date":"2026-11-19","session_avg":3.15,"change_pct":null}]},
+    "tw_monthly_revenue":{"status":"ok","month":"2026-10","revenue":330000000,"yoy_pct":21.4,"mom_pct":-3.2}
+  }'
+  [ "$status" -eq 0 ]
+  local t; t="$(payload | jq -r '.blocks[1].elements[0].text')"
+  grep -qxF 'メモリ: DDR5 16Gb (2Gx8) 4800/5600 12.5（+1.25%） / DDR4 8Gb (1Gx8) 3200 4.613（-0.32%） / MLC 64Gb 8GBx8 3.15' <<<"$t"
+  grep -qxF 'TSMC 月次: 2026-10 前年比 +21.4%' <<<"$t"
+}
+
+@test "numbers: stale memory and TSMC blocks, or a TSMC month without yoy, add no line" {
+  run_pm_ctx '{"premarket":{"status":"ok","date":"2026-11-13","sox_change_pct":1},
+    "memory_prices":{"status":"stale","date":"2026-11-05"},
+    "tw_monthly_revenue":{"status":"stale","month":"2026-08","yoy_pct":10}}'
+  [ "$status" -eq 0 ]
+  local t; t="$(payload | jq -r '.blocks[1].elements[0].text')"
+  # set -e は `! cmd` の失敗で止まらないので、否定は [[ ]] で書く。
+  [[ "$t" != *メモリ* ]]
+  [[ "$t" != *TSMC* ]]
+
+  run_pm_ctx '{"premarket":{"status":"ok","date":"2026-11-13","sox_change_pct":1},
+    "tw_monthly_revenue":{"status":"ok","month":"2026-10","yoy_pct":null}}'
+  [ "$status" -eq 0 ]
+  t="$(payload | jq -r '.blocks[1].elements[0].text')"
+  [[ "$t" != *TSMC* ]]
 }

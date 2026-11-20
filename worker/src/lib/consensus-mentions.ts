@@ -4,6 +4,8 @@
 //   readConsensusMentions(env, code, announcedAt)
 //     → 発表日から WINDOW_DAYS 暦日以内の kabutan:<code> 記事本文 (R2) を読み、
 //       「市場予想」「コンセンサス」を含む文を {date, text, url} で最大 MAX_MENTIONS 件返す。
+//       複数銘柄を並べる記事 (注目個別銘柄・ストップ高一覧など) は <code> の印で段落の銘柄を決め、
+//       その銘柄の段落の文だけを取る。
 
 import { and, asc, eq, gte, lte } from "drizzle-orm";
 import {
@@ -44,12 +46,13 @@ function clip(s: string, matchAt: number): string {
 
 /**
  * sources (順不同) のうち公開日が announcedAt 〜 announcedAt + WINDOW_DAYS のものを古い順に見て、
- * 市場予想・コンセンサスに触れた文を最大 MAX_MENTIONS 件返す。同じ文は1件にまとめる。
+ * code の銘柄について市場予想・コンセンサスに触れた文を最大 MAX_MENTIONS 件返す。同じ文は1件にまとめる。
  * 発表前の記事 (決算プレビュー) は結果に対する市場予想比ではないので含めない。
  */
 function extractConsensusMentions(
 	sources: MentionSource[],
 	announcedAt: string,
+	code: string,
 ): ConsensusMention[] {
 	const until = addDays(announcedAt, WINDOW_DAYS);
 	const inWindow = sources
@@ -58,7 +61,7 @@ function extractConsensusMentions(
 	const out: ConsensusMention[] = [];
 	const seen = new Set<string>();
 	for (const s of inWindow) {
-		for (const { sentence, at } of consensusSentences(s.body as string)) {
+		for (const { sentence, at } of consensusSentences(s.body as string, code)) {
 			const text = clip(sentence, at);
 			if (seen.has(text)) continue;
 			seen.add(text);
@@ -111,7 +114,7 @@ export async function readConsensusMentions(
 			return { date: r.date ?? "", url: r.url, body };
 		}),
 	);
-	return extractConsensusMentions(sources, announcedAt);
+	return extractConsensusMentions(sources, announcedAt, code);
 }
 
 if (import.meta.vitest) {
@@ -137,6 +140,7 @@ if (import.meta.vitest) {
 					),
 				],
 				"2026-10-28",
+				"6857",
 			);
 			expect(out).toEqual([
 				{
@@ -159,12 +163,14 @@ if (import.meta.vitest) {
 						src("2026-11-05", "市場予想を上回った。"),
 					],
 					"2026-10-28",
+					"6857",
 				),
 			).toEqual([]);
 			expect(
 				extractConsensusMentions(
 					[src("2026-11-04", "市場予想を上回った。")],
 					"2026-10-28",
+					"6857",
 				),
 			).toHaveLength(1);
 		});
@@ -178,6 +184,7 @@ if (import.meta.vitest) {
 					src("2026-10-29", body),
 				],
 				"2026-10-28",
+				"6857",
 			);
 			expect(out.map((m) => m.text)).toEqual([
 				"A は市場予想超え。",
@@ -185,11 +192,32 @@ if (import.meta.vitest) {
 				"C はコンセンサス未達。",
 			]);
 		});
+		it("複数銘柄を並べる記事は code の印の段落の文だけを取る", () => {
+			// 2026-10-31 の株探「前日に動いた銘柄」と 2026-07-31 の「ストップ高」一覧を縮めたもの。
+			const roundup =
+				"銘柄名＜コード＞30日終値⇒前日比\n日本郵船<9101> 7548 +397\n市場予想上回る水準まで業績上方修正。\nレーザーテック<6920> 37700 -3640\n米インテルの時間外株安も重し。通期はコンセンサス並み。\nマクセル<6810> 2265 -231\n7-9月期は営業減益でコンセンサスもやや下振れ。";
+			const limitUp =
+				"　キオクシア <285A> や、村田製作所 <6981> が配分。市場予想を上回った。\nパナＨＤ <6752> [東証Ｐ]　配分　第1四半期業績は市場予想を大幅上振れ";
+			const out = extractConsensusMentions(
+				[src("2026-10-31", roundup), src("2026-10-31", limitUp, "s")],
+				"2026-10-30",
+				"6920",
+			);
+			expect(out.map((m) => m.text)).toEqual(["通期はコンセンサス並み。"]);
+			expect(
+				extractConsensusMentions(
+					[src("2026-10-31", limitUp)],
+					"2026-10-30",
+					"285A",
+				),
+			).toEqual([]);
+		});
 		it("該当文が無ければ空", () => {
 			expect(
 				extractConsensusMentions(
 					[src("2026-10-28", "増収増益で着地。")],
 					"2026-10-28",
+					"6857",
 				),
 			).toEqual([]);
 		});
@@ -198,6 +226,7 @@ if (import.meta.vitest) {
 			const [m] = extractConsensusMentions(
 				[src("2026-10-28", long)],
 				"2026-10-28",
+				"6857",
 			);
 			expect(m.text).toContain("市場予想を上回った");
 			expect(m.text).toHaveLength(MAX_TEXT_LEN + 2);

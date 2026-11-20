@@ -142,7 +142,7 @@ function tally(
 			t.unreadable++;
 			continue;
 		}
-		const found = consensusSentences(body);
+		const found = consensusSentences(body, r.ticker);
 		if (found.length === 0) continue;
 		t.matchedArticles++;
 		t.sentences += found.length;

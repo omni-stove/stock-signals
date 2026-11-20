@@ -130,9 +130,8 @@ jobs:
 
             ## Inputs
 
-            The input JSON is embedded inline below (`ticker_meta` with the ticker's `name` / `sector` /
-            `note`; `today` in JST; the existing context body; the two cursors; the new IR/news). Do not post to
-            Slack; do not upsert; do not run any script; do not write any file — return structured output and stop.
+            The input JSON is embedded inline below; `today` is in JST. Do not post to Slack; do not upsert; do
+            not run any script; do not write any file — return structured output and stop.
 
             ## Steps
 

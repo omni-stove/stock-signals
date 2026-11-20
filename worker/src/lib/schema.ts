@@ -315,6 +315,38 @@ export const investorFlows = sqliteTable(
 	],
 );
 
+// ── memory_prices (メモリのスポット/契約価格。冪等キー = (date, item)) ─────────
+// item は取得元の品目名をそのまま持つ (例 DDR5_16Gb / DDR4_8Gb / NAND_512Gb_TLC_wafer)。
+// 正規化すると取得元の品目改定時に別品目を同じ系列へ混ぜてしまうため。
+export const memoryPrices = sqliteTable(
+	"memory_prices",
+	{
+		date: text("date").notNull(), // 取得元の公表日 (JST) YYYY-MM-DD
+		item: text("item").notNull(),
+		sessionAvg: real("session_avg").notNull(), // セッション平均価格 (取得元の表示単位のまま)
+		changePct: real("change_pct"), // 前回公表比 (%)
+		source: text("source").notNull(),
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.date, t.item] })],
+);
+
+// ── tw_monthly_revenue (台湾企業の月次売上。冪等キー = (company, month)) ───────
+export const twMonthlyRevenue = sqliteTable(
+	"tw_monthly_revenue",
+	{
+		company: text("company").notNull(), // 例 TSMC
+		month: text("month").notNull(), // 対象月 YYYY-MM
+		revenue: real("revenue").notNull(), // 月次売上 (千 NTD)
+		yoyPct: real("yoy_pct"), // 前年同月比 (%)
+		momPct: real("mom_pct"), // 前月比 (%)
+		publishedAt: text("published_at"), // 公表日 (JST) YYYY-MM-DD
+		source: text("source").notNull(),
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.company, t.month] })],
+);
+
 // ── forced_liquidation (強制決済スコア。冪等キー = (ticker, date)) ───────────
 // 「他プレイヤーの強制的な売買フロー」(追証売り=買い方のロスカット / 踏み上げ=売り方のロスカット)
 // を eod cron で決定論的に算出して保存する。judge-context が最新行を forced ブロックとして

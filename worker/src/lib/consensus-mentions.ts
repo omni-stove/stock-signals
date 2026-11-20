@@ -6,6 +6,10 @@
 //       「市場予想」「コンセンサス」を含む文を {date, text, url} で最大 MAX_MENTIONS 件返す。
 
 import { and, asc, eq, gte, lte } from "drizzle-orm";
+import {
+	consensusSentences,
+	MENTION_WINDOW_DAYS as WINDOW_DAYS,
+} from "./consensus-text";
 import { db } from "./db";
 import type { Env } from "./env";
 import { articles } from "./schema";
@@ -23,18 +27,9 @@ interface MentionSource {
 	body: string | null;
 }
 
-const WINDOW_DAYS = 7;
 const MAX_MENTIONS = 3;
 // LLM 入力を細く保つため、1文が長い記事 (表の地の文化など) はここで切る。
 const MAX_TEXT_LEN = 200;
-const CONSENSUS_RE = /市場予想|コンセンサス/;
-
-function splitSentences(body: string): string[] {
-	return body
-		.split(/(?<=。)|\n/)
-		.map((s) => s.replace(/\s+/g, " ").trim())
-		.filter((s) => s.length > 0);
-}
 
 // 先頭から切ると該当語が落ちるので、一致位置を中心に MAX_TEXT_LEN 文字を残す。
 function clip(s: string, matchAt: number): string {
@@ -63,9 +58,7 @@ function extractConsensusMentions(
 	const out: ConsensusMention[] = [];
 	const seen = new Set<string>();
 	for (const s of inWindow) {
-		for (const sentence of splitSentences(s.body as string)) {
-			const at = sentence.search(CONSENSUS_RE);
-			if (at < 0) continue;
+		for (const { sentence, at } of consensusSentences(s.body as string)) {
 			const text = clip(sentence, at);
 			if (seen.has(text)) continue;
 			seen.add(text);

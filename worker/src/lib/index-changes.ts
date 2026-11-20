@@ -9,6 +9,7 @@
 //
 // PDF の解析は JS 側で CPU を食うので、毎回読むのは前営業日以降に公表された分だけにする。
 
+import { and, eq } from "drizzle-orm";
 import { db } from "./db";
 import { queryAll } from "./html";
 import { latestTseBusinessDay } from "./market-calendar";
@@ -297,6 +298,16 @@ export function indexChangeEvents(
 		}));
 }
 
+/** 同じ (date, kind) の 2 件を 1 行にまとめる。label・note は重複を除いて " / " でつなぐ。 */
+function mergeEvents(a: IndexChangeEvent, b: IndexChangeEvent): IndexChangeEvent {
+	const join = (x: string, y: string) => {
+		const parts = x ? x.split(" / ") : [];
+		for (const p of y.split(" / ")) if (p && !parts.includes(p)) parts.push(p);
+		return parts.join(" / ");
+	};
+	return { ...a, label: join(a.label, b.label), note: join(a.note, b.note) };
+}
+
 // PDF を取る。missing に当たるページ (無い番号の「見つかりません」) なら null、
 // それ以外で PDF でなければ例外 (チャレンジに変わったなどを黙って 0 件にしない)。
 async function fetchPdf(
@@ -395,7 +406,24 @@ export async function collectIndexChanges(
 
 	const d = db(env.DB);
 	const fetchedAt = new Date().toISOString();
+	const merged = new Map<string, IndexChangeEvent>();
 	for (const e of events) {
+		const key = `${e.date}|${e.kind}`;
+		const prev = merged.get(key);
+		merged.set(key, prev ? mergeEvents(prev, e) : e);
+	}
+	for (const ev of merged.values()) {
+		const [row] = await d
+			.select({ label: macroEvents.label, note: macroEvents.note })
+			.from(macroEvents)
+			.where(and(eq(macroEvents.date, ev.date), eq(macroEvents.kind, ev.kind)))
+			.all();
+		const e = row
+			? mergeEvents(
+					{ ...ev, label: row.label, note: row.note ?? "" },
+					ev,
+				)
+			: ev;
 		const values = {
 			label: e.label,
 			impact: e.impact,
@@ -412,7 +440,7 @@ export async function collectIndexChanges(
 			})
 			.run();
 	}
-	return { read, saved: events.length, errors };
+	return { read, saved: merged.size, errors };
 }
 
 if (import.meta.vitest) {

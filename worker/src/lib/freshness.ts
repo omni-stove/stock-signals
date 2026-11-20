@@ -7,7 +7,7 @@
 // 日足 (TOPIX・日経225 を含む)・5分足・強制決済スコア・fundamentals は、東証カレンダー
 // (market-calendar.ts) で求めた今日以前の最新営業日まで来ているかで判定する。週次・日次の
 // 公表データ (メモリのスポット価格を含む) と決算予定日の取得は、最新日から今日までの東証営業日数で
-// 判定する。TSMC の月次売上は、最新月の月末から今日までの暦日数で判定する。
+// 判定する。TSMC の月次売上と SEAJ の装置販売高は、最新月の月末から今日までの暦日数で判定する。
 
 import { and, desc, gte, inArray, max, sql } from "drizzle-orm";
 import { db } from "./db";
@@ -29,8 +29,10 @@ import {
 	memoryPrices,
 	premarketBackdrop,
 	prices,
+	seajSales,
 	twMonthlyRevenue,
 } from "./schema";
+import { isSeajSalesStale } from "./seaj-sales";
 import { DAILY_CODES, WATCHLIST } from "./timeseries";
 import { isTwMonthlyRevenueStale } from "./tw-monthly-revenue";
 import { jstDate } from "./utils";
@@ -47,6 +49,7 @@ export interface FreshnessSnapshot {
 	marketShortRatio: string | null;
 	memoryPrices: string | null; // メモリのスポット価格の最新公表日
 	twMonthlyRevenue: string | null; // TSMC 月次売上の最新月 (YYYY-MM)
+	seajSales: string | null; // SEAJ 装置販売高の最新月 (YYYY-MM)
 	earnings: Record<string, string | null>; // ticker → 決算予定日の最新取得の JST 日付
 	nextMacro: string | null; // 今日以降で最も近い FOMC/日銀
 }
@@ -100,6 +103,8 @@ export function staleSources(s: FreshnessSnapshot, today: string): string[] {
 		isTwMonthlyRevenueStale(s.twMonthlyRevenue, today)
 	)
 		out.push(label("tw-monthly-revenue", s.twMonthlyRevenue));
+	if (s.seajSales == null || isSeajSalesStale(s.seajSales, today))
+		out.push(label("seaj-sales", s.seajSales));
 	for (const [code, last] of Object.entries(s.earnings))
 		if (lagOver(last, MAX_LAG_DAYS.earnings))
 			out.push(label(`earnings:${code}`, last));
@@ -218,6 +223,12 @@ export async function readFreshness(
 				.from(twMonthlyRevenue)
 				.get(),
 		),
+		seajSales: await one(
+			d
+				.select({ v: max(seajSales.month) })
+				.from(seajSales)
+				.get(),
+		),
 		earnings: maxByTicker(
 			earningsRows.map((r) => ({ ticker: r.ticker, last: toJstDate(r.last) })),
 			WATCHLIST,
@@ -269,6 +280,7 @@ if (import.meta.vitest) {
 			marketShortRatio: daily,
 			memoryPrices: daily,
 			twMonthlyRevenue: daily.slice(0, 7),
+			seajSales: daily.slice(0, 7),
 			earnings: all(daily, WATCHLIST),
 			nextMacro: "2026-12-16",
 		});
@@ -356,6 +368,16 @@ if (import.meta.vitest) {
 			expect(staleSources(s, TODAY)).toEqual([
 				"tw-monthly-revenue (最新 なし)",
 			]);
+		});
+
+		it("SEAJ 装置販売高は最新月の月末から 60 日を超えたら挙げる", () => {
+			const s = fresh();
+			s.seajSales = "2026-09"; // 月末から 44 日
+			expect(staleSources(s, TODAY)).toEqual([]);
+			s.seajSales = "2026-08"; // 月末から 74 日
+			expect(staleSources(s, TODAY)).toEqual(["seaj-sales (最新 2026-08)"]);
+			s.seajSales = null;
+			expect(staleSources(s, TODAY)).toEqual(["seaj-sales (最新 なし)"]);
 		});
 	});
 }

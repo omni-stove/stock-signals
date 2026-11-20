@@ -223,9 +223,10 @@ export async function readSeajSales(DB: D1Database): Promise<SeajSalesRow[]> {
 		.all();
 }
 
-function daysSinceMonthEnd(month: string, today: string): number {
+/** 最新月 (YYYY-MM) の月末から today (YYYY-MM-DD) までが STALE_DAYS 日を超えていれば true。 */
+export function isSeajSalesStale(month: string, today: string): boolean {
 	const [y, m] = month.split("-").map(Number);
-	return (Date.parse(today) - Date.UTC(y, m, 0)) / 86_400_000;
+	return (Date.parse(today) - Date.UTC(y, m, 0)) / 86_400_000 > STALE_DAYS;
 }
 
 /**
@@ -240,7 +241,7 @@ export function buildSeajSalesBlock(
 	if (rows.length === 0) return { status: "none" };
 	const sorted = [...rows].sort((a, b) => (a.month < b.month ? 1 : -1));
 	const head = sorted[0];
-	if (daysSinceMonthEnd(head.month, today) > STALE_DAYS)
+	if (isSeajSalesStale(head.month, today))
 		return { status: "stale", month: head.month };
 	return {
 		status: "ok",

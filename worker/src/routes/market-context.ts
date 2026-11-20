@@ -4,7 +4,7 @@
 //
 // 取得は D1 直読み。出力構造:
 //   { asof, market_phase, event_context, premarket, us_peers, live_indexes, sectors, market_news,
-//     investor_flows, market_short_ratio, memory_prices, tw_monthly_revenue }
+//     investor_flows, market_short_ratio, memory_prices, tw_monthly_revenue, seaj_sales }
 //
 // premarket は judge-context と違い us_indexes / date と vix_peak (直近 30 日の VIX 高値と現値の乖離) も載せる
 // (市場全体のマーケットブリーフに使うため)。
@@ -35,6 +35,7 @@ import {
 	marketNews,
 	premarketBackdrop,
 } from "../lib/schema";
+import { buildSeajSalesBlock, readSeajSales } from "../lib/seaj-sales";
 import {
 	buildSectors,
 	type DailyBar,
@@ -209,5 +210,6 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 			await readTwMonthlyRevenue(env.DB),
 			today,
 		),
+		seaj_sales: buildSeajSalesBlock(await readSeajSales(env.DB), today),
 	});
 });

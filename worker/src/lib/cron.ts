@@ -93,7 +93,7 @@ async function notifyFreshNews(
 //                           立てないため。下の isNoonIntakeSlot 参照)。
 //                           JST 15:00 相当の最終スロット (isPreCloseSlot) では大引け前にその時点の材料
 //                           だけで翌日寄り越えの玉を判断するため、intake 同様に全銘柄を無条件判定する。
-//   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日 + ピア決算日
+//   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日 + ピア決算日 + 指数入替
 // eod / flows は重いので、ジョブを 1 つずつ別 invocation で回す (fan-out.ts)。
 const MORNING_INTAKE_CRON = "30 23 * * *";
 const EVENING_INTAKE_CRON = "0 9 * * *";
@@ -148,7 +148,8 @@ function isJstMonthStart(scheduledTime: number): boolean {
 }
 
 // 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率)・投資部門別売買 (週次)・
-// 大量保有報告書 (EDINET)・メモリのスポット価格 (DRAMeXchange)・TSMC の月次売上 (MOPS)。
+// 大量保有報告書 (EDINET)・メモリのスポット価格 (DRAMeXchange)・TSMC の月次売上 (MOPS)・
+// SEAJ の装置販売高速報。
 // 公表が夕方以降のもの、または 1 日 1 回取れば足りるものなので引け後 intake (18:00) の先頭で回す。
 async function collectFlows(env: Env): Promise<void> {
 	const { results, failed } = await fanOut(env, [
@@ -163,6 +164,7 @@ async function collectFlows(env: Env): Promise<void> {
 		{ kind: "large-holdings" },
 		{ kind: "memory-prices" },
 		{ kind: "tw-monthly-revenue" },
+		{ kind: "seaj-sales" },
 	]);
 	if (failed.length > 0) console.error("flows jobs failed:", failed);
 	await notifyJobFailure(env, "flows", failed);
@@ -373,13 +375,15 @@ export async function runScheduled(
 	}
 	if (kind === "eod") {
 		// 引け後の1日1回。日足 (watchlist + TOPIX + 日経225、足りない過去分の補完込み)・fundamentals・
-		// 次回決算予定日・ピア決算日 (毎日上書き)・FOMC/日銀/米CPI/米雇用統計 (月初だけ) を、1 ジョブ = 1 invocation で回す。
+		// 次回決算予定日・ピア決算日 (毎日上書き)・日経225/JPX日経400 の監視銘柄の入替 (前営業日以降の公表分)・
+		// FOMC/日銀/米CPI/米雇用統計 (月初だけ) を、1 ジョブ = 1 invocation で回す。
 		const { results: eodJobs, failed: eodFailed } = await fanOut(env, [
 			...DAILY_CODES.map((code) => ({ kind: "daily", code })),
 			...WATCHLIST.map((code) => ({ kind: "fundamentals", code })),
 			{ kind: "earnings" },
 			{ kind: "peer-earnings" },
 			{ kind: "peer-earnings-jp" },
+			{ kind: "index-changes" },
 			...(isJstMonthStart(event.scheduledTime)
 				? [{ kind: "macro-events" }]
 				: []),

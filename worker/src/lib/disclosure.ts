@@ -107,7 +107,12 @@ async function saveDisclosure(
 async function collectDisclosureOne(
 	env: DisclosureEnv,
 	code: string,
-): Promise<{ found: number; written: number; skipped: number }> {
+): Promise<{
+	found: number;
+	written: number;
+	skipped: number;
+	pdfFallbacks: number;
+}> {
 	const listHtml = await fetchHtml(URL_DISCLOSURE(code), env);
 	const items = (
 		await parseKabutanNewsList(listHtml, URL_DISCLOSURE(code))
@@ -120,6 +125,7 @@ async function collectDisclosureOne(
 	let written = 0;
 	let skipped = 0;
 	let pdfFetches = 0;
+	let pdfFallbacks = 0;
 	for (const it of items) {
 		if (seen.has(it.url)) {
 			skipped++;
@@ -132,6 +138,7 @@ async function collectDisclosureOne(
 				pdfFetches++;
 				await sleep(interval);
 				body = await pdfBody(env, it.title, pdfUrl);
+				if (body === it.title) pdfFallbacks++;
 			}
 			await saveDisclosure(env, {
 				url: it.url,
@@ -145,12 +152,13 @@ async function collectDisclosureOne(
 			console.error(`disclosure save error ${it.url}: ${(e as Error).message}`);
 		}
 	}
-	return { found: items.length, written, skipped };
+	return { found: items.length, written, skipped, pdfFallbacks };
 }
 
 // watchlist 全銘柄 (codeFilter 指定時はその1銘柄) の適時開示を収集。
 // 戻り値の freshTickers は今回新規があった銘柄 (= signal 判定を起動すべき対象)。
 // emptyParses は「一覧が HTTP 200 なのにパース0件」だった銘柄 (= DOM 変更の疑い)。
+// pdfFallbacks は決算系 PDF を取りに行ったのに抜粋が取れず本文が見出しだけになった件数。
 // 銘柄間は本文取得が無いぶん軽いが、kabutan への負荷を揃えるため min_interval を空ける。
 export async function collectDisclosures(
 	env: DisclosureEnv,
@@ -159,12 +167,14 @@ export async function collectDisclosures(
 	results: Record<string, unknown>;
 	freshTickers: string[];
 	emptyParses: string[];
+	pdfFallbacks: number;
 }> {
 	const codes = WATCHLIST.filter((c) => !codeFilter || c === codeFilter);
 	const interval = parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
 	const results: Record<string, unknown> = {};
 	const freshTickers: string[] = [];
 	const emptyParses: string[] = [];
+	let pdfFallbacks = 0;
 	for (let i = 0; i < codes.length; i++) {
 		if (i > 0) await new Promise((r) => setTimeout(r, interval));
 		const code = codes[i];
@@ -173,11 +183,12 @@ export async function collectDisclosures(
 			results[code] = r;
 			if (r.written > 0) freshTickers.push(code);
 			if (r.found === 0) emptyParses.push(code);
+			pdfFallbacks += r.pdfFallbacks;
 		} catch (e) {
 			results[code] = { error: (e as Error).message };
 		}
 	}
-	return { results, freshTickers, emptyParses };
+	return { results, freshTickers, emptyParses, pdfFallbacks };
 }
 
 if (import.meta.vitest) {

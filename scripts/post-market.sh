@@ -9,7 +9,7 @@
 #   - ブリーフは銘柄非依存なので ticker は固定で "market"。太字の headline と数値行をサマリーとして親に投稿し、
 #     本文行 (改行区切り) は section に詰めて details として親のスレッドに 1 通でぶら下げる。
 #   - 数値行 (前夜米国の指数・ドル円・米10年債・VIX / 場中の日経225・KOSPI / セクター平均 / 空売り比率・
-#     海外投資家の売買) は LLM に出させず、marketctx の実在値からここで決定論で組む。
+#     海外投資家の売買 / メモリのスポット価格 / TSMC 月次売上) は LLM に出させず、marketctx の実在値からここで決定論で組む。
 #
 # 入力:
 #   $1 = signal-file (必須。market-brief スキルの構造化出力 (structured_output) を書いた JSON の
@@ -43,7 +43,9 @@ BODY="$(printf '%s' "$SIGNAL_JSON" | jq -r '(.body // []) | join("\n")')"
 # 1 行目 = 前夜米国 (SOX/NASDAQ/Dow/日経先物/ドル円/米10年債/VIX。VIX には直近高値からの乖離 (unwind なら「恐怖の一巡」) を添え、
 #   休場明け・stale は日付の横に添える)、
 # 2 行目 = 場中の指数 (status=ok のものだけ)、3 行目 = セクター平均 (前日比・5日)、
-# 4 行目 = 空売り比率 (5日平均) と海外投資家の週次売買 (連続週)。値の無い項目・行は出さない。
+# 4 行目 = 空売り比率 (5日平均) と海外投資家の週次売買 (連続週)、
+# 5 行目 = メモリのスポット価格 (品目ごとの値と前回比)、6 行目 = TSMC 月次売上 (最新月の前年同月比)。
+# メモリと TSMC は status=ok のときだけ出す。値の無い項目・行は出さない。
 NUMBERS=""
 if [[ -n "$MARKETCTX_FILE" && -s "$MARKETCTX_FILE" ]] && jq -e . "$MARKETCTX_FILE" >/dev/null 2>&1; then
   NUMBERS="$(jq -r '
@@ -82,7 +84,14 @@ if [[ -n "$MARKETCTX_FILE" && -s "$MARKETCTX_FILE" ]] && jq -e . "$MARKETCTX_FIL
           | "海外投資家 \(.net.foreigners | signed)億円（\(.week_start)〜\(.week_end)"
             + (.foreigners_streak_weeks // 0 | if . > 0 then "・\(.)週連続買い越し" elif . < 0 then "・\(-.)週連続売り越し" else "" end) + "）") ]
       | select(length > 0) | join(" / ");
-    [ us, live, sectors, flows ] | join("\n")' "$MARKETCTX_FILE")"
+    def memory:
+      [ (.memory_prices // {} | select(.status == "ok") | (.items // [])[] | select(.session_avg != null)
+          | "\(.item) \(.session_avg)" + (if .change_pct != null then "（\(.change_pct | signed)%）" else "" end)) ]
+      | select(length > 0) | "メモリ: " + join(" / ");
+    def tsmc:
+      .tw_monthly_revenue // {} | select(.status == "ok" and .month != null and .yoy_pct != null)
+      | "TSMC 月次: \(.month) 前年比 \(.yoy_pct | signed)%";
+    [ us, live, sectors, flows, memory, tsmc ] | join("\n")' "$MARKETCTX_FILE")"
   NUMBERS="${NUMBERS:+📐 *数値*
 ${NUMBERS}}"
 fi

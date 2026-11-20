@@ -13,6 +13,7 @@
     "gen:watchlist": "node scripts/gen-watchlist.ts",
     "check:watchlist": "node scripts/gen-watchlist.ts --check",
     "check:mermaid": "node scripts/check-mermaid.ts",
+    "count:consensus-mentions": "node scripts/count-consensus-mentions.ts",
     "test": "vitest run",
     "test:sh": "bash scripts/run-bats.sh",
     "verify:lint": "bash scripts/quiet.sh lint biome check --error-on-warnings",

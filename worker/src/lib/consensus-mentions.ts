@@ -8,6 +8,10 @@
 //       その銘柄の段落の文だけを取る。
 
 import { and, asc, eq, gte, lte } from "drizzle-orm";
+import {
+	consensusSentences,
+	MENTION_WINDOW_DAYS as WINDOW_DAYS,
+} from "./consensus-text";
 import { db } from "./db";
 import type { Env } from "./env";
 import { articles } from "./schema";
@@ -25,34 +29,9 @@ interface MentionSource {
 	body: string | null;
 }
 
-const WINDOW_DAYS = 7;
 const MAX_MENTIONS = 3;
 // LLM 入力を細く保つため、1文が長い記事 (表の地の文化など) はここで切る。
 const MAX_TEXT_LEN = 200;
-const CONSENSUS_RE = /市場予想|コンセンサス/;
-
-const CODE_MARK_RE = /[<＜]([0-9][0-9A-Z]{3})[>＞]/g;
-
-/**
- * body のうち code の銘柄について書かれた文を返す。<code> の印が無い記事は全文をその銘柄の記事とみなす。
- * 印がある記事では、印を 1 銘柄分だけ含む行からその銘柄の段落が始まり、次の印の行まで続く。
- * 最初の印より前の行と、複数銘柄の印を含む行はどの銘柄とも決められないので捨てる。
- */
-function ownSentences(body: string, code: string): string[] {
-	const marked = /[<＜][0-9][0-9A-Z]{3}[>＞]/.test(body);
-	let owner: string | null = marked ? null : code;
-	const out: string[] = [];
-	for (const line of body.split("\n")) {
-		const codes = new Set([...line.matchAll(CODE_MARK_RE)].map((m) => m[1]));
-		if (codes.size > 0) owner = codes.size === 1 ? [...codes][0] : null;
-		if (owner !== code) continue;
-		for (const s of line.split(/(?<=。)/)) {
-			const t = s.replace(/\s+/g, " ").trim();
-			if (t.length > 0) out.push(t);
-		}
-	}
-	return out;
-}
 
 // 先頭から切ると該当語が落ちるので、一致位置を中心に MAX_TEXT_LEN 文字を残す。
 function clip(s: string, matchAt: number): string {
@@ -82,9 +61,7 @@ function extractConsensusMentions(
 	const out: ConsensusMention[] = [];
 	const seen = new Set<string>();
 	for (const s of inWindow) {
-		for (const sentence of ownSentences(s.body as string, code)) {
-			const at = sentence.search(CONSENSUS_RE);
-			if (at < 0) continue;
+		for (const { sentence, at } of consensusSentences(s.body as string, code)) {
 			const text = clip(sentence, at);
 			if (seen.has(text)) continue;
 			seen.add(text);

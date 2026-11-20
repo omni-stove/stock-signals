@@ -8,8 +8,7 @@
     },
     "worker": {
       "project": ["src/**/*.ts"],
-      "entry": ["src/lib/seaj-sales.ts"],
-      "ignore": ["src/lib/tw-monthly-revenue.ts", "src/lib/memory-prices.ts"]
+      "entry": ["src/lib/seaj-sales.ts"]
     }
   }
 }

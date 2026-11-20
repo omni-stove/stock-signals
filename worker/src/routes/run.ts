@@ -1,5 +1,5 @@
 // Cloudflare Worker: 手動起動 (dev検証/オンデマンド) ルート。
-//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|peer-earnings-jp|macro-events|margin|short-interest|investor-flows|large-holdings|premarket&code=285A[&limit=N][&part=]
+//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|peer-earnings-jp|macro-events|margin|short-interest|investor-flows|large-holdings|memory-prices|tw-monthly-revenue|premarket&code=285A[&limit=N][&part=]
 //   short-interest は part=lending|positions|market で 1 つだけ取れる。cron は重い収集をここへ
 //   1 ジョブずつ投げる (lib/fan-out.ts)。
 //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
@@ -23,6 +23,7 @@ import { collectLargeHoldings } from "../lib/large-holdings";
 import { collectMacroEvents } from "../lib/macro-events";
 import { collectMargin } from "../lib/margin";
 import { collectMarketNews } from "../lib/market-news";
+import { collectMemoryPrices } from "../lib/memory-prices";
 import { collectNews } from "../lib/news";
 import { isAllowedPdfUrl, pdfExcerpt } from "../lib/pdf-text";
 import {
@@ -37,6 +38,7 @@ import {
 } from "../lib/short-interest";
 import { notifyNewsSlack } from "../lib/slack";
 import { collectTimeseries } from "../lib/timeseries";
+import { collectTwMonthlyRevenue } from "../lib/tw-monthly-revenue";
 
 export const run = new Hono<{ Bindings: Env }>();
 
@@ -176,6 +178,16 @@ run.get("/", async (c) => {
 	if (kind === "large-holdings") {
 		// EDINET の大量保有報告書・変更報告書 (監視銘柄が対象のもの) の直近分を取る。
 		const result = await collectLargeHoldings(env);
+		return c.json({ ok: true, kind, result });
+	}
+	if (kind === "memory-prices") {
+		// DRAMeXchange の DRAM / NAND Flash スポット価格 → D1 memory_prices。
+		const result = await collectMemoryPrices(env);
+		return c.json({ ok: true, kind, result });
+	}
+	if (kind === "tw-monthly-revenue") {
+		// TSMC の月次売上 (MOPS) の未保存月 → D1 tw_monthly_revenue。
+		const result = await collectTwMonthlyRevenue(env);
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "prices" || kind === "daily" || kind === "fundamentals") {

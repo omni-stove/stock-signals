@@ -135,7 +135,8 @@ jobs:
 
             Japanese, facts and their relevance only.
 
-            - `positions`: one entry per input position, `ticker` matching the input. `notes` = 0–3 lines on
+            - `positions`: one entry per input position. `ticker`: exact format, verbatim — the input row's
+              `ticker` copied as is (the posting step matches on it). `notes` = 0–3 lines on
               which fresh material in `brief` or standing risk in `context` bears on this 建玉 and how it meets
               the position's situation (信用 with a loss makes a 需給 risk weigh more; a large 含み益 makes a
               fading driver worth naming). Empty when `brief` and `context` add nothing or are both null — do

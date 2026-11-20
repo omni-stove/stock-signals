@@ -117,7 +117,7 @@ function isJstWeekend(scheduledTime: number): boolean {
 }
 
 // 発火予定時刻 (JST) が月の最初の稼働日 (1〜3日のいずれか初回) かを判定する。マクロイベント
-// (FOMC/日銀) を eod cron に月1回だけ相乗りさせるための「月初スロット」。JST 1日が土日だと
+// (FOMC/日銀/米CPI/米雇用統計) を eod cron に月1回だけ相乗りさせるための「月初スロット」。JST 1日が土日だと
 // その日の eod は isJstWeekend で全スキップされるため、1〜3日を窓にして月内で確実に1回拾う。
 // 同月内で複数回走っても macro_events は (date,kind) PK の INSERT OR REPLACE で冪等。
 function isJstMonthStart(scheduledTime: number): boolean {
@@ -352,7 +352,7 @@ export async function runScheduled(
 	}
 	if (kind === "eod") {
 		// 引け後の1日1回。日足 (watchlist + TOPIX + 日経225、足りない過去分の補完込み)・fundamentals・
-		// 次回決算予定日・ピア決算日 (毎日上書き)・FOMC/日銀 (月初だけ) を、1 ジョブ = 1 invocation で回す。
+		// 次回決算予定日・ピア決算日 (毎日上書き)・FOMC/日銀/米CPI/米雇用統計 (月初だけ) を、1 ジョブ = 1 invocation で回す。
 		const { results: eodJobs, failed: eodFailed } = await fanOut(env, [
 			...DAILY_CODES.map((code) => ({ kind: "daily", code })),
 			...WATCHLIST.map((code) => ({ kind: "fundamentals", code })),

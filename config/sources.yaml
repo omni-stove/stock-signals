@@ -1,7 +1,7 @@
 # ニュースソース定義
 #
 # 2系統に分かれる (取得物はいずれも Worker が D1 articles に保存):
-#  - per_ticker: 銘柄が確定しているソース。watchlist.yaml の news_url を使う。
+#  - per_ticker: 銘柄が確定しているソース。worker/src/lib/watchlist.ts の各銘柄について取る。
 #  - macro:     横断ニュース(マクロ・業界全体)。Worker が aliases/keywords でどの銘柄に
 #                共通配信するかを判定する。
 #
@@ -13,8 +13,8 @@ http:
   min_interval_ms: 5000
   timeout_ms: 15000
 
-# 銘柄別: watchlist.yaml の news_url を順次叩く。
-# parser は site で切り替え(scripts/sources/<site>.ts)。
+# 銘柄別: worker/src/lib/watchlist.ts の各銘柄の株探ニュース一覧を順次叩く (worker/src/lib/news.ts)。
+# 一覧のパースは worker/src/lib/kabutan.ts の parseKabutanNewsList。
 per_ticker:
   - site: "kabutan"
     encoding: "utf-8"
@@ -24,7 +24,8 @@ per_ticker:
 # 株探ニュース (per_ticker) は速報だが二次情報。決算・上方修正・提携・自己株買い等の
 # 一次情報は公式IRに最初に出るため、ラグなく拾うのが目的。
 # IRページは企業ごとにHTML構造が違うので、site ごとに専用パーサを持つ
-# (実装は worker/src/index.ts の parseList。ローカルの scripts/fetch-ir.ts は廃止済み)。
+# (パーサは worker/src/lib/ir-sources.ts の parseList、収集は worker/src/lib/ir-collect.ts、
+#  銘柄ごとの site・list_url は worker/src/lib/watchlist.ts の ir)。
 # 取得物は per_ticker と同様 D1 articles (source=ir:<site>:<code>) に入る (銘柄確定済み)。
 # kioxia だけ記事本文HTMLが安定して取れるので本文も取得し、
 # 他社は記事リンクが PDF/カレンダーで本文HTMLが取れないため一覧の見出しを本文として保存する
@@ -95,7 +96,7 @@ macro_html:
 # 旧Yahoo経済RSSはノイズが多く銘柄ヒットゼロだったため除外。
 # ロイターJP は RSS 廃止確認のため一旦外す。
 
-# 株価スナップショット: watchlist.yaml の全銘柄について現値・前日比・出来高を取得。
+# 株価スナップショット: worker/src/lib/watchlist.ts の全銘柄について現値・前日比・出来高を取得。
 # Worker が場中5分毎の cron で叩き、D1 prices に保存する (slot=5分丸めで冪等)。
 prices:
   - site: "kabutan"

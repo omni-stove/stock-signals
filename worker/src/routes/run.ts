@@ -140,7 +140,7 @@ run.get("/", async (c) => {
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "macro-events") {
-		// FOMC/日銀の会合日程 → D1 macro_events。
+		// FOMC/日銀/米CPI/米雇用統計の日程 → D1 macro_events。
 		const result = await collectMacroEvents(env);
 		return c.json({ ok: true, kind, result });
 	}

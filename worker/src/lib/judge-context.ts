@@ -6,6 +6,7 @@
 //   - 出力キーは snake_case。
 //   - 丸め: long_chg/short_chg は floor1 (小数第1位切り捨て)。
 
+import type { ConsensusMention } from "./consensus-mentions";
 import {
 	computeDailyIndicators,
 	type DailyRow,
@@ -91,7 +92,8 @@ export function buildEarnings(
 // --- earnings_result: 直近に出た四半期決算の事実 -----------------------------
 // 「決算が近い」(buildEarnings) と対をなす「決算が出たばかり」ブロック。earnings_quarters の
 // 直近四半期の発表日から FRESH_DAYS 営業日以内を fresh とし、その四半期の前年同期比・前四半期比と、
-// 通期会社予想に対する累計進捗率を出す。コンセンサスは収集していないので beat/miss は判定しない。
+// 通期会社予想に対する累計進捗率を出す。コンセンサスの数値は収集していないので beat/miss は判定せず、
+// 株探記事が市場予想比に触れた文があれば route が consensus_mentions として出典付きで足す。
 
 // earnings_quarters の1行 (3ヵ月実績、百万円)。period は "2026.07-09"。
 export interface QuarterFigures {
@@ -128,6 +130,8 @@ export interface EarningsResultBlock {
 	qoq_pct: PlPct | null; // 前四半期比 (%)。同上
 	forecast_period: string | null; // 進捗率の分母にした通期予想の決算期
 	progress_pct: PlPct | null; // 期初からの累計 ÷ 通期会社予想 (%)。直近四半期が予想の期に属さなければ null
+	// fresh のとき、発表日以降の株探記事で市場予想・コンセンサスに触れた文。無ければキーごと持たない。
+	consensus_mentions?: ConsensusMention[];
 }
 
 // 決算が出てから fresh 扱いする営業日 (当日=0。寄りで大半が織り込まれるので2営業日ほど)。
@@ -266,6 +270,15 @@ export function buildEarningsResult(
 		forecast_period: progress ? (forecast?.forecast_period ?? null) : null,
 		progress_pct: progress,
 	};
+}
+
+/** fresh な earnings_result に市場予想への言及を足す。fresh 以外か言及が無ければ block をそのまま返す。 */
+export function withConsensusMentions(
+	block: EarningsResultBlock,
+	mentions: ConsensusMention[],
+): EarningsResultBlock {
+	if (block.status !== "fresh" || mentions.length === 0) return block;
+	return { ...block, consensus_mentions: mentions };
 }
 
 // --- premarket: 鮮度判定 (age>20h で stale) ---------------------------------
@@ -935,6 +948,35 @@ if (import.meta.vitest) {
 					"2026-10-29",
 				).status,
 			).toBe("none");
+		});
+	});
+
+	describe("withConsensusMentions", () => {
+		const mention = {
+			date: "2026-10-28",
+			text: "営業利益は市場予想を上回った。",
+			url: "https://kabutan.jp/news/marketnews/?b=n1",
+		};
+		const fresh: EarningsResultBlock = {
+			...NONE_RESULT,
+			status: "fresh",
+			period: "2026.07-09",
+			announced_at: "2026-10-28",
+			days_since: 1,
+		};
+		it("fresh なら consensus_mentions を足す", () => {
+			expect(withConsensusMentions(fresh, [mention])).toEqual({
+				...fresh,
+				consensus_mentions: [mention],
+			});
+		});
+		it("言及なし・fresh 以外はキーを持たない", () => {
+			expect(withConsensusMentions(fresh, [])).not.toHaveProperty(
+				"consensus_mentions",
+			);
+			expect(
+				withConsensusMentions({ ...fresh, status: "stale" }, [mention]),
+			).not.toHaveProperty("consensus_mentions");
 		});
 	});
 

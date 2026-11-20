@@ -105,17 +105,15 @@ jobs:
           prompt: |
             # position-report — one user's position fact report
 
-            Read one user's holdings, each tagged with that name's latest 材料ブリーフ, its standing context,
-            and the day's close, and return the **facts that bear on each position** — the fresh materials and
-            standing risks a holder of this name should know tonight. **Never output an action or a verdict**:
+            Return the **facts that bear on each of one user's positions** — the fresh materials and standing
+            risks a holder of this name should know tonight. **Never output an action or a verdict**:
             no 利確/損切り/増し玉/継続, no urgency grade, no "should". Never write a figure (price, %, count); the
             posting step renders 建値・現値・含み損益 — add only what the numbers alone don't say.
 
             Report on what you can see now — the brief, the context, the position row — never hindsight, and
             never a market view the inputs do not carry.
 
-            Do not post to Slack; do not run any script; do not write any file — return structured output and
-            stop.
+            Return structured output and stop.
 
             ## Inputs
 
@@ -133,16 +131,15 @@ jobs:
 
             ## Output
 
-            Japanese, facts and their relevance only.
+            Japanese.
 
             - `positions`: one entry per input position. `ticker`: exact format, verbatim — the input row's
               `ticker` copied as is (the posting step matches on it). `notes` = 0–3 lines on
               which fresh material in `brief` or standing risk in `context` bears on this 建玉 and how it meets
               the position's situation (信用 with a loss makes a 需給 risk weigh more; a large 含み益 makes a
-              fading driver worth naming). Empty when `brief` and `context` add nothing or are both null — do
-              not pad.
+              fading driver worth naming). Empty when `brief` and `context` add nothing or are both null.
             - `portfolio`: one line across all positions — the material or risk several positions share, or
-              that their drivers do not overlap. No recommendation.
+              that their drivers do not overlap.
 
             ## ポジションコンテキスト
 

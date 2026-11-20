@@ -130,7 +130,7 @@ jobs:
 
             ## Inputs
 
-            The input JSON is embedded inline below; `today` is in JST. Just return structured output and stop.
+            `today` is in JST. Return structured output and stop.
 
             ## Steps
 
@@ -139,13 +139,11 @@ jobs:
             Let `ticker_meta.note` qualify what a fact means for this name, never override an item.
 
             - input `status: "no-update"`, or any status you can't read, or unreadable input → return
-              `{status:"no-update"}` (no body, no cursors) and stop.
-            - input `status: "ok"` → continue to step 2.
+              `{status:"no-update"}` and stop.
 
             `ir_items` are official IR + TDnet + `rating`, lead on them. `news_items` with `source: "ticker"`
-            are per-ticker news, noisier — confirm against an IR item or drop. Both are already filtered to
-            since each cursor and ordered oldest-first. The same filing can arrive from both official IR and
-            TDnet; treat it as one item.
+            are per-ticker news, noisier — confirm against an IR item or drop. The same filing can arrive from
+            both official IR and TDnet; treat it as one item.
 
             `news_items` with `source: "market"` are cross-industry market news (trade policy, export controls,
             sanctions, subsidies, tariffs, sector themes) whose headline names a product or business this ticker
@@ -160,9 +158,9 @@ jobs:
             `topics`. Use any figure in it only to see the direction; never copy an amount, percentage, growth
             rate, or forecast value into any section, write the direction in words instead. The text is cut at a
             fixed length; do not guess what follows the cut. A body that is only the title means the filing text
-            was unavailable — judge on the title alone and never fill in the filing contents from memory. Empty `context_body` means first run — build the body from scratch (step 3).
+            was unavailable — judge on the title alone and never fill in the filing contents from memory. Empty `context_body` means first run — build the body from scratch.
             `status: "ok"` with both item lists empty is a forced regeneration — never return no-update;
-            rebuild the existing body under the current rules (step 3).
+            rebuild the existing body under the current rules.
 
             ### 2. Read each new item and select what is material to the context
 

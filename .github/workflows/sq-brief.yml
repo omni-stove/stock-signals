@@ -82,9 +82,7 @@ jobs:
               `in_week: false` → not an SQ week (manual run); frame the brief as a preview of the next SQ.
             - **`market.nikkei225`** leads the market-wide scenarios; its `*_excess` is how far SQ pushed 日経225
               apart from TOPIX. **`market.nt_ratio`** rising into SQ = the 日経225 side bid harder than the broad
-              market, falling = sold harder. **`market.topix`** is the base the `*_excess` fields measure
-              against; read it only through them.
-            - **`tickers[]`**: name each name by `name`; `sector_role` sets its `premarket` exposure.
+              market, falling = sold harder.
             - **`history`** (past SQ weeks): `pre_ret_pct` = 前週末→SQ前日, `week_ret_pct` = 前週末→SQ日終値,
               `sq_gap_pct` = SQ前日終値→SQ日始値, `post_ret_pct` = SQ日→翌週末, `sq_day_share` = SQ day's share of
               the week's daily ranges through SQ.

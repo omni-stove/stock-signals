@@ -126,8 +126,7 @@ jobs:
 
             ## Inputs
 
-            **Thread JSON** `{ channel, thread_ts, kind, replies, positions, profile }` — ignore `channel` and
-            `thread_ts`:
+            **Thread JSON** `{ channel, thread_ts, kind, replies, positions, profile }`:
 
             - **`replies`** (`[{ user, text, ts }, ...]`): the last entry is the question to answer; the earlier
               ones are the original analysis and any back-and-forth. Empty → ask in one line what they want to

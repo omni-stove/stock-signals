@@ -221,7 +221,7 @@ function readQuotes(rows: Cell[][], date: string): MemoryPriceQuote[] {
 		const chg = keys.indexOf("sessionchange");
 		if (avg >= 0 && chg >= 0) {
 			const item = keys.findIndex((k) => k.startsWith("item"));
-			cols = { item: item >= 0 ? item : 0, avg, chg };
+			cols = { item: Math.max(item, 0), avg, chg };
 			continue;
 		}
 		if (!cols || r.length <= Math.max(cols.avg, cols.chg, cols.item)) continue;
@@ -329,7 +329,11 @@ export function buildMemoryPricesBlock(
 	today: string,
 ): Record<string, unknown> {
 	if (rows.length === 0) return { status: "none" };
-	const latest = rows.reduce((a, r) => (r.date > a ? r.date : a), rows[0].date);
+	// date は YYYY-MM-DD 文字列なので Math.max は使えない。
+	const latest = rows
+		.map((r) => r.date)
+		.sort()
+		.at(-1) as string;
 	if (tseBusinessDaysBetween(latest, today) > STALE_BUSINESS_DAYS)
 		return { status: "stale", date: latest };
 	const byItem = new Map<string, MemoryPriceRow[]>();
@@ -505,12 +509,14 @@ if (import.meta.vitest) {
 				items: [
 					{
 						item: "DDR5 16Gb (2Gx8) 4800/5600",
+						date: "2026-11-19",
 						session_avg: 12,
 						change_pct: 0.5,
 						change_20d_pct: 20,
 					},
 					{
 						item: "DDR4 8Gb (1Gx8) 3200",
+						date: "2026-11-19",
 						session_avg: 4.6,
 						change_pct: 2.22,
 						change_20d_pct: null,

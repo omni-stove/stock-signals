@@ -147,7 +147,7 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 		pmRow?.vix_price,
 	);
 
-	// market_news 最新 8 件 (半導体/AI/金利/米国市場のテーマ見出し)。地合いの tilt を肉付けする材料。
+	// market_news 最新 8 件 (半導体/AI/金利/米国市場/政策のテーマ見出し)。地合いの tilt を肉付けする材料。
 	// 本文ではなく見出し + topic + 日時だけ渡す (premarket が主、これは補強)。
 	const newsRows = await db(env.DB)
 		.select({

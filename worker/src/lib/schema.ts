@@ -43,10 +43,11 @@ export const articles = sqliteTable(
 );
 
 // ── market_news (銘柄に紐付かない市場テーマニュース。PK = url) ───────────────
-// 株探の市場ニュース総合 (https://kabutan.jp/news/marketnews/) から、半導体/AI/金利/米国市場の
+// 株探の市場ニュース総合 (https://kabutan.jp/news/marketnews/) から、半導体/AI/金利/米国市場/政策/市況の
 // テーマに当たった見出しだけを拾う。銘柄が確定しない (= articles.ticker を持てない) ため別テーブル。
-// マーケットブリーフ (market-brief) が /market-context 経由で最新数件を読む。重複排除は url PK + INSERT OR IGNORE。
-// topic は当たったテーマタグ (semi|ai|rates|us を "," 連結。複数該当しうる)。本文は R2 に置く。
+// マーケットブリーフ (market-brief) が /market-context 経由で最新数件を読み、/context-input が見出しの
+// 銘柄言及 (matchTickers) で当該銘柄の news_items に混ぜる。重複排除は url PK + INSERT OR IGNORE。
+// topic は当たったテーマタグ (semi|ai|rates|us|policy|market を "," 連結。複数該当しうる)。本文は R2 に置く。
 export const marketNews = sqliteTable(
 	"market_news",
 	{

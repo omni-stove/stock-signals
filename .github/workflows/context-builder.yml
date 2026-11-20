@@ -94,7 +94,8 @@ jobs:
           curl -fsS -H "Authorization: Bearer ${SYNC_TOKEN}" \
             "${WORKER_URL%/}/context-input?code=${TICKER}${FORCE:+&force=1}" > "$RUNNER_TEMP/ctxin.raw.json"
           META="$(bash scripts/watchlist-meta.sh "$TICKER")"
-          jq --argjson meta "$META" '. + {ticker_meta:$meta}' \
+          jq --argjson meta "$META" --arg today "$(TZ=Asia/Tokyo date +%F)" \
+            '. + {ticker_meta:$meta, today:$today}' \
             "$RUNNER_TEMP/ctxin.raw.json" > "$RUNNER_TEMP/ctxin.json"
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
@@ -129,9 +130,8 @@ jobs:
 
             ## Inputs
 
-            The input JSON is embedded inline below (`ticker_meta` with the ticker's `name` / `sector` /
-            `note`; the existing context body; the two cursors; the new IR/news). Do not post to
-            Slack; do not upsert; do not run any script; do not write any file — return structured output and stop.
+            The input JSON is embedded inline below; `today` is in JST. Do not post to Slack; do not upsert; do
+            not run any script; do not write any file — return structured output and stop.
 
             ## Steps
 
@@ -143,9 +143,17 @@ jobs:
               `{status:"no-update"}` (no body, no cursors) and stop.
             - input `status: "ok"` → continue to step 2.
 
-            `ir_items` are official IR + TDnet + `rating`, lead on them. `news_items` are per-ticker news, noisier
-            — confirm against an IR item or drop. Both are already filtered to since each cursor and ordered
-            oldest-first. The same filing can arrive from both official IR and TDnet; treat it as one item.
+            `ir_items` are official IR + TDnet + `rating`, lead on them. `news_items` with `source: "ticker"`
+            are per-ticker news, noisier — confirm against an IR item or drop. Both are already filtered to
+            since each cursor and ordered oldest-first. The same filing can arrive from both official IR and
+            TDnet; treat it as one item.
+
+            `news_items` with `source: "market"` are cross-industry market news (trade policy, export controls,
+            sanctions, subsidies, tariffs, sector themes) whose headline names a product or business this ticker
+            has. Treat one only as industry-wide material: write it into `topics` only when its body shows the
+            path to this ticker — its orders, the customers or regions it ships to, or the controlled items
+            matching its products. When the body shows no such path, or the body is null, ignore the item; never
+            infer a path from what you know about the company, and never put it into a structural section.
 
             An `ir_items` body that runs past its title carries text taken from an earnings filing (決算短信,
             業績予想の修正, 説明資料). Read its qualitative statements — demand outlook by end market, reasons for
@@ -198,7 +206,7 @@ jobs:
                     "business":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 事業の骨格. Rarely-changing structural facts: what the company is, where it sits in the value chain, production base, technology lineage. A few lines that tell a continuation from a reversal, not a company profile."},
                     "products":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 商品ラインナップ / 技術ロードマップ. Current generation and where the next one stands; one line per product line, named by generation and market position only."},
                     "management":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 経営判断・資本政策. Capex, capacity, M&A, alliances, capital policy; accumulate and revise on material events."},
-                    "topics":{"type":"array","maxItems":10,"description":"Existing heading 直近の重大トピック. Newest first by date, about 6 items. Merge items telling one running story into the newest. Drop an item once its date is about 14 days old or its effect is absorbed into a structural section; keeping it requires the effect to still be live, not merely plausible.",
+                    "topics":{"type":"array","maxItems":10,"description":"Existing heading 直近の重大トピック. Newest first by date, about 6 items. Merge items telling one running story into the newest. Drop an item once its date is about 14 days before today or its effect is absorbed into a structural section; keeping it requires the effect to still be live, not merely plausible.",
                       "items":{"type":"object","additionalProperties":false,"required":["date","summary","effect"],
                         "properties":{
                           "date":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},

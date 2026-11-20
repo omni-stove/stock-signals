@@ -106,8 +106,9 @@ jobs:
               much larger move); never list them all. `earnings: after_this_close` → the reaction comes in today's
               session; `in_close` → the close already reflects it.
             - **`live_indexes`**: `stale` → demote; pre-open → skip.
-            - **`sectors`** is how the watchlist itself moved. `backdrop.tone` is SOX-derived; read it only for a
-              sector that tracks SOX.
+            - **`sectors`** is how the watchlist itself moved: in-session or `closed` it leads on breadth;
+              pre-open it is the prior session and only confirms. `backdrop.tone` is SOX-derived; read it only for
+              a sector that tracks SOX.
             - **`event_context`**: a `特になし` tail → ignore.
             - **`market_news`**: pick the 1–2 that bear on today's tape; ignore the rest.
             - **`investor_flows`**: report it only on the morning it is new or when the foreigners' streak flips. `net` is positive for net buying; `foreigners_streak_weeks` is positive for consecutive net-buying weeks and negative for consecutive net-selling weeks, so a sign change is a flip.

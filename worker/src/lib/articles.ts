@@ -1,4 +1,4 @@
-// articles テーブルの読み出しロジック (DB クエリ + R2 本文同梱)。HTTP には依存しない。
+// articles / market_news テーブルの読み出しロジック (DB クエリ + R2 本文同梱)。HTTP には依存しない。
 // routes/pull (GET /pull /pull-news) と routes/context-input が共有する。
 //   「since より後に取得した未処理分だけ」を本文 (R2) 込みで古い順 (fetched_at ASC) に返す。
 //   GitHub Actions (signal-report) が 2 カーソル (ir / news) を since に渡し、新規 IR・新規
@@ -8,7 +8,7 @@
 import { and, asc, eq, gt, gte, inArray, like, or } from "drizzle-orm";
 import { db } from "./db";
 import type { Env } from "./env";
-import { articles } from "./schema";
+import { articles, marketNews } from "./schema";
 
 // urls のうち既に articles に存在するものの集合を返す (収集側の重複排除用)。
 // 1 URL 1 クエリではなく IN 句でまとめて引く (収集は一覧単位で最大20件をまとめて確認する)。
@@ -90,30 +90,66 @@ export async function pullArticles(
 		.limit(limit)
 		.all();
 
-	// 各メタに R2 本文を同梱する。本文は判断に必須。R2 欠損は body=null で返す。
-	const rows: PullRow[] = await Promise.all(
-		(results as Record<string, unknown>[]).map(async (r) => {
-			let body: string | null = null;
-			try {
-				const obj = await env.ARTICLES.get(r.r2_key as string);
-				if (obj) {
-					const json = JSON.parse(await obj.text()) as { body?: string };
-					body = json.body ?? null;
-				}
-			} catch {
-				/* R2 欠損/壊れは body=null のまま (取得自体は止めない) */
-			}
-			return {
-				url: r.url as string,
-				title: r.title as string,
-				published_at: r.published_at as string | null,
-				ir_category: r.ir_category as string | null,
-				fetched_at: r.fetched_at as string,
-				body,
-			};
-		}),
+	return Promise.all(
+		results.map(async ({ r2_key, ...r }) => ({
+			...r,
+			body: await readBody(env, r2_key),
+		})),
 	);
-	return rows;
+}
+
+// market_news から「since 以降で、見出しが terms のどれかを含む行 (本文 R2 同梱)」を fetched_at ASC で引く。
+//   terms は当該銘柄の照合語 (watchlist.tickerTerms)。LIKE は ASCII だけ大文字小文字を無視する粗い絞り込みで、
+//   銘柄への当否の最終判定は呼び出し側が matchTickers で行う。terms が空なら D1 を引かず空配列。
+//   since 無し・published_at 足切り・limit の扱いは pullArticles と同じ。ir_category は常に null。
+export async function pullMarketNews(
+	env: Env,
+	terms: string[],
+	since: string | null,
+	limit: number,
+): Promise<PullRow[]> {
+	if (terms.length === 0) return [];
+	const cutoff = publishedCutoff(Date.now());
+
+	const results = await db(env.DB)
+		.select({
+			url: marketNews.url,
+			title: marketNews.title,
+			published_at: marketNews.publishedAt,
+			r2_key: marketNews.r2Key,
+			fetched_at: marketNews.fetchedAt,
+		})
+		.from(marketNews)
+		.where(
+			and(
+				or(...terms.map((w) => like(marketNews.title, `%${w}%`))),
+				gte(marketNews.publishedAt, cutoff),
+				since ? gt(marketNews.fetchedAt, since) : undefined,
+			),
+		)
+		.orderBy(asc(marketNews.fetchedAt))
+		.limit(limit)
+		.all();
+
+	return Promise.all(
+		results.map(async ({ r2_key, ...r }) => ({
+			...r,
+			ir_category: null,
+			body: await readBody(env, r2_key),
+		})),
+	);
+}
+
+// R2 の記事 JSON から本文を取り出す。本文は判断に必須だが、R2 欠損/壊れは body=null で返し取得自体は止めない。
+async function readBody(env: Env, r2Key: string): Promise<string | null> {
+	try {
+		const obj = await env.ARTICLES.get(r2Key);
+		if (!obj) return null;
+		const json = JSON.parse(await obj.text()) as { body?: string };
+		return json.body ?? null;
+	} catch {
+		return null;
+	}
 }
 
 if (import.meta.vitest) {

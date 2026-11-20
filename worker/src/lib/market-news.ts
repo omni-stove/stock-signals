@@ -1,9 +1,10 @@
 // Cloudflare Worker: 市場テーマニュース収集 (kabutan 市場ニュース総合 + ITmedia AI+ RSS)
 //
-// 銘柄ページ (news.ts) に載らない市場全体・テーマニュースを拾う。半導体/AI/金利/米国市場の
+// 銘柄ページ (news.ts) に載らない市場全体・テーマニュースを拾う。半導体/AI/金利/米国市場/政策の
 // テーマに当たった見出しだけを market_news テーブル + R2 に保存し、マーケットブリーフ (market-brief) が
 // /market-context 経由で最新数件を読む。新規見出しに watchlist 銘柄の言及 (matchTickers) が
-// あれば freshTickers として返し、個別判定 (signal-report) の起動にも使う。
+// あれば freshTickers として返し、個別判定 (signal-report) の起動にも使う。言及がある見出しは
+// /context-input が当該銘柄の news_items に source=market で混ぜる。
 //   source は持たない (銘柄非依存)。重複排除は market_news.url PK + INSERT OR IGNORE。
 //
 // 収集元は2系統:
@@ -132,6 +133,25 @@ const TOPIC_KEYWORDS: { key: string; words: string[] }[] = [
 			"米株",
 			"ny株",
 			"米市場",
+		],
+	},
+	{
+		// 通商・産業政策 (輸出管理・制裁・補助金・関税)。銘柄名を出さずに業界横断で効く見出しを拾い、
+		// 当たる銘柄は context-input が matchTickers で引く。
+		key: "policy",
+		words: [
+			"輸出規制",
+			"輸出管理",
+			"エンティティリスト",
+			"エンティティー・リスト",
+			"禁輸",
+			"制裁",
+			"補助金",
+			"半導体法",
+			"chips法",
+			"関税",
+			"経済安保",
+			"経済安全保障",
 		],
 	},
 	{
@@ -418,6 +438,17 @@ if (import.meta.vitest) {
 			expect(matchTopics("日本精鉱---譲渡制限付株式報酬で自己株式処分")).toBe(
 				null,
 			);
+		});
+		it("通商・産業政策の見出しを policy topic で拾う", () => {
+			expect(matchTopics("米、対中半導体製造装置の輸出規制を拡大")).toBe(
+				"semi,policy",
+			);
+			expect(matchTopics("米商務省、中国企業をエンティティリストに追加")).toBe(
+				"policy",
+			);
+			expect(matchTopics("CHIPS法の補助金交付を決定")).toBe("policy");
+			expect(matchTopics("トランプ政権、電子部品に追加関税")).toBe("policy");
+			expect(matchTopics("経済安保推進法の対象物資を拡大")).toBe("policy");
 		});
 		it("大文字小文字をまたいで部分一致する", () => {
 			expect(matchTopics("NVIDIA決算受けSOX上昇")).toBe("semi");

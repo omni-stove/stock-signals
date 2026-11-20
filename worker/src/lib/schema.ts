@@ -348,6 +348,18 @@ export const twMonthlyRevenue = sqliteTable(
 	(t) => [primaryKey({ columns: [t.company, t.month] })],
 );
 
+// ── seaj_sales (SEAJ 日本製半導体製造装置 販売高 速報。冪等キー = month) ───────
+// 値は SEAJ の公表どおり 3 か月移動平均。後の速報で過去月が確定値に改まるので month で上書きする。
+export const seajSales = sqliteTable("seaj_sales", {
+	month: text("month").primaryKey(), // 対象月 YYYY-MM
+	sales: real("sales").notNull(), // 販売高 (億円)
+	yoyPct: real("yoy_pct"), // 前年同月比 (%)
+	momPct: real("mom_pct"), // 前月比 (%)
+	publishedAt: text("published_at"), // その値を載せた速報の公表日 (JST) YYYY-MM-DD
+	source: text("source").notNull(),
+	fetchedAt: text("fetched_at").notNull(),
+});
+
 // ── forced_liquidation (強制決済スコア。冪等キー = (ticker, date)) ───────────
 // 「他プレイヤーの強制的な売買フロー」(追証売り=買い方のロスカット / 踏み上げ=売り方のロスカット)
 // を eod cron で決定論的に算出して保存する。judge-context が最新行を forced ブロックとして

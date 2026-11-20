@@ -120,6 +120,13 @@
       "when": 1795153152106,
       "tag": "0016_last_fabian_cortez",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1795154729036,
+      "tag": "0017_gifted_doomsday",
+      "breakpoints": true
     }
   ]
 }

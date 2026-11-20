@@ -153,8 +153,8 @@ async function fetchPdf(
 	return buf;
 }
 
-// 先頭 PDF_MAX_PAGES ページのテキスト層を、pdf.js の行末 (hasEOL) で改行して連結する。
-async function extractPdfText(data: Uint8Array): Promise<string> {
+/** 先頭 PDF_MAX_PAGES ページのテキスト層を、pdf.js の行末 (hasEOL) で改行して連結して返す。 */
+export async function extractPdfText(data: Uint8Array): Promise<string> {
 	const pdf = await getDocumentProxy(data);
 	const pages = Math.min(pdf.numPages, PDF_MAX_PAGES);
 	const out: string[] = [];

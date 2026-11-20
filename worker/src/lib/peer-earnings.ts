@@ -17,12 +17,19 @@
 //        欠落時は data.reportText 内の "06/24/2026" を拾う。
 //   副 : https://api.nasdaq.com/api/company/<TICKER>/earnings-surprise
 //        主が次回日を持たないとき (例: NVDA。Zacks 未提供) の保険。過去4Q の dateReported から
-//        earnings.ts と同じ「前年同期の発表日 +1年」で推定する。
+//        earnings.ts と同じ「前年同期の発表日 +1年」で推定する。推定日は label に (推定日) を付ける。
+//        発表直後は主が空になり副の表がまだ直近決算を含まないため、副は通過したばかりの四半期を
+//        「前年同期 +1年」で再推定してしまう。直近に通過した決算から MIN_QUARTER_GAP_DAYS 以内の
+//        推定は捨てる。
+//
+// 日付 (date) は発表地の現地日。jst_effect_date は東証で初めて反応できる営業日 = date の翌営業日
+// (米引け後は日本の翌早朝、ASML/TSMC は日本の午後で東証の引け前後に出る)。label には日本時間で
+// いつ出るかを添える。同じピアの未来の行は最新の取得日だけを残す (推定日→確定日の切替で古い行が残らない)。
 //
 // 収集はレーティング/決算日と同じ流儀 (LLM 不使用、ティッカーごとにループ、INSERT OR REPLACE)。
 // earnings.ts と同様、全社0件のときだけ例外を投げて既存データを守り、部分成功は保存する。
 
-import { and, eq, gt, ne } from "drizzle-orm";
+import { and, desc, eq, gt, lte, ne } from "drizzle-orm";
 import { db } from "./db";
 import {
 	estimateNextEarningsDate,
@@ -30,8 +37,9 @@ import {
 	resolveNextDate,
 	URL_FINANCE,
 } from "./earnings";
+import { nextTseBusinessDay } from "./market-calendar";
 import { macroEvents } from "./schema";
-import { fetchHtml, jstDate, sleep } from "./utils";
+import { addDays, fetchHtml, jstDate, sleep } from "./utils";
 
 export interface PeerEarningsEnv {
 	DB: D1Database;
@@ -110,11 +118,31 @@ function ymd(y: number, m: number, d: number): string {
 	return `${y}-${pad2(m)}-${pad2(d)}`;
 }
 
-// YYYY-MM-DD の翌日。米決算は現地引け後発表が大半 = 日本の翌営業日 (近似で翌暦日) に効く。
-function nextDay(iso: string): string {
-	const [y, m, d] = iso.split("-").map((n) => Number.parseInt(n, 10));
-	const t = new Date(Date.UTC(y, m - 1, d + 1));
-	return ymd(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate());
+// 四半期決算どうしの最短間隔の目安 (日)。これより近い推定は通過済みの四半期の再推定とみなす。
+const MIN_QUARTER_GAP_DAYS = 45;
+
+// epoch ミリ秒を米東部の暦日 (YYYY-MM-DD) にする。Nasdaq の日付は米東部の現地日なので、
+// 「通過済みか」はこの暦日で判定する。
+function usEasternDate(epochMs: number): string {
+	return new Intl.DateTimeFormat("en-CA", {
+		timeZone: "America/New_York",
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+	}).format(epochMs);
+}
+
+// "2026-11-17" → "11/17"。
+function md(iso: string): string {
+	const [, m, d] = iso.split("-").map((n) => Number.parseInt(n, 10));
+	return `${m}/${d}`;
+}
+
+// 現地の発表日 date が日本時間でいつに当たるか。
+function releaseInJst(release: PeerRelease, date: string): string {
+	return release === "after_close"
+		? `米${md(date)}引け後=日本${md(addDays(date, 1))}早朝`
+		: `日本${md(date)}午後`;
 }
 
 // Nasdaq の JSON を取得する。api.nasdaq.com は素の fetch (bot UA) だと 403 を返すので、
@@ -210,9 +238,10 @@ function estimateFromSurprise(json: unknown): string | null {
 }
 
 // 1ピアの次回決算日を取得する。主 (earnings-date) → 副 (earnings-surprise 推定) の2段。
-async function fetchPeerEarningsDate(
-	ticker: string,
-): Promise<{ date: string | null; via: string }> {
+async function fetchPeerEarningsDate(ticker: string): Promise<{
+	date: string | null;
+	via: "earnings-date" | "surprise-estimate" | "none";
+}> {
 	const primary = await fetchNasdaqJson(URL_EARNINGS_DATE(ticker));
 	const fromPrimary = parseEarningsDate(primary);
 	if (fromPrimary) return { date: fromPrimary, via: "earnings-date" };
@@ -233,21 +262,45 @@ type PeerEvent = {
 	note: string;
 };
 
-// 1ピアの (ティッカー, 社名, ロール, 決算日) から macro_events 行を組み立てる。
+// 推定日 estimate が、直近に通過した決算日 lastPassed から四半期に満たない (= 通過済み四半期の再推定)。
+function isStaleEstimate(estimate: string, lastPassed: string | null): boolean {
+	if (!lastPassed) return false;
+	const gap =
+		(Date.parse(`${estimate}T00:00:00Z`) -
+			Date.parse(`${lastPassed}T00:00:00Z`)) /
+		86_400_000;
+	return gap < MIN_QUARTER_GAP_DAYS;
+}
+
+// 1ピアと決算日 (発表地の現地日) から macro_events 行を組み立てる。
 function toPeerEvent(
-	ticker: string,
-	name: string,
-	role: string,
+	peer: { ticker: string; name: string; role: string; release: PeerRelease },
 	date: string,
+	estimated: boolean,
 ): PeerEvent {
 	return {
 		date,
-		kind: `peer_earnings:${ticker}`,
-		label: `${name}(${ticker}) 決算`,
+		kind: `peer_earnings:${peer.ticker}`,
+		label: `${peer.name}(${peer.ticker}) 決算${estimated ? "(推定日)" : ""}[${releaseInJst(peer.release, date)}]`,
 		impact: "high",
-		jst_effect_date: nextDay(date),
-		note: `${role}の海外ピア。米引け後発表が大半 → 翌日 SOX が振れ日本の半導体関連株にギャップで波及しうる。`,
+		jst_effect_date: nextTseBusinessDay(date),
+		note: `${peer.role}の海外ピア。東証の取引時間外に出る → 翌営業日に SOX 経由で日本の半導体関連株へギャップで波及しうる。`,
 	};
+}
+
+// 同じピアで today 以前の最新の決算日 (通過済み)。無ければ null。
+async function lastPassedDate(
+	env: PeerEarningsEnv,
+	kind: string,
+	today: string,
+): Promise<string | null> {
+	const row = await db(env.DB)
+		.select({ date: macroEvents.date })
+		.from(macroEvents)
+		.where(and(eq(macroEvents.kind, kind), lte(macroEvents.date, today)))
+		.orderBy(desc(macroEvents.date))
+		.get();
+	return row?.date ?? null;
 }
 
 // 1イベントを D1 に保存。冪等キー = (date, kind=peer_earnings:<TICKER>)。
@@ -280,9 +333,6 @@ async function savePeerEvent(
 		.run();
 }
 
-// ピア決算が古い予定日のまま残ると「過去に通過したのに未来扱い」になりうるが、event-context.sh は
-// 「今日以降 DAYS 日以内」で絞るので、古い行は近接窓に入らず無害 (次回 collect で新しい日付に上書きされる)。
-
 // SOX_PEERS (tickerFilter 指定時はその1社) の次回決算日を取得し macro_events に保存する。
 // 全社0件 (Nasdaq 障害/構造変更の可能性) のときだけ例外を投げ、既存データを守る。
 export async function collectPeerEarnings(
@@ -293,14 +343,26 @@ export async function collectPeerEarnings(
 		(p) => !tickerFilter || p.ticker === tickerFilter,
 	);
 	const interval = Number.parseInt(env.MIN_INTERVAL_MS, 10) || 5000;
+	const today = usEasternDate(Date.now());
 	const results: Record<string, unknown> = {};
-	let saved = 0;
+	let ok = 0;
 	for (const p of peers) {
 		try {
 			const { date, via } = await fetchPeerEarningsDate(p.ticker);
-			if (date) {
-				await savePeerEvent(env, toPeerEvent(p.ticker, p.name, p.role, date));
-				saved++;
+			const kind = `peer_earnings:${p.ticker}`;
+			const estimated = via === "surprise-estimate";
+			if (
+				date &&
+				estimated &&
+				isStaleEstimate(date, await lastPassedDate(env, kind, today))
+			) {
+				ok++;
+				results[p.ticker] = { date: null, via, skipped: date };
+			} else if (date) {
+				const e = toPeerEvent(p, date, estimated);
+				await savePeerEvent(env, e);
+				await dropOtherUpcomingPeerEvents(env, kind, date, today);
+				ok++;
 				results[p.ticker] = { date, via };
 			} else {
 				results[p.ticker] = { date: null, via };
@@ -310,18 +372,18 @@ export async function collectPeerEarnings(
 		}
 		await sleep(interval);
 	}
-	if (saved === 0) {
+	if (ok === 0) {
 		throw new Error(
 			"peer-earnings: 取得0件 (Nasdaq 障害/構造変更の可能性)。保存をスキップ。",
 		);
 	}
-	return { saved, results };
+	return { ok, results };
 }
 
 // --- 国内ピア決算 -------------------------------------------------------------
 
 // 1国内ピアの (コード, 社名, ロール, 決算日, 推定か) から macro_events 行を組み立てる。
-// 国内決算は引け後発表が大半 → 同業への連想波及は翌営業日 (近似で翌暦日)。
+// 国内決算は引け後発表が大半 → 同業への連想波及は東証の翌営業日。
 // event-context は label をそのまま prompt に載せるので、推定日は label で公表日と見分けられるようにする。
 function toJpPeerEvent(
 	code: string,
@@ -335,13 +397,13 @@ function toJpPeerEvent(
 		kind: `peer_earnings_jp:${code}`,
 		label: `${name}(${code}) 決算${estimated ? "(推定日)" : ""}`,
 		impact: "high",
-		jst_effect_date: nextDay(date),
+		jst_effect_date: nextTseBusinessDay(date),
 		note: `${role}の国内ピア。引け後発表が大半 → 翌営業日に同業の watchlist 銘柄へ連想で波及。`,
 	};
 }
 
-// 推定日から公表日に切り替わると (date, kind) の別行になるので、同じピアの明日以降の古い予定行を消す。
-// 当日の行は「本日発表」の文脈に要るので残す。
+// 推定日から公表日に切り替わると (date, kind) の別行になるので、同じピアの today より後の古い予定行を消す。
+// today 以前の行は「本日発表」「通過済み」の文脈に要るので残す。
 async function dropOtherUpcomingPeerEvents(
 	env: PeerEarningsEnv,
 	kind: string,
@@ -514,20 +576,60 @@ if (import.meta.vitest) {
 	});
 
 	describe("toPeerEvent", () => {
-		const e = toPeerEvent("MU", "マイクロン", "メモリ", "2026-06-24");
+		const nvda = SOX_PEERS.find((p) => p.ticker === "NVDA");
+		const tsm = SOX_PEERS.find((p) => p.ticker === "TSM");
+		if (!nvda || !tsm) throw new Error("SOX_PEERS に NVDA/TSM が要る");
+		const e = toPeerEvent(nvda, "2026-11-17", false);
 		it("kind にティッカーを畳み込む (同日複数社の衝突回避)", () => {
-			expect(e.kind).toBe("peer_earnings:MU");
+			expect(e.kind).toBe("peer_earnings:NVDA");
 		});
-		it("label は 社名(ティッカー) 決算", () => {
-			expect(e.label).toBe("マイクロン(MU) 決算");
+		it("米引け後の label は日本時間の翌早朝を添える", () => {
+			expect(e.label).toBe(
+				"エヌビディア(NVDA) 決算[米11/17引け後=日本11/18早朝]",
+			);
 		});
-		it("jst_effect_date は決算翌日・impact=high", () => {
-			expect(e.jst_effect_date).toBe("2026-06-25");
+		it("日本の午後に出るピアは同日午後を添える", () => {
+			expect(toPeerEvent(tsm, "2026-10-15", false).label).toBe(
+				"TSMC(TSM) 決算[日本10/15午後]",
+			);
+		});
+		it("推定日の label には (推定日) を付ける", () => {
+			expect(toPeerEvent(nvda, "2027-02-25", true).label).toBe(
+				"エヌビディア(NVDA) 決算(推定日)[米2/25引け後=日本2/26早朝]",
+			);
+		});
+		it("jst_effect_date は東証の翌営業日・impact=high", () => {
+			expect(e.jst_effect_date).toBe("2026-11-18");
 			expect(e.impact).toBe("high");
 		});
-		it("年末跨ぎでも翌日を返す", () => {
-			expect(toPeerEvent("X", "x", "r", "2026-12-31").jst_effect_date).toBe(
-				"2027-01-01",
+		it("金曜の発表は週明け、祝日前は祝日明けに波及する", () => {
+			expect(toPeerEvent(nvda, "2026-11-13", false).jst_effect_date).toBe(
+				"2026-11-16",
+			);
+			expect(toPeerEvent(nvda, "2026-11-20", false).jst_effect_date).toBe(
+				"2026-11-24",
+			);
+		});
+	});
+
+	describe("isStaleEstimate", () => {
+		it("直近の決算から四半期に満たない推定は通過済み四半期の再推定とみなす", () => {
+			// NVDA: 11/17 に発表 → 翌日に副が前年同期 (2025-11-19) +1年 = 11/19 を出す。
+			expect(isStaleEstimate("2026-11-19", "2026-11-17")).toBe(true);
+		});
+		it("次の四半期の推定は通す", () => {
+			expect(isStaleEstimate("2027-02-25", "2026-11-17")).toBe(false);
+			expect(isStaleEstimate("2026-11-19", null)).toBe(false);
+		});
+	});
+
+	describe("usEasternDate", () => {
+		it("米東部の暦日を返す (JST 夕方は米東部の同日未明)", () => {
+			expect(usEasternDate(Date.parse("2026-11-18T07:00:00Z"))).toBe(
+				"2026-11-18",
+			);
+			expect(usEasternDate(Date.parse("2026-11-18T04:00:00Z"))).toBe(
+				"2026-11-17",
 			);
 		});
 	});
@@ -557,8 +659,17 @@ if (import.meta.vitest) {
 				).label,
 			).toBe("東京エレクトロン(8035) 決算(推定日)");
 		});
-		it("波及日は翌営業日 (近似で翌暦日)・impact=high", () => {
+		it("波及日は東証の翌営業日・impact=high", () => {
 			expect(e.jst_effect_date).toBe("2026-08-07");
+			expect(
+				toJpPeerEvent(
+					"8035",
+					"東京エレクトロン",
+					"前工程装置",
+					"2026-08-07",
+					false,
+				).jst_effect_date,
+			).toBe("2026-08-10");
 			expect(e.impact).toBe("high");
 		});
 	});

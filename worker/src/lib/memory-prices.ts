@@ -123,7 +123,7 @@ function enclosingTable(
 		const opens = between.split("<table").length - 1;
 		const closes = between.split("</table>").length - 1;
 		if (opens > closes) break;
-		start = lower.lastIndexOf("<table", start - 1);
+		start = start > 0 ? lower.lastIndexOf("<table", start - 1) : -1;
 	}
 	if (start < 0) return null;
 	// 見出しより後ろに入れ子の表は置かれない前提 (データ行はセルだけ)。

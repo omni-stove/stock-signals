@@ -422,10 +422,7 @@ export async function collectIndexChanges(
 			.where(and(eq(macroEvents.date, ev.date), eq(macroEvents.kind, ev.kind)))
 			.all();
 		const e = row
-			? mergeEvents(
-					{ ...ev, label: row.label, note: row.note ?? "" },
-					ev,
-				)
+			? mergeEvents({ ...ev, label: row.label, note: row.note ?? "" }, ev)
 			: ev;
 		const values = {
 			label: e.label,

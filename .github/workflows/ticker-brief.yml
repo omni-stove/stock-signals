@@ -245,10 +245,7 @@ jobs:
               precedent or first market reaction when known. Either side may be empty when the materials lean
               one way.
             - `lean`: which way the `bull` / `bear` case nets out over the holding horizon.
-              - `direction`: `bull` / `bear` when one side clearly outweighs; `neutral` when they balance or the
-                materials are too thin to tilt.
-              - `confidence`: `high` only when fresh materials and the tape agree; `low` when the lean rests on
-                stale context, a single unconfirmed item, or a tape that contradicts it.
+              - `direction`: the side `basis` points to, also when the case looks balanced or thin.
               - `basis`: the one fact that decides the lean, about 40 characters, no figures.
             - `watch`: the next verifiable fact that would change the picture, leading with its date when known.
 
@@ -268,10 +265,9 @@ jobs:
                 "status":{"enum":["brief","no_update"]},
                 "headline":{"type":["string","null"],"maxLength":70},
                 "lean":{"type":["object","null"],"additionalProperties":false,
-                  "required":["direction","confidence","basis"],
+                  "required":["direction","basis"],
                   "properties":{
-                    "direction":{"enum":["bull","neutral","bear"]},
-                    "confidence":{"enum":["high","medium","low"]},
+                    "direction":{"enum":["bull","bear"]},
                     "basis":{"type":"string","maxLength":60}}},
                 "materials":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":50}},
                 "technical":{"type":"array","items":{"type":"string","maxLength":80},"maxItems":2},

@@ -20,6 +20,7 @@ import { buildInvestorFlows, readInvestorFlows } from "../lib/investor-flows";
 import { buildLiveIndexesBlock, type LiveIndexRow } from "../lib/live-indexes";
 import { resolveMarketPhase } from "../lib/market-phase";
 import { buildMemoryPricesBlock, readMemoryPrices } from "../lib/memory-prices";
+import { macroRowsFor } from "../lib/peer-earnings";
 import {
 	buildPremarketBlock,
 	buildUsPeersBlock,
@@ -166,17 +167,20 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 		.limit(8)
 		.all();
 
-	// macro_events 全件 (SQ/指数は today から計算、FOMC/日銀/ピアは rows から近接抽出)。
-	const macroRows = (await db(env.DB)
-		.select({
-			date: macroEvents.date,
-			kind: macroEvents.kind,
-			label: macroEvents.label,
-			impact: macroEvents.impact,
-			jst_effect_date: macroEvents.jstEffectDate,
-		})
-		.from(macroEvents)
-		.all()) as MacroEventRow[];
+	// macro_events (SQ/指数は today から計算、FOMC/日銀/海外ピアは rows から近接抽出)。国内ピアは個別銘柄の先行材料なので市場全体には載せない。
+	const macroRows = macroRowsFor(
+		(await db(env.DB)
+			.select({
+				date: macroEvents.date,
+				kind: macroEvents.kind,
+				label: macroEvents.label,
+				impact: macroEvents.impact,
+				jst_effect_date: macroEvents.jstEffectDate,
+			})
+			.from(macroEvents)
+			.all()) as MacroEventRow[],
+		null,
+	);
 
 	return c.json({
 		asof: today,

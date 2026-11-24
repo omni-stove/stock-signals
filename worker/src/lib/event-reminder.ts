@@ -20,6 +20,7 @@ import {
 	type MacroEventRow,
 	upcomingCalendarEvents,
 } from "./event-context";
+import { macroRowsFor } from "./peer-earnings";
 import { earnings, macroEvents } from "./schema";
 import { notifyEventReminder, type ReminderNotifyItem } from "./slack";
 import { WATCHLIST_NAMES } from "./watchlist";
@@ -88,7 +89,11 @@ export async function remindUpcomingEvents(
 		})
 		.from(earnings)
 		.all();
-	const items = buildEventReminders(today, macroRows, earningsRows);
+	const items = buildEventReminders(
+		today,
+		macroRowsFor(macroRows, null),
+		earningsRows,
+	);
 	await notifyEventReminder(env, today, items);
 	return items.length;
 }

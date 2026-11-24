@@ -182,6 +182,10 @@ jobs:
               never list it as a material. On an SQ当日, state in `technical` that today's tape overlaps the SQ; a
               coming SQ or SQ明け goes in `watch`. The further `当銘柄のSQ連動度` runs above 1, the more weight the
               SQ gets; near 1, do not cite it.
+              A `先行ピア` item is the exception: a peer whose results come out before this name's. Never read the
+              peer's price move as this name's. Once its results are out, you may look up its 受注・見通し within
+              the Web research budget and, only as a cited source states them, give what they imply for this name's
+              coming earnings as a `bull` or `bear` fact; nothing found → skip it. A coming one goes in `watch`.
             - **`event_reactions`**: report how the market took a material — a good-news item that sold off or faded
               is itself a fact. `partial: true` = the second session is not in yet.
             - **`earnings`** → a `watch` or `bear` fact; `estimated: true` → a guess from last year's same quarter:

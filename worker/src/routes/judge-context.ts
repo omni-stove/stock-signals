@@ -47,6 +47,7 @@ import {
 } from "../lib/judge-context";
 import { readLargeHoldings } from "../lib/large-holdings";
 import { resolveMarketPhase, sessionElapsedFrac } from "../lib/market-phase";
+import { macroRowsFor } from "../lib/peer-earnings";
 import { PREMARKET_COLUMNS } from "../lib/premarket";
 import {
 	buildEventReactions,
@@ -307,17 +308,20 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		? resolveMarketPhase(marketBriefRow.briefedAt, epochNow).today
 		: null;
 
-	// 需給イベント文脈: SQ/指数リバランスは today から計算、FOMC/日銀/ピア決算は macro_events 全件を渡す。
-	const macroRows = (await db(env.DB)
-		.select({
-			date: macroEvents.date,
-			kind: macroEvents.kind,
-			label: macroEvents.label,
-			impact: macroEvents.impact,
-			jst_effect_date: macroEvents.jstEffectDate,
-		})
-		.from(macroEvents)
-		.all()) as MacroEventRow[];
+	// 需給イベント文脈: SQ/指数リバランスは today から計算、FOMC/日銀/ピア決算は macro_events から渡す (国内ピアは当銘柄に先行する分だけ)。
+	const macroRows = macroRowsFor(
+		(await db(env.DB)
+			.select({
+				date: macroEvents.date,
+				kind: macroEvents.kind,
+				label: macroEvents.label,
+				impact: macroEvents.impact,
+				jst_effect_date: macroEvents.jstEffectDate,
+			})
+			.from(macroEvents)
+			.all()) as MacroEventRow[],
+		code,
+	);
 
 	// sectors: 対象銘柄と同一 sector のピアの相対強弱 (5日リターン差) を渡し、judge が
 	// SOX/海外ピア決算という間接材料でなくセクタ内の実データで足場を持てるようにする。

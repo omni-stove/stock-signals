@@ -24,6 +24,7 @@ import {
 import { buildInvestorFlows, readInvestorFlows } from "../lib/investor-flows";
 import { buildLiveIndexesBlock } from "../lib/live-indexes";
 import { resolveMarketPhase } from "../lib/market-phase";
+import { macroRowsFor } from "../lib/peer-earnings";
 import { articles, daily, earnings, macroEvents } from "../lib/schema";
 import {
 	buildMarketShortRatio,
@@ -111,16 +112,19 @@ sqContext.get("/sq-context", async (c: Context<{ Bindings: Env }>) => {
 		today,
 	);
 
-	const macroRows = (await db(env.DB)
-		.select({
-			date: macroEvents.date,
-			kind: macroEvents.kind,
-			label: macroEvents.label,
-			impact: macroEvents.impact,
-			jst_effect_date: macroEvents.jstEffectDate,
-		})
-		.from(macroEvents)
-		.all()) as MacroEventRow[];
+	const macroRows = macroRowsFor(
+		(await db(env.DB)
+			.select({
+				date: macroEvents.date,
+				kind: macroEvents.kind,
+				label: macroEvents.label,
+				impact: macroEvents.impact,
+				jst_effect_date: macroEvents.jstEffectDate,
+			})
+			.from(macroEvents)
+			.all()) as MacroEventRow[],
+		null,
+	);
 
 	const topix = await readBars(env, BENCHMARK_CODE);
 	const nikkei = await readBars(env, NIKKEI225_CODE);

@@ -155,7 +155,9 @@ jobs:
             - **`market_brief`**: market-wide backdrop, including 投資部門別 and
               空売り比率; never a material of this name. `date` before today → an earlier morning's backdrop.
             - **`event_context`**: an event-driven tape factor (SQ, rebalance, macro,
-              peer earnings); weigh it before crediting a move to a material.
+              peer earnings); weigh it before crediting a move to a material. A `先行ピア` item is a peer whose
+              results come out before this name's: never read its price move as this name's; use its 受注・見通し
+              only as a cited source states them, as a lead on this name's coming earnings.
             - **`earnings`** (next date; `estimated: true` = a guess from last year's same quarter — give it as a
               rough timing and never call it 確定日) and **`earnings_result`** (present only when fresh;
               `fiscal_quarter` 4 = 本決算; lead on `yoy_pct`, confirm with `qoq_pct` and `progress_pct`

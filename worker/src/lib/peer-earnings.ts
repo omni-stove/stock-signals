@@ -79,16 +79,50 @@ export const SOX_PEERS: {
 	{ ticker: "TSM", name: "TSMC", role: "ファウンドリ", release: "before_open" },
 ];
 
-// 国内ピア (watchlist 外の東証銘柄)。決算は引け後発表が大半で、翌営業日に同業の watchlist 銘柄へ
-// 連想で波及する (装置株→6857/6920、電子部品→6976、セクター地合い全般)。
-// watchlist 銘柄自身の決算は earnings.ts が別途追うので、ここには watchlist 外だけを並べる。
+// 国内ピアと、その決算が先に出る監視銘柄 (leads)。同日発表のピアは翌日の値動きが揃うだけで
+// 先に読める中身が無いので、決算が毎四半期その監視銘柄より前の日に出て、受注・見通しがその
+// 監視銘柄の業績に当てはまる組だけを持つ。監視銘柄 (6857) も他の監視銘柄に先行するので並べる。
 // config/peers.yaml と一致させること (増減は両方を直す)。
-const JP_PEERS: { code: string; name: string; role: string }[] = [
-	{ code: "8035", name: "東京エレクトロン", role: "前工程装置" },
-	{ code: "6146", name: "ディスコ", role: "後工程装置" },
-	{ code: "7735", name: "SCREEN", role: "洗浄装置" },
-	{ code: "6762", name: "TDK", role: "電子部品" },
+const JP_PEERS: {
+	code: string;
+	name: string;
+	role: string;
+	leads: string[];
+}[] = [
+	{
+		code: "6146",
+		name: "ディスコ",
+		role: "後工程装置",
+		leads: ["6857", "6920", "285A"],
+	},
+	{
+		code: "6857",
+		name: "アドバンテスト",
+		role: "テスター",
+		leads: ["6920", "285A"],
+	},
+	{ code: "6981", name: "村田製作所", role: "電子部品", leads: ["6976"] },
+	{ code: "6762", name: "TDK", role: "電子部品", leads: ["6976"] },
 ];
+
+/**
+ * macro_events 行から、ticker に先行しない国内ピア決算 (kind=peer_earnings_jp:*) を除く。
+ * ticker が null (市場全体の文脈) なら国内ピア決算をすべて除く。他の kind はそのまま返す。
+ */
+export function macroRowsFor<T extends { kind?: string | null }>(
+	rows: T[],
+	ticker: string | null,
+): T[] {
+	return rows.filter((r) => {
+		const kind = r.kind ?? "";
+		if (!kind.startsWith("peer_earnings_jp:")) return true;
+		const code = kind.slice("peer_earnings_jp:".length);
+		return (
+			ticker != null &&
+			(JP_PEERS.find((p) => p.code === code)?.leads.includes(ticker) ?? false)
+		);
+	});
+}
 
 const URL_EARNINGS_DATE = (t: string) =>
 	`https://api.nasdaq.com/api/analyst/${t}/earnings-date`;
@@ -383,7 +417,7 @@ export async function collectPeerEarnings(
 // --- 国内ピア決算 -------------------------------------------------------------
 
 // 1国内ピアの (コード, 社名, ロール, 決算日, 推定か) から macro_events 行を組み立てる。
-// 国内決算は引け後発表が大半 → 同業への連想波及は東証の翌営業日。
+// 国内決算は引け後発表が大半 → 東証で読めるのは翌営業日。
 // event-context は label をそのまま prompt に載せるので、推定日は label で公表日と見分けられるようにする。
 function toJpPeerEvent(
 	code: string,
@@ -398,7 +432,7 @@ function toJpPeerEvent(
 		label: `${name}(${code}) 決算${estimated ? "(推定日)" : ""}`,
 		impact: "high",
 		jst_effect_date: nextTseBusinessDay(date),
-		note: `${role}の国内ピア。引け後発表が大半 → 翌営業日に同業の watchlist 銘柄へ連想で波及。`,
+		note: `${role}の国内ピア。監視銘柄より先に決算が出る → 受注・見通しが監視銘柄の業績の先行材料。`,
 	};
 }
 
@@ -631,6 +665,42 @@ if (import.meta.vitest) {
 			expect(usEasternDate(Date.parse("2026-11-18T04:00:00Z"))).toBe(
 				"2026-11-17",
 			);
+		});
+	});
+
+	describe("macroRowsFor", () => {
+		const rows = [
+			{ kind: "fomc" },
+			{ kind: "peer_earnings:MU" },
+			{ kind: "peer_earnings_jp:6146" },
+			{ kind: "peer_earnings_jp:6857" },
+			{ kind: "peer_earnings_jp:6981" },
+			{ kind: "peer_earnings_jp:8035" },
+		];
+		const kinds = (t: string | null) =>
+			macroRowsFor(rows, t).map((r) => r.kind);
+		it("監視銘柄に先行する国内ピアだけを残し、他の kind は残す", () => {
+			expect(kinds("6920")).toEqual([
+				"fomc",
+				"peer_earnings:MU",
+				"peer_earnings_jp:6146",
+				"peer_earnings_jp:6857",
+			]);
+			expect(kinds("6976")).toEqual([
+				"fomc",
+				"peer_earnings:MU",
+				"peer_earnings_jp:6981",
+			]);
+		});
+		it("自分自身の決算と、JP_PEERS に無いピアの行は落とす", () => {
+			expect(kinds("6857")).toEqual([
+				"fomc",
+				"peer_earnings:MU",
+				"peer_earnings_jp:6146",
+			]);
+		});
+		it("ticker が null なら国内ピアをすべて落とす", () => {
+			expect(kinds(null)).toEqual(["fomc", "peer_earnings:MU"]);
 		});
 	});
 

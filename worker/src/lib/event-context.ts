@@ -8,8 +8,8 @@
 //   - 指数リバランスも日付計算 (MSCI=2/5/8/11月末, FTSE=3/6/9/12月第3金曜, 日経=4/10月初, TOPIX=10月末)。
 //   - 入替「銘柄発表」の接近窓も日付計算 (日経225=3・9月上旬公表 / MSCI=実施の約2週間前公表)。
 //     発表日そのものは事前確定しないので窓で語る。FTSE の発表窓は影響が小さいので出さない。
-//   - FOMC/日銀/ピア決算 (海外SOX系 + 国内同業) は計算できないので D1 macro_events から渡す
-//     (呼び出し側が rows を注入)。
+//   - FOMC/日銀/ピア決算 (海外SOX系 + 国内の先行ピア) は計算できないので D1 macro_events から渡す
+//     (呼び出し側が rows を注入。国内ピアは peer-earnings.ts の macroRowsFor で当銘柄に先行する分だけに絞る)。
 //   - 指数採用・除外の「個別確定イベント」(例: watchlist 銘柄の日経225採用が公表された) は
 //     kind=index_change:* の macro_events 行 (date=実施日) で渡す。発表〜実施のパッシブ先回り期間が
 //     長いので専用の長い窓 (INDEX_CHANGE_LEAD) で出す。投入方法は worker/README.md 参照。
@@ -39,6 +39,9 @@ const IDX_AFTER = 2; // 指数リバランス: 実施後の窓 (反動取りの�
 // 週明けや連休を跨いでも直近決算の反応を地合いの材料として残す。
 const PEER_LEAD = 2; // ピア決算: SOX 波及前の窓 (これから織り込む側。当日〜N 日後まで)
 const PEER_AFTER = 5; // ピア決算: SOX 波及後の窓 (直近に出た決算が当日の地合いの正体である可能性を出す)
+// 国内ピア決算は監視銘柄より先に出る受注・見通しとして読ませるので、地合いの余韻 (PEER_AFTER) ではなく
+// 監視銘柄の決算まで残す。窓は直近 8 四半期で見た先行日数の最大 (ディスコ→6920 の 21 日)。
+const JP_PEER_AFTER = 21;
 // 指数採用・除外の個別確定イベント (kind=index_change:*)。発表から実施までパッシブ先回りが
 // 続くため、定期リバランス (IDX_LEAD) より大幅に長い窓で出す。実施後は反動の窓のみ。
 const INDEX_CHANGE_LEAD = 21;
@@ -389,18 +392,20 @@ function collectMacro(
 		// それ以外 (FOMC/日銀) は近接窓 today〜horizon のみ。
 		const isPeer = kind.startsWith("peer_earnings:");
 		const isJpPeer = kind.startsWith("peer_earnings_jp:");
-		const lowerBound = isPeer || isJpPeer ? addDays(today, -PEER_AFTER) : today;
+		const lowerBound = isJpPeer
+			? addDays(today, -JP_PEER_AFTER)
+			: isPeer
+				? addDays(today, -PEER_AFTER)
+				: today;
 		const upperBound = isPeer || isJpPeer ? addDays(today, PEER_LEAD) : horizon;
 		if (eff < lowerBound || eff > upperBound) continue;
 		const when = daysUntil === 0 ? "本日" : `${daysUntil}日後`;
 		if (isJpPeer) {
-			// 国内ピア: 引け後発表 → 波及日 (翌営業日) には結果が既出。市場フェーズで時制は変わらない。
+			// 国内ピア: 引け後発表 → 翌営業日 (eff) には結果が既出。市場フェーズで時制は変わらない。
 			peer.push(
-				daysUntil === 0
-					? `本日${r.label}の結果を消化(前日引け後既出)→同業連想の変動に注意(波及=${eff})`
-					: daysUntil > 0
-						? `あと${daysUntil}日で${r.label}→国内同業へ連想波及リスク(波及=${eff})`
-						: `${r.label}は通過済み(波及=${eff}/${-daysUntil}日前)→当日の地合いの正体の可能性`,
+				daysUntil > 0
+					? `あと${daysUntil}日で先行ピア${r.label}(当銘柄より先に出る・結果判明=${eff})→受注・見通しが当銘柄の業績の先行材料`
+					: `先行ピア${r.label}は結果既出(${daysUntil === 0 ? "前日引け後" : `結果判明=${eff}/${-daysUntil}日前`})→受注・見通しが当銘柄の業績の先行材料`,
 			);
 		} else if (isPeer) {
 			// 波及日当日: 寄り前 (premarket) は「これから織り込む」、寄り後は前夜 NY で結果が
@@ -771,38 +776,37 @@ if (import.meta.vitest) {
 	});
 
 	describe("国内ピア決算", () => {
-		const tel: MacroEventRow[] = [
+		const disco: MacroEventRow[] = [
 			{
 				date: "2026-08-06",
-				kind: "peer_earnings_jp:8035",
-				label: "東京エレクトロン(8035) 決算",
+				kind: "peer_earnings_jp:6146",
+				label: "ディスコ(6146) 決算",
 				impact: "high",
 				jst_effect_date: "2026-08-07",
 			},
 		];
-		it("先読み窓内は あとX日で→国内同業へ連想波及リスク (SOX とは言わない)", () => {
-			const out = buildEventContext("2026-08-05", tel);
+		it("先読み窓内は 先に出る受注・見通しとして出す (SOX・連想とは言わない)", () => {
+			const out = buildEventContext("2026-08-05", disco);
 			expect(out).toContain(
-				"あと2日で東京エレクトロン(8035) 決算→国内同業へ連想波及リスク(波及=2026-08-07)",
+				"あと2日で先行ピアディスコ(6146) 決算(当銘柄より先に出る・結果判明=2026-08-07)→受注・見通しが当銘柄の業績の先行材料",
 			);
 			expect(out).not.toContain("SOX");
+			expect(out).not.toContain("連想");
 		});
-		it("波及日当日は 結果を消化(前日引け後既出)。市場フェーズで時制は変わらない", () => {
+		it("結果判明日は 前日引け後に既出。市場フェーズで時制は変わらない", () => {
 			for (const phase of [undefined, "premarket", "afternoon_session"]) {
-				expect(buildEventContext("2026-08-07", tel, phase)).toContain(
-					"本日東京エレクトロン(8035) 決算の結果を消化(前日引け後既出)→同業連想の変動に注意(波及=2026-08-07)",
+				expect(buildEventContext("2026-08-07", disco, phase)).toContain(
+					"先行ピアディスコ(6146) 決算は結果既出(前日引け後)→受注・見通しが当銘柄の業績の先行材料",
 				);
 			}
 		});
-		it("波及後は通過済み (海外ピアと同じ余韻)", () => {
-			expect(buildEventContext("2026-08-10", tel)).toContain(
-				"東京エレクトロン(8035) 決算は通過済み(波及=2026-08-07/3日前)→当日の地合いの正体の可能性",
+		it("通過後も JP_PEER_AFTER (21日) までは結果既出として残す", () => {
+			expect(buildEventContext("2026-08-28", disco)).toContain(
+				"先行ピアディスコ(6146) 決算は結果既出(結果判明=2026-08-07/21日前)",
 			);
 		});
-		it("波及から PEER_AFTER (5日) を超えたら出さない", () => {
-			expect(buildEventContext("2026-08-13", tel)).not.toContain(
-				"東京エレクトロン",
-			);
+		it("JP_PEER_AFTER を超えたら出さない", () => {
+			expect(buildEventContext("2026-08-29", disco)).not.toContain("ディスコ");
 		});
 	});
 

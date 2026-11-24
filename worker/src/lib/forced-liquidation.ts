@@ -1,7 +1,7 @@
 // 「他プレイヤーの強制的な売買フロー」(追証売り=買い方のロスカット / 踏み上げ=売り方のロスカット)
 // を決定論的に検知して D1 forced_liquidation に保存する。LLM を介さない (収集に LLM を置かない方針)。
 //
-// 設計 (docs/forced-flow-strategy.md と同一思想):
+// 設計:
 //   - スコアは決定論で eod cron が daily(指標) + margin から算出し D1 に保存する。
 //     judge-context が最新行を forced ブロックとして judge (ticker-brief=LLM) に渡し、judge は
 //     stance/fuel/fire/exhaust から「投げ/踏みが今日いつ出るか」を時間帯推論する材料にする。
@@ -14,7 +14,9 @@
 //     スコア」の純粋関数。指標算出は呼び出し側 (eod cron) が先に行い、ここへ注入する。
 //
 // 3 レイヤースコア (各 0..3):
-//   fuel    投げ/踏みの「燃料」。含み損を抱えた信用建玉の積み上がり (静的)。
+//   fuel    投げ/踏みの「燃料」。直近 CALL_WINDOW 本の値動きで追証ラインを新たに越えた推定信用建玉が
+//           20日平均出来高の何日分あるか (margin-cost.ts)。倍率や残高の増減では「下げた区間に建玉が
+//           あったか」が分からないため、建値分布から数える。
 //   fire    「着火」。ATR 比の異常変動 + 平均建値(MA25)割れ/抜け + ボラ急拡大 (動的・当日)。
 //   exhaust 「出尽くし」。出来高急増 + RSI 過熱/売られすぎ + 長いヒゲ (投げ/踏みを吸収した跡)。
 //
@@ -30,17 +32,17 @@ import {
 	computeDailyIndicators,
 	type DailyIndicators,
 	type DailyRow,
-	maDevPct,
 	withMovingAverages,
 } from "./indicators";
+import { type CostBar, estimateCostLots, newlyCalledQty } from "./margin-cost";
 import { daily, forcedLiquidation, margin } from "./schema";
 import { WATCHLIST } from "./timeseries";
 
 // 算出に使う閾値。呼び出し側から差し替え可能にしてテストしやすくする。
 interface ForcedThresholds {
 	fireAtrX: number; // 着火とみなす |change|/atr_pct の下限 (FL_FIRE_ATR_X=2.0)
-	ratioHi: number; // 買い長とみなす信用倍率の下限 (FL_RATIO_HI=3.0)
-	ratioLo: number; // 売り長とみなす信用倍率の上限 (FL_RATIO_LO=1.0)
+	callLossPct: number; // 追証がかかる建値からの逆行率 (%)。保証金率 30%・維持率 20% の現金担保で 10
+	fuelDays: [number, number, number]; // fuel 1/2/3 とみなす「追証圏入り建玉 ÷ 20日平均出来高」の下限
 	volX: number; // 出尽くしとみなす出来高倍率の下限 (FL_VOL_X=3.0)
 	rsiLow: number; // 売られすぎ RSI 上限 (FL_RSI_LOW=30)
 	rsiHigh: number; // 買われすぎ RSI 下限 (FL_RSI_HIGH=70)
@@ -50,8 +52,8 @@ interface ForcedThresholds {
 
 const DEFAULT_THRESHOLDS: ForcedThresholds = {
 	fireAtrX: 2.0,
-	ratioHi: 3.0,
-	ratioLo: 1.0,
+	callLossPct: 10,
+	fuelDays: [0.05, 0.1, 0.2],
 	volX: 3.0,
 	rsiLow: 30,
 	rsiHigh: 70,
@@ -68,12 +70,17 @@ interface LatestBar {
 	hasUpperWick: boolean; // 高値から押し戻された (= 踏みを吸収)。close が当日レンジ下半分
 }
 
-// 最新の margin の正規化済み値。
-interface MarginSnapshot {
-	ratio: number | null;
-	longChg: number | null; // WoW 信用買残増減 (千株)。新規高値掴みの積み上がり
-	shortChg: number | null; // WoW 信用売残増減 (千株)
+// 追証ラインを新たに越えた推定信用建玉 ÷ 20日平均出来高 (日分)。建値分布が組めなければ null。
+interface CalledVolume {
+	longDays: number | null; // 買い方 (下落で追証)
+	shortDays: number | null; // 売り方 (上昇で追証)
 }
+
+// 追証ラインを越えたかを測る基準: 直前この本数の終値のうち建玉に最も有利だったもの。
+// 追証から強制決済までの猶予 (settleDays) より長く取り、決済がまだ出ていない分だけを数える。
+const CALL_WINDOW = 5;
+// 制度信用の返済期日 (6か月) を超えて残る建玉は少ないので、これより古い週次は建値分布に使わない。
+const MARGIN_WEEKS = 26;
 
 type Direction = "long" | "short" | "none";
 type Stance = "building" | "exhausted" | "none";
@@ -122,7 +129,7 @@ function computeForcedScore(
 	date: string,
 	ind: DailyIndicators | null,
 	bar: LatestBar,
-	margin: MarginSnapshot,
+	called: CalledVolume,
 	thr: ForcedThresholds = DEFAULT_THRESHOLDS,
 ): ForcedScore {
 	if (!ind) return noneScore(ticker, date);
@@ -132,7 +139,6 @@ function computeForcedScore(
 	// ATR の何倍動いたか (符号付き)。atr_pct が無い/0 なら着火判定不可。
 	const atrMove =
 		chg != null && atrPct != null && atrPct > 0 ? chg / atrPct : null;
-	const ma25Dev = maDevPct(close, ma25);
 
 	// 絶対%の単独着火: 連日の高ボラで atr_pct が膨張すると ATR 比着火 (atrMove) が機能しなくなり、
 	// 一気に上げてきた直後の急落は close<ma25 もまだ立たない。そこで「ATR 比に依らず絶対 N% 動いたら
@@ -140,11 +146,11 @@ function computeForcedScore(
 	const absFireLong = chg != null && chg <= -thr.fireAbsPct ? 2 : 0;
 	const absFireShort = chg != null && chg >= thr.fireAbsPct ? 2 : 0;
 
-	// ── ロング (買い方の追証=投げ): 下落で着火、MA25 を下抜け、買い長 (ratio高) ──
-	const longFuel =
-		(margin.ratio != null && margin.ratio >= thr.ratioHi ? 1 : 0) +
-		(margin.longChg != null && margin.longChg > 0 ? 1 : 0) +
-		(ma25Dev != null && ma25Dev > -3 ? 1 : 0);
+	const fuelOf = (days: number | null): number =>
+		days == null ? 0 : thr.fuelDays.filter((t) => days >= t).length;
+
+	// ── ロング (買い方の追証=投げ): 下落で着火、MA25 を下抜け ──
+	const longFuel = fuelOf(called.longDays);
 	const longFire = Math.min(
 		3,
 		(atrMove != null && atrMove <= -thr.fireAtrX ? 1 : 0) +
@@ -157,11 +163,8 @@ function computeForcedScore(
 		(ind.rsi_14 != null && ind.rsi_14 < thr.rsiLow ? 1 : 0) +
 		(chg != null && chg < 0 && bar.hasLowerWick ? 1 : 0);
 
-	// ── ショート (売り方の追証=踏み上げ): 上昇で着火、MA25 を上抜け、売り長 (ratio低) ──
-	const shortFuel =
-		(margin.ratio != null && margin.ratio <= thr.ratioLo ? 1 : 0) +
-		(margin.shortChg != null && margin.shortChg > 0 ? 1 : 0) +
-		(ma25Dev != null && ma25Dev < 3 ? 1 : 0);
+	// ── ショート (売り方の追証=踏み上げ): 上昇で着火、MA25 を上抜け ──
+	const shortFuel = fuelOf(called.shortDays);
 	const shortFire = Math.min(
 		3,
 		(atrMove != null && atrMove >= thr.fireAtrX ? 1 : 0) +
@@ -190,10 +193,12 @@ function computeForcedScore(
 	const settleWarningInDays = stance === "building" ? thr.settleDays : null;
 	const dirLabel = direction === "long" ? "🔻投げ警戒" : "🔺踏み上げ警戒";
 	const score = `[fuel${fuel}/fire${fire}/exhaust${exhaust}]`;
+	const calledDays = direction === "long" ? called.longDays : called.shortDays;
+	const fuelNote = `追証圏入りの推定${direction === "long" ? "買残" : "売残"}≈20日平均出来高の${calledDays?.toFixed(2)}日分`;
 	const summary =
 		stance === "building"
-			? `${dirLabel} ${ticker} ${score} 強制決済リスク↑ (~${settleWarningInDays}営業日後の前場に投げ/踏み)`
-			: `${dirLabel} ${ticker} ${score} 出尽くし — ${direction === "long" ? "リバ買い場の候補" : "戻り売り場の候補"}`;
+			? `${dirLabel} ${ticker} ${score} 強制決済リスク↑ (~${settleWarningInDays}営業日後の前場に投げ/踏み、${fuelNote})`
+			: `${dirLabel} ${ticker} ${score} 出尽くし — ${direction === "long" ? "リバ買い場の候補" : "戻り売り場の候補"} (${fuelNote})`;
 
 	return {
 		ticker,
@@ -206,30 +211,56 @@ function computeForcedScore(
 	};
 }
 
-// 最新2本の margin 行 (date DESC) から WoW 増減 (long_chg/short_chg) と最新 ratio を組む。
-// 最新-前週、千株単位 (floor1 相当はかけず生値)。
-function marginSnapshotFromRows(
-	rows: {
-		longQty: number | null;
-		shortQty: number | null;
-		ratio: number | null;
-	}[],
-): MarginSnapshot {
-	const cur = rows[0];
-	const prev = rows[1];
-	if (!cur) return { ratio: null, longChg: null, shortChg: null };
-	const wow = (
-		c: number | null | undefined,
-		p: number | null | undefined,
-	): number | null => (c != null && p != null ? c - p : null);
-	return {
-		ratio: cur.ratio ?? null,
-		longChg: prev ? wow(cur.longQty, prev.longQty) : null,
-		shortChg: prev ? wow(cur.shortQty, prev.shortQty) : null,
-	};
+interface MarginQtyRows {
+	date: string;
+	longQty: number | null;
+	shortQty: number | null;
 }
 
-// 1 銘柄分: D1 の daily(70本) + margin(2本) を読み、指標→スコアを算出して ForcedScore を返す。
+/**
+ * 信用残 (date ASC) と daily (date ASC、最後が最新足) から、直前 CALL_WINDOW 本の終値から最新終値までに
+ * 追証ラインを新たに越えた推定建玉を 20日平均出来高の日数で返す。最新足より前の足が CALL_WINDOW 本
+ * 無い、出来高が取れない、建値分布が組めない方向は null。
+ */
+function calledVolume(
+	marginAsc: MarginQtyRows[],
+	barsAsc: CostBar[],
+	callLossPct: number,
+): CalledVolume {
+	const none: CalledVolume = { longDays: null, shortDays: null };
+	const cur = barsAsc.at(-1);
+	const prior = barsAsc.slice(0, -1);
+	const window = prior
+		.slice(-CALL_WINDOW)
+		.map((b) => b.close)
+		.filter((c): c is number => c != null);
+	if (cur?.close == null || window.length < CALL_WINDOW) return none;
+	const vols = prior
+		.slice(-20)
+		.map((b) => b.volume)
+		.filter((v): v is number => v != null && v > 0);
+	if (vols.length === 0) return none;
+	const avgVol = vols.reduce((s, v) => s + v, 0) / vols.length;
+	const close = cur.close;
+	const days = (side: "long" | "short"): number | null => {
+		const lots = estimateCostLots(
+			marginAsc.map((m) => ({
+				date: m.date,
+				qty: side === "long" ? m.longQty : m.shortQty,
+			})),
+			prior,
+		);
+		if (!lots) return null;
+		const ref = side === "long" ? Math.max(...window) : Math.min(...window);
+		// 信用残は千株、出来高は株
+		return (
+			(newlyCalledQty(lots, side, close, ref, callLossPct) * 1000) / avgVol
+		);
+	};
+	return { longDays: days("long"), shortDays: days("short") };
+}
+
+// 1 銘柄分: D1 の daily + margin を読み、指標→スコアを算出して ForcedScore を返す。
 // daily 不足や行欠落でも noneScore に倒れる (例外は投げない)。
 async function scoreOne(
 	env: Env,
@@ -237,7 +268,7 @@ async function scoreOne(
 	today: string,
 ): Promise<ForcedScore> {
 	const d = db(env.DB);
-	// daily は ATR baseline 用に多めに 70 本。date DESC。
+	// 建値分布は MARGIN_WEEKS 週の信用残の手前 60 本 (margin-cost.ts の SEED_BARS) まで遡る。date DESC。
 	const dailyRaw = (await d
 		.select({
 			date: daily.date,
@@ -250,25 +281,30 @@ async function scoreOne(
 		.from(daily)
 		.where(eq(daily.ticker, ticker))
 		.orderBy(desc(daily.date))
-		.limit(70)
+		.limit(MARGIN_WEEKS * 5 + 70)
 		.all()) as Record<string, unknown>[];
-	// ma25 を付与 (date DESC のまま全件渡す → 同順で ma 付き)。
-	const withMa = withMovingAverages(dailyRaw, dailyRaw.length) as DailyRow[];
+	// 指標は ATR baseline 用の 70 本で算出する。ma25 は date DESC のまま渡して同順で付与される。
+	const recent = dailyRaw.slice(0, 70);
+	const withMa = withMovingAverages(recent, recent.length) as DailyRow[];
 	const ind = computeDailyIndicators(withMa);
-	const cur = withMa[0]; // date DESC 先頭 = 最新足
+	const cur = withMa[0];
 
 	const marginRows = await d
 		.select({
+			date: margin.date,
 			longQty: margin.longQty,
 			shortQty: margin.shortQty,
-			ratio: margin.ratio,
 		})
 		.from(margin)
 		.where(eq(margin.ticker, ticker))
 		.orderBy(desc(margin.date))
-		.limit(2)
+		.limit(MARGIN_WEEKS)
 		.all();
-	const m = marginSnapshotFromRows(marginRows);
+	const called = calledVolume(
+		marginRows.slice().reverse(),
+		(dailyRaw as unknown as CostBar[]).slice().reverse(),
+		DEFAULT_THRESHOLDS.callLossPct,
+	);
 
 	const wicks =
 		cur != null
@@ -281,7 +317,7 @@ async function scoreOne(
 		hasLowerWick: wicks.hasLowerWick,
 		hasUpperWick: wicks.hasUpperWick,
 	};
-	return computeForcedScore(ticker, today, ind, bar, m);
+	return computeForcedScore(ticker, today, ind, bar, called);
 }
 
 // watchlist 全銘柄 (codeFilter 指定時はその1銘柄) の強制決済スコアを算出し D1 に upsert する。
@@ -368,22 +404,21 @@ if (import.meta.vitest) {
 		hasUpperWick: false,
 		...over,
 	});
-	const M = (
-		ratio: number,
-		longChg: number,
-		shortChg: number,
-	): MarginSnapshot => ({ ratio, longChg, shortChg });
+	const C = (longDays: number, shortDays: number): CalledVolume => ({
+		longDays,
+		shortDays,
+	});
 
 	describe("computeForcedScore", () => {
-		it("long building: 買い長 + ATR2倍超の下落 + MA25下抜け, 出尽くし無し", () => {
+		it("long building: 追証圏入りの買残が厚い + ATR2倍超の下落 + MA25下抜け, 出尽くし無し", () => {
 			// chg -8 / atr 3 => -2.66x 着火, close(99)<ma25(100), atr_vs_baseline 1.5(>1.2) → fire 3
-			// ratio4(≥3) + long_chg+ + ma25_dev=-1(> -3) → fuel 3。vol/rsi/wick なし → exhaust 0
+			// 追証圏入り 0.3日分 (≥0.2) → fuel 3。vol/rsi/wick なし → exhaust 0
 			const out = computeForcedScore(
 				"285A",
 				"2026-01-31",
 				IND(),
 				BAR({ changePct: -8, close: 99, ma25: 100 }),
-				M(4, 5000, 0),
+				C(0.3, 0),
 			);
 			expect(out.direction).toBe("long");
 			expect(out.stance).toBe("building");
@@ -393,23 +428,39 @@ if (import.meta.vitest) {
 			expect(out.summary).toContain("投げ警戒");
 		});
 
-		it("long building: 高ボラで ATR 比着火が効かなくても絶対%大暴落なら着火 (285A 2026-06-23 相当)", () => {
-			// 実データ: chg -15.1 / atr_pct 8.7 => atrMove -1.74 (>-2 で ATR 比は不成立)、
-			// close 92290 > ma25 77055 (乖離 +19.7 → 平均建値割れも未成立)、atr_vs_baseline 1.1 (≤1.2)。
-			// 旧ロジックでは fire 0 で none。絶対%着火 (|chg|≥12 → +2) で fire 2 に底上げ。
-			// fuel: ratio 12(≥3) + long_chg<0 + ma25_dev +19.7(> -3) → 2。fire 2 × fuel 2 → building。
+		// 285A 2026-06-23 の実データ: chg -15.1 / atr_pct 8.7 => atrMove -1.74 (>-2 で ATR 比は不成立)、
+		// close 92290 > ma25 77056、atr_vs_baseline 1.1 (≤1.2)。絶対%着火 (|chg|≥12 → +2) だけで fire 2。
+		const BIG_DROP = {
+			ind: IND({ atr_pct: 8.7, atr_pct_baseline: 7.9, atr_vs_baseline: 1.1 }),
+			bar: BAR({ changePct: -15.1, close: 92290, ma25: 77056 }),
+		};
+
+		it("long building: 高ボラで ATR 比着火が効かなくても絶対%大暴落なら着火", () => {
 			const out = computeForcedScore(
 				"285A",
 				"2026-06-23",
-				IND({ atr_pct: 8.7, atr_pct_baseline: 7.9, atr_vs_baseline: 1.1 }),
-				BAR({ changePct: -15.1, close: 92290, ma25: 77056 }),
-				M(12, -691, 0),
+				BIG_DROP.ind,
+				BIG_DROP.bar,
+				C(0.12, 0),
 			);
-			expect(out.direction).toBe("long");
 			expect(out.stance).toBe("building");
 			expect(out.scores.fire).toBe(2);
 			expect(out.scores.fuel).toBe(2);
-			expect(out.summary).toContain("投げ警戒");
+			expect(out.summary).toContain(
+				"追証圏入りの推定買残≈20日平均出来高の0.12日分",
+			);
+		});
+
+		it("none: 大暴落でも下げた区間に追証圏入りの建玉が無ければ投げは出ない (285A 2026-06-23)", () => {
+			// 実データの建値分布では、この日の下げで新たに建値 -10% を割った買残は 0
+			const out = computeForcedScore(
+				"285A",
+				"2026-06-23",
+				BIG_DROP.ind,
+				BIG_DROP.bar,
+				C(0, 0),
+			);
+			expect(out.stance).toBe("none");
 		});
 
 		it("fire は絶対%着火を足しても上限 3 を超えない", () => {
@@ -419,7 +470,7 @@ if (import.meta.vitest) {
 				"2026-01-31",
 				IND({ atr_vs_baseline: 1.5 }),
 				BAR({ changePct: -20, close: 80, ma25: 100 }),
-				M(4, 5000, 0),
+				C(0.3, 0),
 			);
 			expect(out.scores.fire).toBe(3);
 		});
@@ -431,7 +482,7 @@ if (import.meta.vitest) {
 				"2026-01-31",
 				IND({ vol_x_20d: 4, rsi_14: 25 }),
 				BAR({ changePct: -8, close: 99, ma25: 100, hasLowerWick: true }),
-				M(4, 5000, 0),
+				C(0.3, 0),
 			);
 			expect(out.direction).toBe("long");
 			expect(out.stance).toBe("exhausted");
@@ -439,15 +490,15 @@ if (import.meta.vitest) {
 			expect(out.settleWarningInDays).toBeNull();
 		});
 
-		it("short squeeze building: 売り長 + ATR2倍超の上昇 + MA25上抜け", () => {
+		it("short squeeze building: 追証圏入りの売残 + ATR2倍超の上昇 + MA25上抜け", () => {
 			// chg +9 / atr 3 => +3x 着火, close(108)>ma25(100), atr_vs_baseline 1.5 → fire 3
-			// ratio0.8(≤1) + short_chg+ + ma25_dev=+8(<3 は不成立) → fuel 2
+			// 追証圏入り 0.1日分 (≥0.1) → fuel 2
 			const out = computeForcedScore(
 				"6920",
 				"2026-01-31",
 				IND(),
 				BAR({ changePct: 9, close: 108, ma25: 100 }),
-				M(0.8, 0, 3000),
+				C(0, 0.1),
 			);
 			expect(out.direction).toBe("short");
 			expect(out.stance).toBe("building");
@@ -461,19 +512,19 @@ if (import.meta.vitest) {
 				"2026-01-31",
 				IND({ atr_vs_baseline: 1.0 }),
 				BAR({ changePct: -2, close: 99, ma25: 100 }),
-				M(4, 5000, 0),
+				C(0.3, 0),
 			);
 			expect(out.stance).toBe("none");
 		});
 
-		it("none: 着火しても燃料が無い (薄い信用)", () => {
-			// 着火はするが ratio低・long_chg<=0・乖離マイナス大 → long_fuel 0 → none
+		it("none: 着火しても燃料が薄い", () => {
+			// 追証圏入り 0.04日分 (<0.05) → long_fuel 0 → none
 			const out = computeForcedScore(
 				"6981",
 				"2026-01-31",
 				IND(),
 				BAR({ changePct: -8, close: 80, ma25: 100 }),
-				M(1.0, -5000, 0),
+				C(0.04, 0),
 			);
 			expect(out.stance).toBe("none");
 		});
@@ -484,37 +535,60 @@ if (import.meta.vitest) {
 				"2026-01-31",
 				null,
 				BAR(),
-				M(4, 5000, 0),
+				C(0.3, 0),
 			);
 			expect(out.stance).toBe("none");
 			expect(out.direction).toBe("none");
 		});
 	});
 
-	describe("marginSnapshotFromRows", () => {
-		it("最新-前週で WoW 増減、ratio は最新", () => {
-			const out = marginSnapshotFromRows([
-				{ longQty: 360, shortQty: 120, ratio: 3 },
-				{ longQty: 330, shortQty: 110, ratio: 3 },
-			]);
-			expect(out.ratio).toBe(3);
-			expect(out.longChg).toBe(30);
-			expect(out.shortChg).toBe(10);
+	describe("calledVolume", () => {
+		const bar = (date: string, close: number, volume = 1_000_000): CostBar => ({
+			date,
+			high: close,
+			low: close,
+			close,
+			volume,
 		});
-		it("前週が無ければ chg は null", () => {
-			const out = marginSnapshotFromRows([
-				{ longQty: 360, shortQty: 120, ratio: 3 },
-			]);
-			expect(out.longChg).toBeNull();
-			expect(out.shortChg).toBeNull();
-			expect(out.ratio).toBe(3);
+		// 1000 円で 100 千株、1200 円の週に 100 千株が積まれ、その後 1050 まで下げる
+		const bars = [
+			bar("2026-01-08", 1000),
+			bar("2026-01-09", 1000),
+			bar("2026-01-13", 1200),
+			bar("2026-01-14", 1200),
+			bar("2026-01-15", 1200),
+			bar("2026-01-16", 1200),
+			bar("2026-01-19", 1100),
+		];
+		const marginAsc = [
+			{ date: "2026-01-09", longQty: 100, shortQty: 0 },
+			{ date: "2026-01-16", longQty: 200, shortQty: 0 },
+		];
+
+		it("long: 直前5本の高値では割れていなかったロットだけを、平均出来高の日数で返す", () => {
+			// 1200 のロット (ライン 1080) が 1050 で割れ、直前5本の最高値 1200 では未割れ → 100 千株 = 0.1日分
+			const out = calledVolume(
+				marginAsc,
+				[...bars, bar("2026-01-20", 1050)],
+				10,
+			);
+			expect(out.longDays).toBeCloseTo(0.1);
+			expect(out.shortDays).toBe(0);
 		});
-		it("行が無ければ全 null", () => {
-			expect(marginSnapshotFromRows([])).toEqual({
-				ratio: null,
-				longChg: null,
-				shortChg: null,
-			});
+
+		it("long: 下げた区間に建玉が無ければ 0", () => {
+			// 1000 のロットのライン 900 にも 1200 のライン 1080 にも届かない
+			const out = calledVolume(
+				marginAsc,
+				[...bars, bar("2026-01-20", 1090)],
+				10,
+			);
+			expect(out.longDays).toBe(0);
+		});
+
+		it("直前の足が5本に満たなければ null", () => {
+			const out = calledVolume(marginAsc, bars.slice(0, 4), 10);
+			expect(out).toEqual({ longDays: null, shortDays: null });
 		});
 	});
 

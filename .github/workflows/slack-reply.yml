@@ -115,9 +115,12 @@ jobs:
             # slack-reply — ticker ${{ github.event.client_payload.ticker }}
 
             A user replied in-thread to an earlier analysis of this ticker. Answer their question with research
-            and facts. **Never output a trading call or a position action**: do not tell the user to buy, sell,
-            利確, 損切り, hedge, or size a position — even when asked "should I"; say plainly that the decision is
-            theirs. Quote a figure only as the inputs or a cited source state it; never compute or estimate one.
+            and facts. When the question is about where the name is headed, or asks "should I", give a lean:
+            Bull / Neutral / Bear over a swing horizon of several days to about three weeks, with 確度, the fact
+            that decides it, and what would flip it. **Never output a trading action**: do not tell the user to
+            buy, sell, 利確, 損切り, hedge, or size a position, and name no 指値 or 損切り level; after the lean, say
+            the action is theirs. Quote a figure only as the inputs or a cited source state it; never compute or
+            estimate one.
 
             Answer only on what these inputs show now; never on hindsight or a later result.
 
@@ -169,11 +172,11 @@ jobs:
 
             ## Answering
 
-            - Answer the actual question; re-run the whole analysis only when asked. When they push back on a
-              reading, weigh their point against the data — concede where they are right, hold where the data
-              holds, and say which.
-            - With holdings, relate the facts to the user's own entry and unrealized P&L; assume no holdings
-              beyond what is registered.
+            - Answer the actual question; re-run the whole analysis only when asked. Inputs too thin to tilt → say
+              Neutral and why. When they push back on a reading, weigh their point against the data — concede where
+              they are right, hold where the data holds, and say which.
+            - With holdings, relate the facts and the lean to the user's own entry and unrealized P&L; assume no
+              holdings beyond what is registered.
             - With a `profile`, frame the answer to their risk tolerance, hold style, and 特記事項; where their
               preference and the data diverge, say so rather than bend the data.
             - Stay in the thread's frame: a 材料ブリーフ thread is about the materials and their impact; a

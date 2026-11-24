@@ -5,22 +5,25 @@
 # 設計:
 #   - skill 本体に curl を叩かせない。投稿経路 (Worker /slack/post, Bearer 認証, kind 付与,
 #     channel 省略, 503=Bot未設定→stdout フォールバック) は決定論的なのでこのスクリプトが持つ。
-#     skill は「材料・分析・強気/弱気」を構造化出力で渡すだけ。
-#   - 太字の headline と数値行をサマリーとして親に投稿し、本文・観測行は details として親のスレッドに
+#     skill は「材料・分析・強気/弱気・方向感」を構造化出力で渡すだけ。
+#   - 太字の headline・方向感・数値行をサマリーとして親に投稿し、本文・観測行は details として親のスレッドに
 #     1 通でぶら下げる (チャンネルにはサマリーだけが流れる)。
 #   - 数値行 (現在の現値・出来高ペース / 確定足の MA・レンジ・RSI・ATR・出来高倍率・OBV・CMF /
 #     中期の MA75・52週高値安値・TOPIX比・予想PER) は LLM に
 #     出させず、numctx の実在値からここで決定論で組んで親の context block に貼る。LLM が水準・指標の
 #     数値を創作する余地を残さない (LLM はテクニカルの読みだけを返す)。
-#   - それでも LLM の technical / bull / bear / watch に価格・指標・比率の数字が混ざった行は投稿前に落とし、
-#     stderr に "post-brief.sh: dropped numeric line: <field>: <line>" を出す (Actions ログで見える)。
+#   - それでも LLM の technical / bull / bear / watch / lean.basis に価格・指標・比率の数字が混ざった行は
+#     投稿前に落とし、stderr に "post-brief.sh: dropped numeric line: <field>: <line>" を出す
+#     (Actions ログで見える)。lean.basis を落としても方向と確度は残す。
 #   - 強制決済スコア (追証売り/踏み上げ) は eod cron が D1 に算出済み。ここで D1 から最新行を引き、
 #     stance!=none のときだけ「観測事実」として本文末尾に 1 行貼る。fetch 失敗/該当なしは何も足さない。
 #
 # 入力:
 #   $1 = ticker          (必須)
 #   $2 = brief-file      (必須。ticker-brief スキルの構造化出力 (structured_output) を書いた JSON の
-#                         パス。{status, headline, materials[], technical[], bull[], bear[], watch[]} を持つ。
+#                         パス。{status, headline, lean, materials[], technical[], bull[], bear[], watch[]}
+#                         を持つ。lean = {direction: bull|neutral|bear, confidence: high|medium|low, basis}
+#                         または null。
 #                         status=no_update なら投稿も保存もせず正常終了する)
 #   $3 = rebalance-file  (任意。前段ステップが /index-rebalance を並行取得して書いた JSON のパス。
 #                         LLM には渡さない観測事実なので numctx とは別ファイルで運ぶ。
@@ -93,9 +96,13 @@ NUMERIC_FILTER_JQ='
   def numeric: (ascii_digits | reduce exempt_patterns[] as $re (.; gsub($re; " "))) | test("[0-9]");
   ["technical", "bull", "bear", "watch"] as $fields
   | . as $b
-  | { dropped: [ $fields[] as $f | ($b[$f] // [])[] | select(numeric) | {field: $f, line: .} ],
+  | ($b.lean.basis // "") as $basis
+  | ($basis != "" and ($basis | numeric)) as $drop_basis
+  | { dropped: ([ $fields[] as $f | ($b[$f] // [])[] | select(numeric) | {field: $f, line: .} ]
+        + (if $drop_basis then [{field: "lean", line: $basis}] else [] end)),
       brief: (reduce $fields[] as $f ($b;
-        if has($f) then .[$f] |= map(select(numeric | not)) else . end)) }'
+        if has($f) then .[$f] |= map(select(numeric | not)) else . end)
+        | if $drop_basis then .lean.basis = "" else . end) }'
 FILTERED_JSON="$(printf '%s' "$BRIEF_JSON" | jq -c "$NUMERIC_FILTER_JQ")"
 printf '%s' "$FILTERED_JSON" | jq -r '.dropped[] | "post-brief.sh: dropped numeric line: \(.field): \(.line)"' >&2
 BRIEF_JSON="$(printf '%s' "$FILTERED_JSON" | jq -c '.brief')"
@@ -113,9 +120,17 @@ SECTIONS_JSON="$(printf '%s' "$BRIEF_JSON" | jq -c '
 BODY="$(printf '%s' "$SECTIONS_JSON" | jq -r 'join("\n")')"
 [[ -n "$BODY" ]] || { echo "post-brief.sh: empty body in $BRIEF_FILE" >&2; exit 1; }
 
+# 方向感の 1 行: 「🧭 *方向感*: Bull（確度 中）— <basis>」。lean が null なら空文字。
+LEAN_LINE="$(printf '%s' "$BRIEF_JSON" | jq -r '
+  if (.lean | type) != "object" then "" else
+    "🧭 *方向感*: \({bull:"Bull",neutral:"Neutral",bear:"Bear"}[.lean.direction] // "Neutral")" +
+    "（確度 \({high:"高",medium:"中",low:"低"}[.lean.confidence] // "低")）" +
+    (if (.lean.basis // "") != "" then "— \(.lean.basis)" else "" end)
+  end')"
+
 # briefs テーブルに保存する本文 = LLM 由来の内容のみ (数値行・観測行はここから導出可能なので含めない)。
 # position-report が建玉銘柄の最新材料としてこれを読む。
-BRIEF_BODY="$BODY"
+BRIEF_BODY="$(printf '%s\n' "$LEAN_LINE" "$BODY" | sed '/^$/d')"
 
 # --- 数値行 (決定論): numctx の実在値から組み、親の context block に貼る ----
 # 📐 数値 の見出しの下に 3 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
@@ -217,7 +232,7 @@ if [[ -n "$REBAL_LINE" ]]; then
 }📅 *リバランス窓*: ${REBAL_LINE}"
 fi
 
-# 親 = 太字の headline → 数値行 (context block)。details = 本文グループ → 観測行 (1 行 1 section)。
+# 親 = 太字の headline → 方向感 → 数値行 (context block)。details = 本文グループ → 観測行 (1 行 1 section)。
 # LLM 由来の文字列はリテラル "\n" を本物の改行へ正規化する (どちらで来ても同じ結果になる)。
 # brief_body は LLM 由来の本文素テキスト。Worker /slack/post が briefs テーブルに upsert する。
 DETAILS_TEXT="$(printf '%s\n' "$BODY" "$OBSERVATIONS" | sed '/^$/d')"
@@ -227,6 +242,7 @@ PAYLOAD="$(jq -n \
   --argjson sections "$SECTIONS_JSON" \
   --arg observations "$OBSERVATIONS" \
   --arg numbers "$NUMBERS" \
+  --arg lean "$LEAN_LINE" \
   --arg brief_body "$BRIEF_BODY" \
   --arg details_text "$DETAILS_TEXT" \
   'def section: {type:"section", text:{type:"mrkdwn", text:.}};
@@ -237,6 +253,7 @@ PAYLOAD="$(jq -n \
     text: $headline,
     brief_body: $brief_body,
     blocks: ([$headline | bold | section]
+      + (if $lean == "" then [] else [$lean | section] end)
       + (if $numbers == "" then [] else [{type:"context", elements:[{type:"mrkdwn", text:$numbers}]}] end)),
     details: {
       text: $details_text,
@@ -263,6 +280,6 @@ HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
 if [[ "$HTTP_CODE" == "200" ]]; then
   echo "slack ok"
 else
-  printf '%s\n' "$HEADLINE" "$NUMBERS" "$DETAILS_TEXT" | sed '/^$/d'
+  printf '%s\n' "$HEADLINE" "$LEAN_LINE" "$NUMBERS" "$DETAILS_TEXT" | sed '/^$/d'
   echo "slack skipped (HTTP ${HTTP_CODE})"
 fi

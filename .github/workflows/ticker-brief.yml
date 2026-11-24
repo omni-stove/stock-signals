@@ -7,10 +7,9 @@
 #
 # 起動後はブリーフのルールを prompt にベタ書きした Claude Code Action が対象銘柄の数値コンテキスト
 # (context-builder が育てたコンテキスト本文 + Worker /judge-context の価格/日足/市場ブリーフ/決算日/信用残)
-# を @ で読み、新着材料の見出し・テクニカルの読み・強気/弱気材料 (新着材料の背景・影響分析を含む) を structured_output で返す。
-# 売買判断 (buy/sell・指値・損切り) は出さない — 判断は読み手 (人間) が行い、ここは判断材料を
-# 並べる係。投稿は後続ステップ (post-brief.sh)。**このワークフローはコンテキストを一切書き換えない**
-# (出力は Slack のみ)。context-builder がコンテキストを書き、ticker-brief が Slack を書く、という
+# を @ で読み、新着材料の見出し・方向感・テクニカルの読み・強気/弱気材料 (新着材料の背景・影響分析を含む) を
+# structured_output で返す。売買アクション・指値・損切りは出さない。投稿は後続ステップ (post-brief.sh)。
+# **このワークフローはコンテキストを一切書き換えない** (出力は Slack のみ)。context-builder がコンテキストを書き、ticker-brief が Slack を書く、という
 # 役割の固定により、brief → context の編集ループは発生しない。
 #
 # 認証は Claude サブスク (OAuth) 方式: ローカルで `claude setup-token` → 生成トークンを
@@ -134,8 +133,9 @@ jobs:
             # ticker-brief — ticker ${{ github.event.client_payload.ticker || inputs.ticker }}
 
             Produce a **材料ブリーフ** — a research digest for a human to make their own trading decision.
-            Headline the fresh materials on this name and lay out the 強気/弱気 case. **Never output a trading
-            call**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs (買い/売り/利確/増し玉/様子見).
+            Headline the fresh materials on this name, lay out the 強気/弱気 case, and state which way it leans.
+            **Never output a trading action**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs
+            (買い/売り/利確/増し玉/様子見).
             Never restate a price level or an indicator value in your text; the posting step appends them.
             Describe what the tape did as fact.
 
@@ -154,7 +154,8 @@ jobs:
             - `routine`: a scheduled brief with no new IR/news since the last context update. Keep it to a short
               status check: `headline` is `📊 <ticker> <name>: <one-phrase summary of where the name stands now>`;
               `materials` empty; `technical` at most 1 line; `bull` / `bear` at most 2 each, only points the
-              current tape, `event_context`, `earnings`, `forced`, or `supply` makes live now; `watch` at most 1.
+              current tape, `event_context`, `earnings`, `forced`, or `supply` makes live now; `watch` at most 1;
+              `lean` as usual.
               Skip Web research. Never present a topic from 直近の重大トピック as new.
 
             ## Inputs
@@ -228,7 +229,8 @@ jobs:
 
             - `status`: default `brief`. Return `no_update` only when the freshest entry in 直近の重大トピック
               is older than 14 days and there is no fresh earnings or guidance, forced-flow reading, or notable
-              tape move. When in doubt, brief. On `no_update`, leave `headline` null and every array empty.
+              tape move. When in doubt, brief. On `no_update`, leave `headline` and `lean` null and every array
+              empty.
             - `headline`: `📰 <ticker> <name>: <one-phrase summary of the fresh materials>`.
             - `materials`: the fresh items, newest first; merge items on one theme. Each is
               `YYYY-MM-DD <what happened>` only — no effect or analysis.
@@ -238,6 +240,12 @@ jobs:
               facts and their weight. For a fresh material, give the concrete path into earnings or price, and a
               precedent or first market reaction when known. Either side may be empty when the materials lean
               one way.
+            - `lean`: which way the `bull` / `bear` case nets out over the holding horizon.
+              - `direction`: `bull` / `bear` when one side clearly outweighs; `neutral` when they balance or the
+                materials are too thin to tilt.
+              - `confidence`: `high` only when fresh materials and the tape agree; `low` when the lean rests on
+                stale context, a single unconfirmed item, or a tape that contradicts it.
+              - `basis`: the one fact that decides the lean, about 40 characters, no figures.
             - `watch`: the next verifiable fact that would change the picture, leading with its date when known.
 
             ## 数値コンテキスト
@@ -251,10 +259,16 @@ jobs:
             --allowedTools Read,WebSearch,WebFetch --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
-              "required":["status","headline","materials","technical","bull","bear","watch"],
+              "required":["status","headline","lean","materials","technical","bull","bear","watch"],
               "properties":{
                 "status":{"enum":["brief","no_update"]},
                 "headline":{"type":["string","null"],"maxLength":70},
+                "lean":{"type":["object","null"],"additionalProperties":false,
+                  "required":["direction","confidence","basis"],
+                  "properties":{
+                    "direction":{"enum":["bull","neutral","bear"]},
+                    "confidence":{"enum":["high","medium","low"]},
+                    "basis":{"type":"string","maxLength":60}}},
                 "materials":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":50}},
                 "technical":{"type":"array","items":{"type":"string","maxLength":80},"maxItems":2},
                 "bull":{"type":"array","items":{"type":"string","maxLength":60},"maxItems":4},

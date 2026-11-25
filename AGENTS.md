@@ -8,7 +8,7 @@
 ## Design
 
 - Never let an LLM decide buy/sell actions, limit price, stop-loss, or position actions; LLMs only research news and organize judgment material. Signals computed deterministically from data may be posted.
-- Only `ticker-brief` and `slack-reply` may state a directional lean (Bull/Bear only, no confidence) with basis and reversal condition; the user decides any action. Other workflows state no lean.
+- Only `ticker-brief` and `slack-reply` may state a directional lean (Bull/Bear) with basis and reversal condition; the user decides any action. Other workflows state no lean.
 - Keep LLMs out of collection: the Worker does all fetching and normalization, and judgment runs only in the GitHub Actions `claude-code-action`.
 - Never let an LLM produce numbers; post scripts build every figure from real data.
 - Use web search only to corroborate collected data, and cite the source.

@@ -14,7 +14,7 @@
 #     数値を創作する余地を残さない (LLM はテクニカルの読みだけを返す)。
 #   - それでも LLM の technical / bull / bear / watch / lean.basis に価格・指標・比率の数字が混ざった行は
 #     投稿前に落とし、stderr に "post-brief.sh: dropped numeric line: <field>: <line>" を出す
-#     (Actions ログで見える)。lean.basis を落としても方向と確度は残す。
+#     (Actions ログで見える)。lean.basis を落としても方向は残す。
 #   - 強制決済スコア (追証売り/踏み上げ) は eod cron が D1 に算出済み。ここで D1 から最新行を引き、
 #     stance!=none のときだけ「観測事実」として本文末尾に 1 行貼る。fetch 失敗/該当なしは何も足さない。
 #
@@ -22,7 +22,7 @@
 #   $1 = ticker          (必須)
 #   $2 = brief-file      (必須。ticker-brief スキルの構造化出力 (structured_output) を書いた JSON の
 #                         パス。{status, headline, lean, materials[], technical[], bull[], bear[], watch[]}
-#                         を持つ。lean = {direction: bull|neutral|bear, confidence: high|medium|low, basis}
+#                         を持つ。lean = {direction: bull|bear, basis}
 #                         または null。
 #                         status=no_update なら投稿も保存もせず正常終了する)
 #   $3 = rebalance-file  (任意。前段ステップが /index-rebalance を並行取得して書いた JSON のパス。
@@ -120,12 +120,11 @@ SECTIONS_JSON="$(printf '%s' "$BRIEF_JSON" | jq -c '
 BODY="$(printf '%s' "$SECTIONS_JSON" | jq -r 'join("\n")')"
 [[ -n "$BODY" ]] || { echo "post-brief.sh: empty body in $BRIEF_FILE" >&2; exit 1; }
 
-# 方向感の 1 行: 「🧭 *方向感*: Bull（確度 中）— <basis>」。lean が null なら空文字。
+# 方向感の 1 行: 「🧭 *方向感*: Bull — <basis>」。lean が null なら空文字。
 LEAN_LINE="$(printf '%s' "$BRIEF_JSON" | jq -r '
-  if (.lean | type) != "object" then "" else
-    "🧭 *方向感*: \({bull:"Bull",neutral:"Neutral",bear:"Bear"}[.lean.direction] // "Neutral")" +
-    "（確度 \({high:"高",medium:"中",low:"低"}[.lean.confidence] // "低")）" +
-    (if (.lean.basis // "") != "" then "— \(.lean.basis)" else "" end)
+  ({bull:"Bull",bear:"Bear"}[.lean.direction? // ""]) as $dir
+  | if $dir == null then "" else
+    "🧭 *方向感*: \($dir)" + (if (.lean.basis // "") != "" then " — \(.lean.basis)" else "" end)
   end')"
 
 # briefs テーブルに保存する本文 = LLM 由来の内容のみ (数値行・観測行はここから導出可能なので含めない)。

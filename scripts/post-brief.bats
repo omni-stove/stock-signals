@@ -159,16 +159,16 @@ payload_for() {
 
 # === lean: 方向感 (親の headline 直下に 1 行、brief_body の先頭にも載せる) ===
 
-@test "lean: direction, confidence and basis render under the headline" {
-  jq -n '{status:"brief",headline:"HEAD",lean:{direction:"bear",confidence:"medium",basis:"受注減速が先行"},
+@test "lean: direction and basis render under the headline" {
+  jq -n '{status:"brief",headline:"HEAD",lean:{direction:"bear",basis:"受注減速が先行"},
           materials:[],technical:[],bull:[],bear:["risk point"],watch:[]}' \
     > "$BATS_TEST_TMPDIR/b.json"
   run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
   [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "🧭 *方向感*: Bear（確度 中）— 受注減速が先行" ]
-  [ "$(printf '%s' "$p" | jq -r '.brief_body | split("\n")[0]')" = "🧭 *方向感*: Bear（確度 中）— 受注減速が先行" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "🧭 *方向感*: Bear — 受注減速が先行" ]
+  [ "$(printf '%s' "$p" | jq -r '.brief_body | split("\n")[0]')" = "🧭 *方向感*: Bear — 受注減速が先行" ]
 }
 
 @test "lean: null lean adds no block" {
@@ -181,15 +181,24 @@ payload_for() {
   printf '%s' "$p" | jq -e '.brief_body | test("方向感") | not' >/dev/null
 }
 
+@test "lean: a direction other than bull/bear adds no block" {
+  jq -n '{status:"brief",headline:"HEAD",lean:{direction:"neutral",basis:"x"},materials:[],technical:[],bull:[],bear:["risk point"],watch:[]}' \
+    > "$BATS_TEST_TMPDIR/b.json"
+  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 1 ]
+}
+
 @test "lean: numeric basis is dropped but direction stays" {
-  jq -n '{status:"brief",headline:"HEAD",lean:{direction:"bull",confidence:"low",basis:"PER 40倍でも上方修正"},
+  jq -n '{status:"brief",headline:"HEAD",lean:{direction:"bull",basis:"PER 40倍でも上方修正"},
           materials:[],technical:[],bull:["strong point"],bear:[],watch:[]}' \
     > "$BATS_TEST_TMPDIR/b.json"
   run_pb 285A "$BATS_TEST_TMPDIR/b.json"
   [ "$status" -eq 0 ]
   [ "$(dropped_lines)" = "post-brief.sh: dropped numeric line: lean: PER 40倍でも上方修正" ]
   local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "🧭 *方向感*: Bull（確度 低）" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "🧭 *方向感*: Bull" ]
 }
 
 # === numbers: 数値行 (numctx の実在値から決定論で組み、親の context block に貼る) ===

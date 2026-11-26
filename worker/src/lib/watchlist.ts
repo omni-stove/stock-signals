@@ -113,8 +113,11 @@ export const TICKERS: Ticker[] = [
 			"受動部品",
 			"コンデンサ",
 		],
-		ir_url: "https://www.yuden.co.jp/ir/",
-		ir: { site: "yuden", list_url: "https://www.yuden.co.jp/ir/" },
+		ir_url: "https://www.yuden.co.jp/jp/ir/news/",
+		ir: {
+			site: "irpocket",
+			list_url: "https://xml.irpocket.com/6976/JS/release-all-latest-12m.js",
+		},
 		news_url: "https://kabutan.jp/stock/news?code=6976",
 		edinet_code: "E01824",
 	},

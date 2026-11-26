@@ -27,10 +27,14 @@ const PDF_FETCH_TIMEOUT_MS = 20_000;
 const MIN_SECTION_CHARS = 200;
 
 const TDNET_HOST = "www.release.tdnet.info";
+// irpocket は一覧 (xml.irpocket.com) と PDF のホストが別。
+const IRPOCKET_PDF_HOST = "pdf.irpocket.com";
 // PDF を取りに行ってよいホスト。/run?kind=pdf-text が任意 URL の fetch 口にならないよう絞る。
 const ALLOWED_PDF_HOSTS = new Set([
 	TDNET_HOST,
-	...IR_SOURCES.map((s) => new URL(s.list_url).host),
+	...IR_SOURCES.map((s) =>
+		s.site === "irpocket" ? IRPOCKET_PDF_HOST : new URL(s.list_url).host,
+	),
 ]);
 
 // 決算発表の日程告知・説明会の開催案内は見出しで足りるので PDF を取らない。
@@ -270,7 +274,8 @@ if (import.meta.vitest) {
 		it("TDnet と watchlist の IR サイトの https だけを許す", () => {
 			const ok = [
 				"https://www.release.tdnet.info/inbs/1.pdf",
-				"https://www.yuden.co.jp/jp/ir/a.pdf",
+				"https://www.advantest.com/ja/a.pdf",
+				"https://pdf.irpocket.com/C6976/a.pdf",
 			];
 			const ng = [
 				"http://www.release.tdnet.info/inbs/1.pdf",

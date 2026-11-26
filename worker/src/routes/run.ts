@@ -45,6 +45,13 @@ import { collectTwMonthlyRevenue } from "../lib/tw-monthly-revenue";
 
 export const run = new Hono<{ Bindings: Env }>();
 
+// 銘柄ごとの取得失敗は results に入って正常終了するため、ここで失敗にしないと fanOut が成功扱いにして通知されない。
+function hasTickerError(results: Record<string, unknown>): boolean {
+	return Object.values(results).some(
+		(r) => (r as { error?: unknown } | null)?.error != null,
+	);
+}
+
 run.get("/", async (c) => {
 	const env = c.env;
 	const code = c.req.query("code") ?? null;
@@ -77,7 +84,8 @@ run.get("/", async (c) => {
 		const limit = parseInt(c.req.query("limit") || String(DEFAULT_LIMIT), 10);
 		const result = await collectAll(env, code, limit);
 		if (dispatch) await dispatchSignalUpdate(env, result.freshTickers);
-		return c.json({ ok: true, kind, result });
+		const failed = hasTickerError(result.results);
+		return c.json({ ok: !failed, kind, result }, failed ? 502 : 200);
 	}
 	if (kind === "news") {
 		// per_ticker ニュース収集。dispatch=1 のときだけ signal-update と Slack 通知の副作用を起こす。
@@ -95,7 +103,8 @@ run.get("/", async (c) => {
 				})),
 			);
 		}
-		return c.json({ ok: true, kind, result });
+		const failed = hasTickerError(result.results);
+		return c.json({ ok: !failed, kind, result }, failed ? 502 : 200);
 	}
 	if (kind === "market-news") {
 		// 銘柄非依存の市場テーマニュースを収集 → market_news + R2 に保存。マーケットブリーフの材料。
@@ -119,7 +128,8 @@ run.get("/", async (c) => {
 		// 全 watchlist 銘柄の TDnet 適時開示 (kabutan nmode=3) を収集。/pull の ir カーソルに合流する。
 		const result = await collectDisclosures(env, code);
 		if (dispatch) await dispatchSignalUpdate(env, result.freshTickers);
-		return c.json({ ok: true, kind, result });
+		const failed = hasTickerError(result.results);
+		return c.json({ ok: !failed, kind, result }, failed ? 502 : 200);
 	}
 	if (kind === "ratings") {
 		// 証券会社レーティング (kabutan 日報) を収集 → articles に rating:% で保存。/pull の ir カーソルに合流する。
@@ -153,10 +163,7 @@ run.get("/", async (c) => {
 		// 信用残 (週次) の収集 → D1 margin に保存。通常は引け後 intake の flows で自動取得。
 		const { results, freshTickers } = await collectMargin(env, code);
 		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
-		// 銘柄ごとの取得失敗は results に入って正常終了するため、ここで失敗にしないと fanOut が成功扱いにして通知されない。
-		const failed = Object.values(results).some(
-			(r) => (r as { error?: unknown } | null)?.error != null,
-		);
+		const failed = hasTickerError(results);
 		return c.json(
 			{ ok: !failed, kind, result: results, fresh: freshTickers },
 			failed ? 502 : 200,

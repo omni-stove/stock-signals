@@ -1,22 +1,19 @@
 // Cloudflare Worker: Cron Trigger の配線。
 // 発火した cron 式を event.cron で判別して取得種別に振り分ける。
 
-import { collectDisclosures } from "./disclosure";
 import type { Env } from "./env";
 import { jpSqWeek } from "./event-context";
 import { remindUpcomingEvents } from "./event-reminder";
-import { fanOut } from "./fan-out";
+import { type FanOutJob, fanOut, jobKey } from "./fan-out";
 import { collectForcedLiquidation } from "./forced-liquidation";
 import { readFreshness, staleSources } from "./freshness";
 import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
-import { collectAll } from "./ir-collect";
-import { DEFAULT_LIMIT } from "./ir-sources";
+import { IR_SOURCES } from "./ir-sources";
 import { collectLiveIndexes } from "./live-indexes";
-import { collectMarketNews } from "./market-news";
-import { collectNews } from "./news";
+import { collectMarketNews, type FreshMarketNews } from "./market-news";
+import { collectNews, type FreshNews } from "./news";
 import { listPositionUsers } from "./position-report";
 import { collectBackdrop } from "./premarket";
-import { collectRatings } from "./ratings";
 import {
 	notifyJobFailure,
 	notifyNewsSlack,
@@ -26,42 +23,105 @@ import {
 import { collectTimeseries, DAILY_CODES, WATCHLIST } from "./timeseries";
 import { jstDate } from "./utils";
 
-// IR・適時開示・ニュース・市場テーマニュースのパース0件と、IR・適時開示の PDF 抽出失敗件数を
-// 運用チャンネルに 1 行で警告する (notifyParseFailure)。
+// IR・適時開示・ニュース・市場テーマニュース・レーティングの収集結果を、dispatch 対象・新着通知・
+// 健全性警告に使う形へまとめたもの。emptyParses は `ir:285A` のように収集種別の接頭辞付き。
+interface ArticleIntake {
+	fresh: string[];
+	freshNews: FreshNews[];
+	freshMarketNews: FreshMarketNews[];
+	emptyParses: string[];
+	pdfFallbacks: number;
+}
+
+const EMPTY_PARSE_TAG: Record<string, string> = {
+	ir: "ir",
+	disclosure: "tdnet",
+	news: "news",
+};
+
+// 収集種別ごとの出力 (collectAll / collectDisclosures / collectNews / collectMarketNews /
+// collectRatings の戻り値、または失敗ジョブの { error }) を ArticleIntake に合算する。
+function mergeArticleResults(
+	entries: { kind: string; out: unknown }[],
+): ArticleIntake {
+	const fresh = new Set<string>();
+	const merged: ArticleIntake = {
+		fresh: [],
+		freshNews: [],
+		freshMarketNews: [],
+		emptyParses: [],
+		pdfFallbacks: 0,
+	};
+	for (const { kind, out } of entries) {
+		const o = (out ?? {}) as {
+			freshTickers?: string[];
+			freshNews?: (FreshNews | FreshMarketNews)[];
+			emptyParses?: string[];
+			emptyParse?: boolean;
+			pdfFallbacks?: number;
+		};
+		for (const t of o.freshTickers ?? []) fresh.add(t);
+		if (kind === "market-news") {
+			merged.freshMarketNews.push(
+				...((o.freshNews ?? []) as FreshMarketNews[]),
+			);
+			if (o.emptyParse) merged.emptyParses.push("market-news");
+		} else {
+			merged.freshNews.push(...((o.freshNews ?? []) as FreshNews[]));
+			const tag = EMPTY_PARSE_TAG[kind] ?? kind;
+			merged.emptyParses.push(
+				...(o.emptyParses ?? []).map((c) => `${tag}:${c}`),
+			);
+		}
+		merged.pdfFallbacks += o.pdfFallbacks ?? 0;
+	}
+	merged.fresh = [...fresh];
+	return merged;
+}
+
+// 記事系の収集を 1 ジョブ = 1 invocation で回し、失敗ジョブを運用チャンネルに知らせる。
+// entries は mergeArticleResults に渡す形、results はログ用のジョブ別結果。
+async function fanOutArticles(
+	env: Env,
+	label: string,
+	jobs: FanOutJob[],
+): Promise<{
+	entries: { kind: string; out: unknown }[];
+	results: Record<string, unknown>;
+}> {
+	const { results, failed } = await fanOut(env, jobs);
+	if (failed.length > 0) console.error(`${label} jobs failed:`, failed);
+	await notifyJobFailure(env, label, failed);
+	const entries = jobs.map((job) => ({
+		kind: job.kind,
+		out: results[jobKey(job)],
+	}));
+	return { entries, results };
+}
+
+// IR と適時開示の銘柄別ジョブ。
+function irDisclosureJobs(): FanOutJob[] {
+	return [
+		...IR_SOURCES.map((s) => ({ kind: "ir", code: s.code })),
+		...WATCHLIST.map((code) => ({ kind: "disclosure", code })),
+	];
+}
+
+// パース0件と、IR・適時開示の PDF 抽出失敗件数を運用チャンネルに 1 行で警告する (notifyParseFailure)。
 async function notifyCollectHealth(
 	env: Env,
-	ir: { emptyParses: string[]; pdfFallbacks: number },
-	disc: { emptyParses: string[]; pdfFallbacks: number },
-	news: { emptyParses: string[] },
-	mnews: { emptyParse: boolean } | null,
+	intake: ArticleIntake,
 ): Promise<void> {
-	await notifyParseFailure(
-		env,
-		[
-			...ir.emptyParses.map((c) => `ir:${c}`),
-			...disc.emptyParses.map((c) => `tdnet:${c}`),
-			...news.emptyParses.map((c) => `news:${c}`),
-			...(mnews?.emptyParse ? ["market-news"] : []),
-		],
-		ir.pdfFallbacks + disc.pdfFallbacks,
-	);
+	await notifyParseFailure(env, intake.emptyParses, intake.pdfFallbacks);
 }
 
 // 銘柄ニュース + 市場テーマニュースの新着を Slack (SLACK_NEWS_WEBHOOK_URL) に通知する。
 // IR(notifySlack) と別チャンネルに分離する。webhook 未設定/新着 0 なら no-op。best-effort。
-async function notifyFreshNews(
-	env: Env,
-	news: {
-		freshNews: { ticker: string; title: string; url: string; date: string }[];
-	},
-	mnews: {
-		freshNews: { topic: string; title: string; url: string; date: string }[];
-	} | null,
-): Promise<void> {
+async function notifyFreshNews(env: Env, intake: ArticleIntake): Promise<void> {
 	await notifyNewsSlack(
 		env,
 		"🗞️ 新規ニュース",
-		news.freshNews.map((n) => ({
+		intake.freshNews.map((n) => ({
 			tag: n.ticker,
 			title: n.title,
 			url: n.url,
@@ -71,7 +131,7 @@ async function notifyFreshNews(
 	await notifyNewsSlack(
 		env,
 		"🌐 市場テーマニュース",
-		(mnews?.freshNews ?? []).map((n) => ({
+		intake.freshMarketNews.map((n) => ({
 			tag: n.topic,
 			title: n.title,
 			url: n.url,
@@ -93,7 +153,8 @@ async function notifyFreshNews(
 //                           JST 15:00 相当の最終スロット (isPreCloseSlot) では大引け前にその時点の材料
 //                           だけで翌日寄り越えの玉を判断するため、intake 同様に全銘柄を無条件判定する。
 //   - eod    (16:00 引け後): daily (+TOPIX/日経225) + fundamentals + 決算予定日 + ピア決算日 + 指数入替
-// eod / flows は重いので、ジョブを 1 つずつ別 invocation で回す (fan-out.ts)。
+// eod / flows / intake の記事収集 (と昼スロットの IR + 適時開示) は、ジョブを 1 つずつ別 invocation で
+// 回す (fan-out.ts)。
 const MORNING_INTAKE_CRON = "30 23 * * *";
 const EVENING_INTAKE_CRON = "0 9 * * *";
 const CRON_KIND: Record<string, "intake" | "prices" | "eod"> = {
@@ -242,8 +303,7 @@ export async function runScheduled(
 		// LLM コストを抑えるため新規ベース (下の分岐) で、ticker-brief は新着材料があった銘柄だけ。
 		//
 		// dispatch は 2 段で撃つ (どちらも全銘柄・brief 付き):
-		//   1) ここ (収集より先): 保険。収集 (IR/ニュース等の全銘柄フル取得) は重く、引け後 (18:00) は
-		//      market_news まで相乗りして CPU 時間上限に達しうる。収集が上限超過で打ち切られても、
+		//   1) ここ (収集より先): 保険。この invocation が収集ジョブの待ちの途中で打ち切られても、
 		//      判定と定時ブリーフはここで必ず発火する。
 		//   2) 収集後 (下の再dispatch): この回の収集で入った新規 IR/ニュースを「同じ回」の
 		//      context-builder に乗せる (cron → 収集 → context → brief の順序保証)。concurrency
@@ -251,51 +311,31 @@ export async function runScheduled(
 		// 寄り前 (8:30) の market-brief dispatch は上で既に撃ち終えており、順序
 		// (市場全体→個別) も保たれる。
 		await dispatchSignalUpdate(env, WATCHLIST, { brief: true });
-		// IR(kioxia公式) + 適時開示(全銘柄TDnet) + ニュース(全銘柄) を収集する。新規があった銘柄 (fresh) は
-		// ログと新着通知に使う。適時開示は /pull の ir カーソルに合流する。
-		const ir = await collectAll(env, null, DEFAULT_LIMIT);
-		const disc = await collectDisclosures(env, null);
-		const news = await collectNews(env, null);
-		// 市場テーマニュース (半導体/AI/金利/米国市場) も収集する。market-brief が /market-context
-		// 経由で読むほか、新規見出しに watchlist 銘柄の言及 (matchTickers) があればその銘柄を
-		// freshTickers に合流させる (例: 「サムスン、HBM増産」→ 6857)。
-		// 失敗しても intake の主収集は壊さない (catch でログのみ)。
-		const mnews = await collectMarketNews(env).catch((e) => {
-			console.error("market-news failed:", e);
-			return null;
-		});
-		// 証券会社レーティング (個社別 目標株価) も intake で収集する。日報は当日夕方〜夜に
-		// 出揃うため、引け後 (18:00) intake で拾う。
-		const rat = await collectRatings(env, null);
-		const fresh = [
-			...new Set([
-				...ir.freshTickers,
-				...disc.freshTickers,
-				...news.freshTickers,
-				...(mnews?.freshTickers ?? []),
-				...rat.freshTickers,
-			]),
-		];
+		// IR(公式サイト) + 適時開示(TDnet) + ニュースを銘柄ごと、市場テーマニュースと証券会社レーティングを
+		// 1 本ずつ、別 invocation で収集する。市場テーマニュースは新規見出しに watchlist 銘柄の言及
+		// (matchTickers) があればその銘柄を fresh に合流させる (例: 「サムスン、HBM増産」→ 6857)。
+		// レーティングの日報は当日夕方〜夜に出揃うため、主に引け後 (18:00) の回で拾う。
+		const { entries, results } = await fanOutArticles(env, "intake", [
+			...irDisclosureJobs(),
+			...WATCHLIST.map((code) => ({ kind: "news", code })),
+			{ kind: "market-news" },
+			{ kind: "ratings" },
+		]);
+		const intake = mergeArticleResults(entries);
 		console.log(
-			"scheduled ir+disclosure+news+ratings done:",
-			JSON.stringify({
-				ir: ir.results,
-				disclosure: disc.results,
-				news: news.results,
-				...(mnews ? { marketNews: mnews } : {}),
-				ratings: rat.results,
-			}),
+			"scheduled intake articles done:",
+			JSON.stringify(results),
 			"fresh:",
-			fresh.join(","),
+			intake.fresh.join(","),
 		);
 		// 上記 2 段 dispatch の 2)。全銘柄を brief 付きで再dispatch し、入ったばかりの IR/ニュースを
 		// 同じ回の context-builder に読ませる。
 		await dispatchSignalUpdate(env, WATCHLIST, { brief: true });
 		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
-		await notifyFreshNews(env, news, mnews);
+		await notifyFreshNews(env, intake);
 		// 「HTTP 200 なのに一覧パース0件」= ソースサイトの DOM 変更で収集が静かに止まっている疑い。
 		// 場中 (prices, 5分毎) では鳴らさず intake と昼スロットでだけ警告し、連投を避ける。
-		await notifyCollectHealth(env, ir, disc, news, mnews);
+		await notifyCollectHealth(env, intake);
 		// 引け後 (18:00) は eod / flows の収集が済んでいるので、表ごとの途絶を確かめる (1日1回)。
 		if (evening) {
 			await notifyStaleSources(env, jstDate(event.scheduledTime));
@@ -321,20 +361,15 @@ export async function runScheduled(
 		});
 		// JST 12:30 相当スロットでは IR + 適時開示 intake も相乗りさせる (昼の専用 cron を持たないため)。
 		// IR・適時開示・ニュースどの新着でも signal-update を撃つので fresh を統合して dispatch する。
-		let ir: Awaited<ReturnType<typeof collectAll>> | null = null;
-		let disc: Awaited<ReturnType<typeof collectDisclosures>> | null = null;
-		if (isNoonIntakeSlot(event.scheduledTime)) {
-			ir = await collectAll(env, null, DEFAULT_LIMIT);
-			disc = await collectDisclosures(env, null);
-		}
-		const fresh = [
-			...new Set([
-				...news.freshTickers,
-				...(mnews?.freshTickers ?? []),
-				...(ir?.freshTickers ?? []),
-				...(disc?.freshTickers ?? []),
-			]),
-		];
+		const noon = isNoonIntakeSlot(event.scheduledTime)
+			? await fanOutArticles(env, "noon-intake", irDisclosureJobs())
+			: null;
+		const intake = mergeArticleResults([
+			{ kind: "news", out: news },
+			{ kind: "market-news", out: mnews },
+			...(noon?.entries ?? []),
+		]);
+		const fresh = intake.fresh;
 		console.log(
 			"scheduled prices+news done:",
 			JSON.stringify({
@@ -342,16 +377,15 @@ export async function runScheduled(
 				...(idx ? { liveIndexes: idx } : {}),
 				news: news.results,
 				...(mnews ? { marketNews: mnews } : {}),
-				...(ir ? { irNoonIntake: ir } : {}),
-				...(disc ? { disclosureNoonIntake: disc } : {}),
+				...(noon ? { noonIntake: noon.results } : {}),
 			}),
 			"fresh:",
 			fresh.join(","),
 		);
 		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
-		await notifyFreshNews(env, news, mnews);
+		await notifyFreshNews(env, intake);
 		// パース0件・PDF 抽出失敗の警告は 1日1回の昼スロットでだけ流す (5分毎に鳴らさない)。
-		if (ir && disc) await notifyCollectHealth(env, ir, disc, news, mnews);
+		if (noon) await notifyCollectHealth(env, intake);
 		// JST 15:00 の引け前スロットは、新規の有無によらず全銘柄を判定する (intake と同思想)。
 		// 大引け前にその時点で判明している材料だけで「翌日の寄り越えに玉を持つか」を判断するため、
 		// ニュースの薄い銘柄も取り残さない。デバウンスも掛けない (1日1回の確定枠)。
@@ -425,6 +459,61 @@ export async function runScheduled(
 if (import.meta.vitest) {
 	const { describe, it, expect } = import.meta.vitest;
 	const ms = (iso: string) => new Date(iso).getTime();
+
+	describe("mergeArticleResults", () => {
+		it("fresh を重複なく束ね、パース0件に種別の接頭辞を付け、PDF 失敗件数を足す", () => {
+			const m = mergeArticleResults([
+				{
+					kind: "ir",
+					out: { freshTickers: ["285A"], emptyParses: [], pdfFallbacks: 1 },
+				},
+				{
+					kind: "disclosure",
+					out: {
+						freshTickers: ["285A"],
+						emptyParses: ["6857"],
+						pdfFallbacks: 2,
+					},
+				},
+				{
+					kind: "news",
+					out: {
+						freshTickers: ["6920"],
+						freshNews: [{ ticker: "6920", title: "t", url: "u", date: "d" }],
+						emptyParses: ["6976"],
+					},
+				},
+				{
+					kind: "market-news",
+					out: {
+						freshTickers: ["6857"],
+						freshNews: [{ topic: "AI", title: "m", url: "v", date: "d" }],
+						emptyParse: true,
+					},
+				},
+				{ kind: "ratings", out: { freshTickers: ["6976"] } },
+			]);
+			expect(m.fresh).toEqual(["285A", "6920", "6857", "6976"]);
+			expect(m.emptyParses).toEqual(["tdnet:6857", "news:6976", "market-news"]);
+			expect(m.pdfFallbacks).toBe(3);
+			expect(m.freshNews.map((n) => n.ticker)).toEqual(["6920"]);
+			expect(m.freshMarketNews.map((n) => n.topic)).toEqual(["AI"]);
+		});
+		it("失敗ジョブ ({ error }) と欠けた出力は何も足さない", () => {
+			const m = mergeArticleResults([
+				{ kind: "ir", out: { error: "HTTP 500" } },
+				{ kind: "market-news", out: null },
+				{ kind: "news", out: undefined },
+			]);
+			expect(m).toEqual({
+				fresh: [],
+				freshNews: [],
+				freshMarketNews: [],
+				emptyParses: [],
+				pdfFallbacks: 0,
+			});
+		});
+	});
 
 	describe("isNoonIntakeSlot", () => {
 		// JST 12:30 = UTC 03:30。03:30〜03:34 の5分窓で拾う。

@@ -39,7 +39,7 @@ crons = [
   "30 23 * * *",    # JST 08:30 寄り前 IR + ニュース + 地合い (+ market-brief を dispatch)
   "*/5 0-6 * * *",  # JST 09:00-15:00 5分毎  prices + ニュース速報 (12:30 相当スロットで IR intake も)
   "0 7 * * *",      # JST 16:00 引け後  daily + fundamentals + earnings (eod)
-  "0 9 * * *",      # JST 18:00 引け後 flows (空売り需給 + 投資部門別 + 大量保有 + 信用残) → IR + ニュース
+  "0 9 * * *",      # JST 18:00 引け後 flows (空売り需給 + 投資部門別 + 大量保有 + 信用残 + 証金残) → IR + ニュース
 ]
 
 # 自分自身への service binding。cron が重い収集を /run に 1 ジョブずつ投げ、別 invocation として
@@ -64,9 +64,8 @@ bucket_name = "stock-signals-articles"
 
 [vars]
 USER_AGENT = "stock-signals-bot/0.1 (personal research; contact: admin@omnistove.com)"
-# kabutan への連続アクセス間隔 (記事ごとの fetch 直前に待つ)。引け後 (18:00) intake は全収集を
-# 直列に回すため、この値が大きいと待ち時間が積み上がり (ratings だけで sleep×8 ≒ 40 秒)、収集全体が
-# 80 秒級になっていた。礼儀の範囲で 2 秒に抑え、intake 全体のウォールクロックを圧縮する。
+# 同じサイトへの連続アクセス間隔 (記事ごとの fetch 直前と fan-out のジョブ間に待つ)。cron は収集ジョブの
+# 完了を直列に待つため、礼儀の範囲で 2 秒に抑えて cron 全体のウォールクロックを詰める。
 MIN_INTERVAL_MS = "2000"
 # GitHub App (omnistove-internal-auth) で signal-update を repository_dispatch 起動する。
 # App ID と installation ID は秘密でないので vars。private key だけ Secret:

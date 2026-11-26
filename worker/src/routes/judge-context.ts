@@ -334,13 +334,22 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 	const sectorBarsByCode: Record<string, DailyBar[]> = {};
 	for (const t of sectorMeta) {
 		if (t.code === code) {
-			sectorBarsByCode[t.code] = dailyRows as unknown as DailyBar[];
+			sectorBarsByCode[t.code] = dailyRows.map((r) => ({
+				date: r.date,
+				close: r.close as number,
+				high: r.high,
+				low: r.low,
+				change_pct: r.changePct ?? null,
+				volume: r.volume ?? null,
+			}));
 			continue;
 		}
 		const bars = (await db(env.DB)
 			.select({
 				date: daily.date,
 				close: daily.close,
+				high: daily.high,
+				low: daily.low,
 				change_pct: daily.changePct,
 				volume: daily.volume,
 			})

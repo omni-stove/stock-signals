@@ -9,6 +9,8 @@ import type { WatchlistMeta } from "./watchlist";
 export interface DailyBar {
 	date: string;
 	close: number;
+	high?: number | null;
+	low?: number | null;
 	change_pct?: number | null;
 	volume?: number | null;
 	[key: string]: unknown;
@@ -32,6 +34,11 @@ interface SectorRow {
 	sector_role: string | null;
 	last_date: string | null;
 	change_pct: number | null;
+	// 最新足の高値・安値の前日終値比 (%) と、当日レンジ内の終値位置 (0=安値引け, 1=高値引け)。
+	// change_pct が同じでも、安値から戻した足と高値から崩れた足を区別するため。
+	high_pct: number | null;
+	low_pct: number | null;
+	close_pos: number | null;
 	ret_5d_pct: number | null;
 	vol_ratio: number | null;
 	rel_strength_pct: number | null;
@@ -51,6 +58,9 @@ export interface SectorReport {
 	sector: string;
 	backdrop: SectorBackdrop;
 	avg_change_pct: number | null;
+	avg_high_pct: number | null;
+	avg_low_pct: number | null;
+	avg_close_pos: number | null;
 	avg_ret_5d_pct: number | null;
 	rows: SectorRow[];
 }
@@ -106,6 +116,33 @@ function loadBackdrop(line: PremarketLine | null): SectorBackdrop {
 	};
 }
 
+/**
+ * 日付昇順の bars から最新足の形を返す: 高値・安値の前日終値比 (%) と、
+ * 当日レンジ内の終値位置 (0=安値引け, 1=高値引け、高値=安値なら null)。
+ * 前日終値は 1 本前の close、1 本しか無ければ change_pct から逆算する。高値・安値が無ければ全て null。
+ */
+function barShape(
+	bars: DailyBar[],
+): Pick<SectorRow, "high_pct" | "low_pct" | "close_pos"> {
+	const last = bars[bars.length - 1];
+	const high = last?.high ?? null;
+	const low = last?.low ?? null;
+	if (high === null || low === null) {
+		return { high_pct: null, low_pct: null, close_pos: null };
+	}
+	let prev: number | null = null;
+	if (bars.length >= 2) prev = bars[bars.length - 2].close;
+	else if (last.change_pct != null)
+		prev = last.close / (1 + last.change_pct / 100);
+	const pct = (x: number) =>
+		prev !== null && prev > 0 ? round((x / prev - 1) * 100) : null;
+	return {
+		high_pct: pct(high),
+		low_pct: pct(low),
+		close_pos: high > low ? round((last.close - low) / (high - low)) : null,
+	};
+}
+
 // 1 銘柄の daily 行 (date 昇順/降順どちらでも吸収) から指標を計算 (相対強弱はまだ入れない)。
 function buildRowBase(
 	meta: WatchlistMeta,
@@ -119,6 +156,9 @@ function buildRowBase(
 			sector_role: role,
 			last_date: null,
 			change_pct: null,
+			high_pct: null,
+			low_pct: null,
+			close_pos: null,
 			ret_5d_pct: null,
 			vol_ratio: null,
 			note: "日足データなし",
@@ -148,6 +188,7 @@ function buildRowBase(
 		if (v && v > 0 && last.volume != null) volRatio = last.volume / v;
 	}
 
+	const shape = barShape(bars);
 	const note = bars.length < 6 ? `本数不足(${bars.length}本、概算)` : "";
 	return {
 		code: meta.code,
@@ -155,6 +196,7 @@ function buildRowBase(
 		sector_role: role,
 		last_date: last.date,
 		change_pct: round(last.change_pct ?? null),
+		...shape,
 		ret_5d_pct: round(ret5d),
 		vol_ratio: round(volRatio),
 		note,
@@ -171,6 +213,9 @@ function buildSectorReport(
 	const bases = tickers.map((t) => buildRowBase(t, barsByCode[t.code] ?? []));
 	const avgChange = avg(bases.map((b) => b.change_pct));
 	const avgRet5d = avg(bases.map((b) => b.ret_5d_pct));
+	const avgHigh = avg(bases.map((b) => b.high_pct));
+	const avgLow = avg(bases.map((b) => b.low_pct));
+	const avgClosePos = avg(bases.map((b) => b.close_pos));
 	const rows: SectorRow[] = bases.map((b) => ({
 		...b,
 		rel_strength_pct:
@@ -187,6 +232,9 @@ function buildSectorReport(
 		sector,
 		backdrop,
 		avg_change_pct: round(avgChange),
+		avg_high_pct: round(avgHigh),
+		avg_low_pct: round(avgLow),
+		avg_close_pos: round(avgClosePos),
 		avg_ret_5d_pct: round(avgRet5d),
 		rows,
 	};
@@ -226,10 +274,16 @@ export function sectorForTicker(
 	return {
 		sector: report.sector,
 		avg_change_pct: report.avg_change_pct,
+		avg_high_pct: report.avg_high_pct,
+		avg_low_pct: report.avg_low_pct,
+		avg_close_pos: report.avg_close_pos,
 		avg_ret_5d_pct: report.avg_ret_5d_pct,
 		peers_n: report.rows.length,
 		rank: idx + 1,
 		change_pct: self.change_pct,
+		high_pct: self.high_pct,
+		low_pct: self.low_pct,
+		close_pos: self.close_pos,
 		ret_5d_pct: self.ret_5d_pct,
 		vol_ratio: self.vol_ratio,
 		rel_strength_pct: self.rel_strength_pct,
@@ -285,6 +339,45 @@ if (import.meta.vitest) {
 			expect(b.tone).toBe("risk-on");
 			expect(b.sox_change_pct).toBe(1.6);
 			expect(b.nasdaq_change_pct).toBe(0.4);
+		});
+	});
+
+	describe("barShape", () => {
+		const bar = (
+			date: string,
+			close: number,
+			high?: number,
+			low?: number,
+			change_pct?: number,
+		): DailyBar => ({ date, close, high, low, change_pct });
+
+		it("同じ -5% でも安値から戻した足と安値引けを区別する", () => {
+			const recovered = barShape([
+				bar("2026-06-01", 100),
+				bar("2026-06-02", 95, 100, 80),
+			]);
+			expect(recovered).toEqual({ high_pct: 0, low_pct: -20, close_pos: 0.75 });
+			const weak = barShape([
+				bar("2026-06-01", 100),
+				bar("2026-06-02", 95, 99, 95),
+			]);
+			expect(weak).toEqual({ high_pct: -1, low_pct: -5, close_pos: 0 });
+		});
+		it("1 本だけなら change_pct から前日終値を逆算する", () => {
+			expect(barShape([bar("2026-06-02", 95, 100, 80, -5)])).toEqual({
+				high_pct: 0,
+				low_pct: -20,
+				close_pos: 0.75,
+			});
+		});
+		it("高値・安値が無い / 高値=安値なら null", () => {
+			expect(barShape([bar("2026-06-01", 100), bar("2026-06-02", 95)])).toEqual(
+				{ high_pct: null, low_pct: null, close_pos: null },
+			);
+			expect(
+				barShape([bar("2026-06-01", 100), bar("2026-06-02", 95, 95, 95)])
+					.close_pos,
+			).toBeNull();
 		});
 	});
 

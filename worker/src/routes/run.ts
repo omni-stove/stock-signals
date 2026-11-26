@@ -71,31 +71,23 @@ run.get("/", async (c) => {
 		return c.json({ ok: true, kind, result });
 	}
 
-	// 以下、IR系 (articles に貯める収集) は collectXxx が
-	// { results, freshTickers } を返すので共通形で扱う。
+	// 以下、記事系 (ir / news / market-news / disclosure / ratings) は collectXxx の戻り値をそのまま
+	// result に返す。intake cron が fan-out で受け取り、fresh・新着通知・パース0件を合算する。
 	if (kind === "ir") {
 		const limit = parseInt(c.req.query("limit") || String(DEFAULT_LIMIT), 10);
-		const { results, freshTickers, emptyParses, pdfFallbacks } =
-			await collectAll(env, code, limit);
-		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
-		return c.json({
-			ok: true,
-			kind,
-			result: results,
-			fresh: freshTickers,
-			emptyParses,
-			pdfFallbacks,
-		});
+		const result = await collectAll(env, code, limit);
+		if (dispatch) await dispatchSignalUpdate(env, result.freshTickers);
+		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "news") {
 		// per_ticker ニュース収集。dispatch=1 のときだけ signal-update と Slack 通知の副作用を起こす。
-		const { results, freshTickers, freshNews } = await collectNews(env, code);
+		const result = await collectNews(env, code);
 		if (dispatch) {
-			await dispatchSignalUpdate(env, freshTickers);
+			await dispatchSignalUpdate(env, result.freshTickers);
 			await notifyNewsSlack(
 				env,
 				"🗞️ 新規ニュース",
-				freshNews.map((n) => ({
+				result.freshNews.map((n) => ({
 					tag: n.ticker,
 					title: n.title,
 					url: n.url,
@@ -103,7 +95,7 @@ run.get("/", async (c) => {
 				})),
 			);
 		}
-		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
+		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "market-news") {
 		// 銘柄非依存の市場テーマニュースを収集 → market_news + R2 に保存。マーケットブリーフの材料。
@@ -125,23 +117,15 @@ run.get("/", async (c) => {
 	}
 	if (kind === "disclosure") {
 		// 全 watchlist 銘柄の TDnet 適時開示 (kabutan nmode=3) を収集。/pull の ir カーソルに合流する。
-		const { results, freshTickers, emptyParses, pdfFallbacks } =
-			await collectDisclosures(env, code);
-		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
-		return c.json({
-			ok: true,
-			kind,
-			result: results,
-			fresh: freshTickers,
-			emptyParses,
-			pdfFallbacks,
-		});
+		const result = await collectDisclosures(env, code);
+		if (dispatch) await dispatchSignalUpdate(env, result.freshTickers);
+		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "ratings") {
 		// 証券会社レーティング (kabutan 日報) を収集 → articles に rating:% で保存。/pull の ir カーソルに合流する。
-		const { results, freshTickers } = await collectRatings(env, code);
-		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
-		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
+		const result = await collectRatings(env, code);
+		if (dispatch) await dispatchSignalUpdate(env, result.freshTickers);
+		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "earnings") {
 		// 次回決算予定日 (JPX 一覧の公表日、無ければ推定) → D1 earnings に保存。

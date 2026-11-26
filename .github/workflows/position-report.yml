@@ -116,17 +116,14 @@ jobs:
 
             ## Inputs
 
-            Each position row:
+            Each position row; a null field → skip it:
 
-            - **`ticker`** / **`name`**; **`side`** (`long` = 買建, `short` = 売建); **`account`** (`cash` = 現物,
-              `margin` = 信用); **`avgPrice`** 建値; **`price`** the day's close (null = unknown); **`pnlPct`**
-              含み損益% (positive = in profit for either side; null = not computable). These only set how a
-              material bears on the position.
-            - **`brief`** (null when none): `headline` + `body` = that name's latest 材料ブリーフ, `briefedAt` =
-              when it was saved. Lead on it. A `briefedAt` days back → the materials may predate today's tape;
-              say so rather than presenting them as fresh.
-            - **`context`** (null when none): that name's standing context. Use it for standing risks and drivers
-              `brief` does not cover; never present it as fresh.
+            - **`side`** / **`account`** / **`avgPrice`** / **`price`** / **`pnlPct`** (positive = in profit for
+              either side): only set how a material bears on the position.
+            - **`brief`**: that name's latest 材料ブリーフ; lead on it. A `briefedAt` days back → the materials may
+              predate today's tape; say so rather than presenting them as fresh.
+            - **`context`**: use it for standing risks and drivers `brief` does not cover; never present it as
+              fresh.
 
             ## Output
 

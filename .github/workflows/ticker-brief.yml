@@ -164,8 +164,7 @@ jobs:
               call the high/low 52週.
             - **`sector`** / **`relative`**: separate a name-specific move from the market's; `sector` leads over `premarket`.
               `sector` is the last confirmed daily bar (in-session, the prior day's). Lead on `change_pct`;
-              `high_pct` / `low_pct` / `close_pos` (0 = closed at the low) and their `avg_` counterparts only qualify
-              it — a rebound off a deep low or a fade from a high, in words. null → `change_pct` alone.
+              `high_pct` / `low_pct` / `close_pos` and their `avg_` counterparts only qualify it — a rebound off a deep low or a fade from a high, in words. null → `change_pct` alone.
             - **`premarket`**: lead on the field this name is most exposed to per `context_body` or `ticker_note`;
               other exposed fields only confirm; ignore the rest. `us_session: carried_over` → not fresh.
             - **`event_context`**: a driver of the tape, never a material. A `先行ピア` whose results are out may be

@@ -126,14 +126,12 @@ jobs:
               into a strong cycle in `revisions`, an `earnings_result` that shrank or runs behind pace (read the
               reaction through 決算の特色・クセ in `context_body`). `sector` separates a name-specific run-up from the sector's;
               a `close_pos` near 0 with a high `high_pct` (a fade from the high) only confirms fragility; null → skip.
-            - **Supply shocks**: `supply.items[]` (lock-up dates are rough; `ratio_pct` below `prev_ratio_pct` = a
-              large holder selling down), rising `short_interest.positions` (institutions building shorts; a running
-              `lending.fee` is squeeze fuel, not a crash path; an old `positions.calc_date` is weak evidence), and
+            - **Supply shocks**: `supply.items[]` (lock-up dates are rough), rising `short_interest.positions`
+              (a running `lending.fee` is squeeze fuel, not a crash path; an old `positions.calc_date` is weak evidence), and
               `forced` with a pending 投げ in its stated session. A `supply` item older than a few weeks is
               background only.
             - **Scheduled catalysts and macro channels**: `earnings.days_to_earnings` (`earnings.estimated: true` →
-              a guess from last year's same quarter: treat the timing as approximate, never as a 確定日);
-              `premarket` — build a macro
+              approximate timing, never a 確定日); `premarket` — build a macro
               scenario on each field `context_body`, `ticker_note` or `sector_role` shows this name is exposed to,
               most exposed first; none shown → general risk appetite only. `us_session: carried_over` → not a fresh sign. `market_phase: premarket` makes a tonight→open gap-down
               its own scenario.

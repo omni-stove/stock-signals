@@ -141,14 +141,12 @@ jobs:
             - input `status: "no-update"`, or any status you can't read, or unreadable input → return
               `{status:"no-update"}` and stop.
 
-            `ir_items` are official IR + TDnet + `rating`, lead on them. `news_items` with `source: "ticker"`
-            are per-ticker news, noisier — confirm against an IR item or drop. The same filing can arrive from
-            both official IR and TDnet; treat it as one item.
+            Lead on `ir_items`. `news_items` with `source: "ticker"` are noisier — confirm against an IR item or
+            drop. The same filing can arrive from both official IR and TDnet; treat it as one item.
 
-            `news_items` with `source: "market"` are cross-industry market news (trade policy, export controls,
-            sanctions, subsidies, tariffs, sector themes) whose headline names a product or business this ticker
-            has. Treat one only as industry-wide material: write it into `topics` only when its body shows the
-            path to this ticker — its orders, the customers or regions it ships to, or the controlled items
+            `news_items` with `source: "market"` are market-wide news whose headline names a product or business
+            this ticker has. Treat one only as industry-wide material: write it into `topics` only when its body
+            shows the path to this ticker — its orders, the customers or regions it ships to, or the controlled items
             matching its products. When the body shows no such path, or the body is null, ignore the item; never
             infer a path from what you know about the company, and never put it into a structural section.
 
@@ -207,7 +205,7 @@ jobs:
                       "items":{"type":"object","additionalProperties":false,"required":["date","summary","effect"],
                         "properties":{
                           "date":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
-                          "summary":{"type":"string","maxLength":50,"description":"What happened."},
+                          "summary":{"type":"string","maxLength":50},
                           "effect":{"type":"string","maxLength":40,"description":"Its effect over the next few weeks."}
                         }}},
                     "earnings_pattern":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":80},"description":"Existing heading 決算の特色・クセ. Structural reaction pattern to earnings for this name: focus metric, how guidance vs results moves the stock, peer linkage. Revise only when fresh ir_items carry an earnings, revision, or guidance item, and only from what those items and the existing body show; otherwise carry it forward verbatim. Leave it empty rather than fill it from memory."},

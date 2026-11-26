@@ -131,8 +131,8 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.details.blocks | length')" -eq 5 ]
   [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🆕 *新着*\n・8/5 topic\n・8/4 other')" ]
   [ "$(printf '%s' "$p" | jq -r '.details.blocks[1].text.text')" = "$(printf '📈 *テクニカル*\n・tape read')" ]
-  [ "$(printf '%s' "$p" | jq -r '.details.blocks[2].text.text')" = "$(printf '🐂 *強気*\n・strong point\n・second point')" ]
-  [ "$(printf '%s' "$p" | jq -r '.details.blocks[3].text.text')" = "$(printf '🐻 *弱気*\n・risk point')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[2].text.text')" = "$(printf '*強気*\n・strong point\n・second point')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[3].text.text')" = "$(printf '*弱気*\n・risk point')" ]
   [ "$(printf '%s' "$p" | jq -r '.details.blocks[4].text.text')" = "$(printf '👀 *注視*\n・next earnings')" ]
   # テクニカルの読みは LLM 由来なので brief_body に含める
   printf '%s' "$p" | jq -e '.brief_body | test("tape read")' >/dev/null
@@ -146,7 +146,7 @@ payload_for() {
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
   [ "$(printf '%s' "$p" | jq -r '.details.blocks | length')" -eq 1 ]
-  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🐻 *弱気*\n・risk point')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '*弱気*\n・risk point')" ]
 }
 
 # 全リストが空だと本文が組めないので落とす (headline だけの投稿は出さない)
@@ -167,8 +167,18 @@ payload_for() {
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
   [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 2 ]
-  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "🧭 *方向感*: Bear — 受注減速が先行" ]
-  [ "$(printf '%s' "$p" | jq -r '.brief_body | split("\n")[0]')" = "🧭 *方向感*: Bear — 受注減速が先行" ]
+  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "🧭 *方向感*: 🐻 ↘ — 受注減速が先行" ]
+  [ "$(printf '%s' "$p" | jq -r '.brief_body | split("\n")[0]')" = "🧭 *方向感*: 🐻 ↘ — 受注減速が先行" ]
+}
+
+@test "lean: bull renders with its emoji and up arrow" {
+  jq -n '{status:"brief",headline:"HEAD",lean:{direction:"bull",basis:"受注が加速"},
+          materials:[],technical:[],bull:["upside point"],bear:[],watch:[]}' \
+    > "$BATS_TEST_TMPDIR/b.json"
+  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "🧭 *方向感*: 🐂 ↗ — 受注が加速" ]
 }
 
 @test "lean: null lean adds no block" {

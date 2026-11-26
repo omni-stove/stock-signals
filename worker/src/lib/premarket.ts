@@ -373,7 +373,7 @@ export async function readNikkeiCloses(env: {
  * 日経先物の、取得日 (JST) より前で最新の日経平均終値に対する乖離 (%、小数 2 桁) と、その終値の日付を返す。
  * 先物価格・取得時刻・該当する終値のどれかが無ければ両方 null。
  */
-export function nikkeiFuturesGap(
+function nikkeiFuturesGap(
 	price: number | null | undefined,
 	fetchedAt: string | null | undefined,
 	closes: NikkeiClose[],

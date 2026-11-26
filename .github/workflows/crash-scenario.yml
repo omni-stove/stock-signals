@@ -162,13 +162,12 @@ jobs:
 
             ## Output
 
-            Japanese. Each block is one Slack section; the posting step adds the header and bolds each block's
-            first line, so do not add `*`.
+            Japanese. Do not add `*`.
 
             - One block per scenario. First line: `<rank>. <name> [<固有 or マクロ>] 確度:<高, 中, or 低>`; then a
               きっかけ line and a 先行サイン line, each after a newline.
             - Exact format, verbatim: exactly one 総括 block, placed last, whose first line is `総括` alone; its
-              body starts on the second line. The posting step counts every block before it as a scenario.
+              body starts on the second line.
           # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず
           # Read + WebSearch/WebFetch (追加取材) のみ許可。
           # --json-schema で出力の形を縛る。blocks = scenario + 総括 の Slack section 配列 (各ブロックの中身は prompt の

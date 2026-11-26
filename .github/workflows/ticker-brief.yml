@@ -132,11 +132,11 @@ jobs:
           prompt: |
             # ticker-brief — ticker ${{ github.event.client_payload.ticker || inputs.ticker }}
 
-            Produce a **材料ブリーフ** — a research digest for a human to make their own trading decision.
+            Produce a **材料ブリーフ** — a research digest.
             Headline the fresh materials on this name, lay out the 強気/弱気 case, and state which way it leans.
             **Never output a trading action**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs
             (買い/売り/利確/増し玉/様子見).
-            Never restate a price level or an indicator value in your text; the posting step appends them.
+            Never restate a price level or an indicator value in your text.
             Describe what the tape did as fact.
 
             The reader holds swing positions of several days to about three weeks. Weigh each material by how
@@ -186,6 +186,7 @@ jobs:
               peer's price move as this name's. Once its results are out, you may look up its 受注・見通し within
               the Web research budget and, only as a cited source states them, give what they imply for this name's
               coming earnings as a `bull` or `bear` fact; nothing found → skip it. A coming one goes in `watch`.
+              Never write a scheduled index rebalance (not its 銘柄発表) in any field.
             - **`event_reactions`**: report how the market took a material — a good-news item that sold off or faded
               is itself a fact. `partial: true` = the second session is not in yet.
             - **`earnings`** → a `watch` or `bear` fact; `estimated: true` → a guess from last year's same quarter:
@@ -196,8 +197,7 @@ jobs:
               the price reaction through **## 決算の特色・クセ** in `context_body`.
             - **`revisions`**: a company forecast revision within the holding horizon is an earnings fact for
               `bull` (up) or `bear` (down); an older one is background. Nothing before `history_since` is
-              stored. Analyst consensus figures are not
-              collected. Only when `earnings_result.consensus_mentions` is present, you may state the result or
+              stored. Only when `earnings_result.consensus_mentions` is present, you may state the result or
               guidance came in above or below 市場予想 exactly as a mention's `text` says, citing it inline
               (株探, `date`) — the direction only, never a figure from `text`; a `text` that states no direction →
               skip it. Otherwise never claim a result or forecast beat, missed, or diverged from consensus unless

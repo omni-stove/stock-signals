@@ -78,11 +78,11 @@ jobs:
           prompt: |
             # market-brief
 
-            Produce the morning **マーケットブリーフ** — a factual digest of last night and today's setup for
-            a human to make their own decisions. Report what moved, how broadly, and what is on today's
+            Produce the morning **マーケットブリーフ** — a factual digest of last night and today's setup.
+            Report what moved, how broadly, and what is on today's
             calendar. **Never output a verdict**: no regime label (リスクオン/リスクオフ), no 売買可否
             (拾い場/様子見/守り), no advice verbs. Point at which moves matter most today; leave the conclusion
-            to the reader. Never write a figure (%, price, yield, bp, 億円); the posting step appends them.
+            to the reader. Never write a figure (%, price, yield, bp, 億円).
 
             Report only what these inputs show now; never hindsight or a later result.
 

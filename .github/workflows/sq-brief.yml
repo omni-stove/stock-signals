@@ -63,8 +63,7 @@ jobs:
             Produce the morning **SQ週ブリーフ** for a semis-heavy Japanese watchlist held for days to three
             weeks: the paths this SQ week can take, and how strongly SQ pushes each name compared with its
             normal days. Give scenarios with 確度, never a verdict: no buy/sell direction, no 指値, no 損切り, no
-            advice verbs. Do not forecast any single name. Never write a figure (price, %, multiple, count); the
-            posting step appends the SQ date, this week's returns, NT倍率, and each name's SQ連動度.
+            advice verbs. Do not forecast any single name. Never write a figure (price, %, multiple, count).
 
             Judge only on what these inputs show now; never on hindsight or a later result.
 

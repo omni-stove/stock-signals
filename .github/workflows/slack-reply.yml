@@ -163,8 +163,8 @@ jobs:
               `fiscal_quarter` 4 = 本決算; lead on `yoy_pct`, confirm with `qoq_pct` and `progress_pct`
               通期会社予想に対する累計進捗率 (null → do not speak of progress); `actual` / `year_ago` only show a
               赤字・黒字 turn). Read them as facts and
-              answer in words — grew or shrank, ahead of or behind pace — without writing the numbers. No
-              consensus is collected: never call it beat/miss unless a cited source states it.
+              answer in words — grew or shrank, ahead of or behind pace — without writing the numbers. Never
+              call it beat/miss unless a cited source states it.
             - **`forced`**: `summary` states the forced-flow timing; take it as given.
             - **`trend` / `relative` / `event_reactions` / `revisions` / `valuation` / `short_interest` / `sector` /
               `supply`** answer questions on positioning and flows. Never call `valuation` 割安/割高 on the number

@@ -9,12 +9,14 @@
 //
 // ※LLM は使わない。スクレイピング・正規化のみ。kabutan は全ソース UTF-8 なので iconv 不要。
 
+import { desc, eq } from "drizzle-orm";
 import { db } from "./db";
 import { stripTags } from "./html";
 import { parseKabutanIndex } from "./live-indexes";
 import { prevNyseSession } from "./market-calendar";
 import { type PeerRelease, SOX_PEERS } from "./peer-earnings";
-import { premarketBackdrop } from "./schema";
+import { daily, premarketBackdrop } from "./schema";
+import { NIKKEI225_CODE } from "./timeseries";
 import { addDays, fetchHtml, sleep } from "./utils";
 
 export interface PremarketEnv {
@@ -352,6 +354,45 @@ export function macroFields(row: MacroRow): Required<MacroRow> {
 	};
 }
 
+export type NikkeiClose = { date: string; close: number | null };
+
+/** 日経平均の日足の終値を新しい順に 5 本返す (nikkeiFuturesGap の基準)。 */
+export async function readNikkeiCloses(env: {
+	DB: D1Database;
+}): Promise<NikkeiClose[]> {
+	return db(env.DB)
+		.select({ date: daily.date, close: daily.close })
+		.from(daily)
+		.where(eq(daily.ticker, NIKKEI225_CODE))
+		.orderBy(desc(daily.date))
+		.limit(5)
+		.all();
+}
+
+/**
+ * 日経先物の、取得日 (JST) より前で最新の日経平均終値に対する乖離 (%、小数 2 桁) と、その終値の日付を返す。
+ * 先物価格・取得時刻・該当する終値のどれかが無ければ両方 null。
+ */
+function nikkeiFuturesGap(
+	price: number | null | undefined,
+	fetchedAt: string | null | undefined,
+	closes: NikkeiClose[],
+): { nikkei_futures_gap_pct: number | null; nikkei_close_date: string | null } {
+	const none = { nikkei_futures_gap_pct: null, nikkei_close_date: null };
+	const t = fetchedAt ? Date.parse(fetchedAt) : Number.NaN;
+	if (price == null || !Number.isFinite(t)) return none;
+	// 場中・引け後は当日の足が入っているが、先物は寄り前に取った値なので当日の終値とは比べない。
+	const fetchedJst = new Date(t + 9 * 3600_000).toISOString().slice(0, 10);
+	const base = closes
+		.filter((c) => c.date < fetchedJst && c.close != null && c.close > 0)
+		.sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+	if (!base?.close) return none;
+	return {
+		nikkei_futures_gap_pct: Math.round((price / base.close - 1) * 10000) / 100,
+		nikkei_close_date: base.date,
+	};
+}
+
 // ── 出力整形 (routes が D1 から引いた premarket 行を読み手向けに整える純粋ロジック) ──
 // 取得 (collectBackdrop) と読み出し整形を同じモジュールに置く。HTTP には依存しない。
 
@@ -455,6 +496,7 @@ export function buildPremarketBlock(
 		| null,
 	epochNow: number,
 	today: string,
+	nikkeiCloses: NikkeiClose[] = [],
 ): Record<string, unknown> {
 	if (!row?.fetched_at) return { status: "unavailable" };
 	const ageH = Math.floor(
@@ -472,6 +514,7 @@ export function buildPremarketBlock(
 		dow_change_pct: row.dow_change_pct ?? null,
 		nikkei_futures_price: row.nikkei_futures_price ?? null,
 		nikkei_contract: row.nikkei_contract ?? null,
+		...nikkeiFuturesGap(row.nikkei_futures_price, row.fetched_at, nikkeiCloses),
 		...macroFields(row),
 		us_indexes: usIndexes,
 	};
@@ -779,6 +822,39 @@ if (import.meta.vitest) {
 			expect(buildVixPeak([30], undefined)).toBeNull();
 		});
 	});
+	describe("nikkeiFuturesGap", () => {
+		// 2026-11-26T23:35Z = JST 11/27 08:35 (寄り前)。
+		const fetchedAt = "2026-11-26T23:35:00Z";
+		it("取得日より前で最新の終値に対する乖離を出す (当日の足は使わない)", () => {
+			const closes = [
+				{ date: "2026-11-25", close: 39000 },
+				{ date: "2026-11-27", close: 40000 },
+				{ date: "2026-11-26", close: 38000 },
+			];
+			expect(nikkeiFuturesGap(38456, fetchedAt, closes)).toEqual({
+				nikkei_futures_gap_pct: 1.2,
+				nikkei_close_date: "2026-11-26",
+			});
+		});
+		it("終値が null の日は飛ばす", () => {
+			const closes = [
+				{ date: "2026-11-26", close: null },
+				{ date: "2026-11-25", close: 40000 },
+			];
+			expect(nikkeiFuturesGap(39500, fetchedAt, closes)).toEqual({
+				nikkei_futures_gap_pct: -1.25,
+				nikkei_close_date: "2026-11-25",
+			});
+		});
+		it("先物価格・取得時刻・基準の終値が無ければ null", () => {
+			const none = { nikkei_futures_gap_pct: null, nikkei_close_date: null };
+			const closes = [{ date: "2026-11-26", close: 38000 }];
+			expect(nikkeiFuturesGap(null, fetchedAt, closes)).toEqual(none);
+			expect(nikkeiFuturesGap(38000, null, closes)).toEqual(none);
+			expect(nikkeiFuturesGap(38000, fetchedAt, [])).toEqual(none);
+		});
+	});
+
 	describe("buildPremarketBlock", () => {
 		const NOW = new Date("2026-06-24T00:00:00Z").getTime();
 		const TODAY = "2026-06-24";
@@ -809,6 +885,20 @@ if (import.meta.vitest) {
 			expect(b.us_indexes).toEqual([{ key: "sox" }]);
 			expect(b.usdjpy_price).toBe(152.3);
 			expect(b.us10y_change_bp).toBe(-4);
+			expect(b.nikkei_futures_gap_pct).toBeNull(); // 終値を渡していない
+		});
+		it("日経平均の終値を渡すと先物の乖離を載せる", () => {
+			const b = buildPremarketBlock(
+				{
+					fetched_at: new Date(NOW - 3600_000).toISOString(),
+					nikkei_futures_price: 38380,
+				},
+				NOW,
+				TODAY,
+				[{ date: "2026-06-23", close: 38000 }],
+			);
+			expect(b.nikkei_futures_gap_pct).toBe(1);
+			expect(b.nikkei_close_date).toBe("2026-06-23");
 		});
 		it("jst_time があれば date を解決し fresh/carried_over を分類する", () => {
 			// NOW = 水曜 6/24 09:00 JST。前夜クローズ (JST 24日早朝) は fresh。

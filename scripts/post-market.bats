@@ -142,6 +142,12 @@ run_pm_ctx() {
   grep -qF '空売り比率 42.1%（5日平均 39.8%） / 海外投資家 -1200億円（2026-11-02〜2026-11-06・2週連続売り越し）' <<<"$t"
 }
 
+@test "numbers: Nikkei futures carry their gap from the Nikkei close when present" {
+  run_pm_ctx '{"premarket":{"status":"ok","date":"2026-11-13","nikkei_futures_price":38500,"nikkei_futures_gap_pct":1.2}}'
+  [ "$status" -eq 0 ]
+  grep -qF '日経先物 38500（対日経終値 +1.2%）' <<<"$(payload | jq -r '.blocks[1].elements[0].text')"
+}
+
 @test "numbers: VIX carries its distance from the recent high and the unwind mark, or marks a new high" {
   run_pm_ctx '{"premarket":{"status":"ok","date":"2026-11-13","vix_price":24.3,"vix_change_pct":-8.2,
     "vix_peak":{"window_days":30,"peak":32.4,"from_peak_pct":-25}}}'

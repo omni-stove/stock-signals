@@ -94,7 +94,9 @@ jobs:
 
             - **`market_phase`**: `premarket` → the gap isn't in yet; 場中 → read breadth from `live_indexes`;
               `closed` → today's close plus tonight's NY setup.
-            - **`premarket`** leads pre-open: lead on the field the watchlist's sectors are most exposed to, judged
+            - **`premarket`** leads pre-open: `nikkei_futures_gap_pct` (vs the `nikkei_close_date` close) sets where
+              today opens and leads the market-wide read; it places the open only, never the session after it;
+              null → make no gap call. Across sectors, lead on the field the watchlist's sectors are most exposed to, judged
               from `sectors` and each name's `sector_role`; the others only confirm. `vix_peak`: building or
               unwinding; `unwind: true` → the fear spike has run its course from a high of 30 or more, a setup
               after which US and Japanese stocks have historically tended to rise; `unwind: false` → never call a

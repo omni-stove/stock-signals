@@ -92,8 +92,8 @@ jobs:
               the SQ effect, say so. Use `trend` to explain an outlier or to name which past weeks resemble
               this one, never to filter the aggregates further.
             - **`week_to_date`**: a week that has already run hard into SQ is what `reversal_rate` speaks to.
-            - **`premarket`**: `nikkei_futures_price` leads the market-wide scenarios, most of all when `days_to_sq`
-              is 0. Per name, lead on the field its `sector_role` is most exposed to; the others only confirm; none
+            - **`premarket`**: `nikkei_futures_gap_pct` (vs the `nikkei_close_date` close) leads the market-wide
+              scenarios, most of all when `days_to_sq` is 0; null → no gap call from `nikkei_futures_price`. Per name, lead on the field its `sector_role` is most exposed to; the others only confirm; none
               shown → general risk appetite. `status: stale` → demote; `us_session: carried_over` → not fresh.
             - **`live_indexes`**: pre-open → skip.
             - **`market_short_ratio`** well above its 5日平均 is squeeze fuel into SQ.

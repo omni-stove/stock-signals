@@ -6,7 +6,8 @@
 //   { asof, market_phase, event_context, premarket, us_peers, live_indexes, sectors, market_news,
 //     investor_flows, market_short_ratio, memory_prices, tw_monthly_revenue, seaj_sales }
 //
-// premarket は judge-context と違い us_indexes / date と vix_peak (直近 30 日の VIX 高値と現値の乖離) も載せる
+// premarket は judge-context と違い us_indexes / date と vix_peak (直近 30 日の VIX 高値と現値の乖離)、
+// nikkei_futures_gap_pct (日経先物の日経平均終値に対する乖離) も載せる
 // (市場全体のマーケットブリーフに使うため)。
 // us_peers は海外ピア個別株の前夜の騰落 (決算日に当たる銘柄は終値に反映済みか付き)。
 // live_indexes は場中に同時進行で動く指数 (日経225/KOSPI) の最新現値 (premarket=前夜確定 と対)。
@@ -27,6 +28,7 @@ import {
 	buildVixPeak,
 	PREMARKET_COLUMNS,
 	parseUsIndexes,
+	readNikkeiCloses,
 	VIX_PEAK_WINDOW_DAYS,
 } from "../lib/premarket";
 import {
@@ -93,7 +95,12 @@ export async function readMarketBackdrop(
 
 	// premarket ブロック (鮮度判定 age>20h で stale、休場またぎ判定 us_session)。
 	// 整形は lib/premarket に集約。date は jst_time から解決した米国クローズの JST 暦日。
-	const premarketBlock = buildPremarketBlock(pmRow ?? null, epochNow, today);
+	const premarketBlock = buildPremarketBlock(
+		pmRow ?? null,
+		epochNow,
+		today,
+		await readNikkeiCloses(env),
+	);
 	const premarketLine: PremarketLine | null = pmRow
 		? {
 				date: (premarketBlock.date as string | null) ?? null,

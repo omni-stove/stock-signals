@@ -40,7 +40,7 @@ BODY="$(printf '%s' "$SIGNAL_JSON" | jq -r '(.body // []) | join("\n")')"
 [[ -n "$HEADLINE" ]] || { echo "post-market.sh: empty headline in $SIGNAL_FILE" >&2; exit 1; }
 
 # --- 数値行 (決定論) ----------------------------------------------------------
-# 1 行目 = 前夜米国 (SOX/NASDAQ/Dow/日経先物/ドル円/米10年債/VIX。VIX には直近高値からの乖離 (unwind なら「恐怖の一巡」) を添え、
+# 1 行目 = 前夜米国 (SOX/NASDAQ/Dow/日経先物 (日経平均の前日終値に対する乖離)/ドル円/米10年債/VIX。VIX には直近高値からの乖離 (unwind なら「恐怖の一巡」) を添え、
 #   休場明け・stale は日付の横に添える)、
 # 2 行目 = 場中の指数 (status=ok のものだけ)、3 行目 = セクター平均 (前日比・5日)、
 # 4 行目 = 空売り比率 (5日平均) と海外投資家の週次売買 (連続週)、
@@ -58,7 +58,7 @@ if [[ -n "$MARKETCTX_FILE" && -s "$MARKETCTX_FILE" ]] && jq -e . "$MARKETCTX_FIL
       (.premarket // {}) as $p
       | select(($p.status // "unavailable") != "unavailable")
       | [ ($p.sox_change_pct | pct("SOX")), ($p.nasdaq_change_pct | pct("NASDAQ")), ($p.dow_change_pct | pct("Dow")),
-          ($p.nikkei_futures_price | if . != null then "日経先物 \(.)" else empty end),
+          ($p.nikkei_futures_price | if . != null then "日経先物 \(.)" + (if $p.nikkei_futures_gap_pct != null then "（対日経終値 \($p.nikkei_futures_gap_pct | signed)%）" else "" end) else empty end),
           ($p.usdjpy_price | withchg("ドル円"; $p.usdjpy_change; "")),
           ($p.us10y_yield | if . != null then "米10年 \(.)%" + (if $p.us10y_change_bp != null then "（\($p.us10y_change_bp | signed)bp）" else "" end) else empty end),
           ($p.vix_price | if . != null then "VIX \(.)" + ([ ($p.vix_change_pct | if . != null then "\(signed)%" else empty end),

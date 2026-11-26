@@ -300,7 +300,7 @@ async function collectDailyOne(
  * @returns factor = 保存済み終値 / 調整後終値 (1:3 分割なら約 3)、exDate = 保存に無い最古の足の日付。
  *   調整が無い・判定できないときは null
  */
-export function detectSplit(
+function detectSplit(
 	bars: DailyBar[],
 	stored: { date: string; close: number | null }[],
 ): { exDate: string; factor: number } | null {
@@ -329,7 +329,7 @@ export function detectSplit(
  * 権利落ち日より前に保存した未調整の日足を、株探の調整後と同じ尺度に直す。
  * 価格と前日比は factor で割り、出来高は掛ける。
  */
-export async function adjustDailyForSplit(
+async function adjustDailyForSplit(
 	d1: D1Database,
 	code: string,
 	split: { exDate: string; factor: number },

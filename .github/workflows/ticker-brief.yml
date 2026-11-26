@@ -132,122 +132,74 @@ jobs:
           prompt: |
             # ticker-brief — ticker ${{ github.event.client_payload.ticker || inputs.ticker }}
 
-            Produce a **材料ブリーフ** — a research digest.
-            Headline the fresh materials on this name, lay out the 強気/弱気 case, and state which way it leans.
-            **Never output a trading action**: no buy/sell, no 押し目/指値/損切り levels, no advice verbs
-            (買い/売り/利確/増し玉/様子見).
-            Never restate a price level or an indicator value in your text.
-            Describe what the tape did as fact.
+            Produce a **材料ブリーフ** for a reader who holds swing positions of several days to about three
+            weeks: headline the fresh materials on this name, lay out the 強気/弱気 case, and state which way it
+            leans over that horizon.
 
-            The reader holds swing positions of several days to about three weeks. Weigh each material by how
-            it plays out over that horizon: lead on what moves earnings or supply-demand within it, and demote
-            what only matters for a session or only beyond it.
+            Read each material the way the market will: what it changes for earnings, supply-demand, capital
+            policy, or expectations, and what the company's move likely signals. Use your own judgment on what
+            matters most. Mark an inference the inputs do not confirm as 思惑 or 未確認.
 
-            Report what you can see now — context, numbers, `event_context` — never hindsight framing
-            ("priced in", "unexplained" volume, a top being "in"). Ground every claim in a material,
-            a number, or a sourced find; write nothing you cannot attribute.
+            Never write a scheduled index rebalance (not its 銘柄発表) in any field.
 
             Return structured output and stop.
 
             ## Run mode: ${{ steps.mode.outputs.mode }}
 
-            - `routine`: a scheduled brief with no new IR/news since the last context update. Keep it to a short
-              status check: `headline` is `📊 <ticker> <name>: <one-phrase summary of where the name stands now>`;
-              `materials` empty; `technical` at most 1 line; `bull` / `bear` at most 2 each, only points the
-              current tape, `event_context`, `earnings`, `forced`, or `supply` makes live now; `watch` at most 1;
-              `lean` as usual.
-              Skip Web research. Never present a topic from 直近の重大トピック as new.
+            `routine` = no new IR/news since the last context update: give a short status check —
+            `headline` (exact format, verbatim prefix) `📊 <ticker> <name>: <where the name stands now>`, `materials` empty, at most 1 `technical`,
+            2 each of `bull` / `bear`, 1 `watch`. Skip Web research; never present a topic from 直近の重大トピック as new.
 
             ## Inputs
 
             An absent block means no data, or data too stale or thin to read — do not mention it or fill it in.
 
-            - **`context_body`**: 直近の重大トピック is the fresh layer; the rest is structural background. Absent →
-              brief on price/tape facts alone.
-            - **`market_brief`**: background only, never a material of this name. `date` before today → do not
-              present it as today's.
-            - **`market_phase`** sets the lead: `premarket` → `premarket` and context; `afternoon_session` with a
-              live tape → the live tape; `closed` → the close. In-session, `daily` is the **prior** day's bar; take
-              today's 出来高 from `daily.vol_x_20d_intraday` (null = too early to project).
-            - **`prices`**: `quote_status: closed` → stale tape, backdrop only.
-            - **`daily`** and **`trend`** only confirm or contradict the materials; never a standalone call. A
-              money-flow reading that diverges from price leads over price alone. Take `volume_quality` /
-              `momentum_state` as given (`na` → skip). A 52週高値・安値 within reach or just broken is a 需給 fact. `trend.full_year: false` → treat the high/low as the high/low since `window_start` and do not call it 52週.
-            - **`sector`** leads over `premarket`; with `relative` it separates a name-specific move from the
-              market's.
-            - **`premarket`**: lead on the field `context_body` or `ticker_note` shows this name is most exposed to;
-              other fields it is exposed to only confirm; skip the rest. No exposure shown → risk appetite alone,
-              crediting no move to a single index. `us_session: carried_over` → not fresh.
-            - **`event_context`**: weigh each event as a driver of the tape before crediting a move to a material;
-              never list it as a material. On an SQ当日, state in `technical` that today's tape overlaps the SQ; a
-              coming SQ or SQ明け goes in `watch`. The further `当銘柄のSQ連動度` runs above 1, the more weight the
-              SQ gets; near 1, do not cite it.
-              A `先行ピア` item is the exception: a peer whose results come out before this name's. Never read the
-              peer's price move as this name's. Once its results are out, you may look up its 受注・見通し within
-              the Web research budget and, only as a cited source states them, give what they imply for this name's
-              coming earnings as a `bull` or `bear` fact; nothing found → skip it. A coming one goes in `watch`.
-              Never write a scheduled index rebalance (not its 銘柄発表) in any field.
-            - **`event_reactions`**: report how the market took a material — a good-news item that sold off or faded
-              is itself a fact. `partial: true` = the second session is not in yet.
-            - **`earnings`** → a `watch` or `bear` fact; `estimated: true` → a guess from last year's same quarter:
-              give it as a rough timing (`…頃の見込み`), never as 確定日. **`earnings_result`** (present only when fresh): lead on
-              `yoy_pct`; `qoq_pct` and `progress_pct` only confirm; `actual` / `year_ago` only show a 赤字・黒字
-              turn where a `*_pct` is null. Say in words, without numbers, whether the quarter grew or shrank and
-              whether progress runs ahead of or behind pace. `progress_pct: null` → do not speak of progress. Read
-              the price reaction through **## 決算の特色・クセ** in `context_body`.
-            - **`revisions`**: a company forecast revision within the holding horizon is an earnings fact for
-              `bull` (up) or `bear` (down); an older one is background. Nothing before `history_since` is
-              stored. Only when `earnings_result.consensus_mentions` is present, you may state the result or
-              guidance came in above or below 市場予想 exactly as a mention's `text` says, citing it inline
-              (株探, `date`) — the direction only, never a figure from `text`; a `text` that states no direction →
-              skip it. Otherwise never claim a result or forecast beat, missed, or diverged from consensus unless
-              a cited source states it.
-            - **`valuation`**: report the multiple as how much good news the price already carries; never call it
-              割安/割高 on the number alone.
-            - **`forced`**: take `summary` as given; report it as a 需給 fact on the side whose price it pushes, or
-              in `watch` when it lands beyond the next session.
-            - **`margin`**: report a buildup that contradicts `context_body` as a 需給 fact.
-            - **`short_interest`**: a running 逆日歩 is short-squeeze fuel; an old `positions.calc_date` is weak
-              evidence.
-            - **`supply`**: `lockup_90d` / `lockup_180d` are rough dates counted from the announcement; state a
-              lock-up term only when the filing confirms it. A lock-up end or a pending offering inside the holding
-              horizon is a `bear` or `watch` fact. A holder crossing 5%, or building or cutting a stake, is a 需給
-              fact (`special` = 機関投資家の特例報告); `ratio_pct: null` → name the filing without a direction.
-              Older than a few weeks → background only.
-            - **`ticker_note`**: qualifies the other inputs; never a material of its own.
+            - **`context_body`**: lead on 直近の重大トピック; the rest is background only. Absent → brief on the tape alone.
+            - **`market_phase`** sets the lead tape: `premarket` → `premarket` and the 気配; in-session → the live
+              tape; `closed` → the close.
+            - **`prices`**: the live tape. `quote_status: closed` → stale, background only.
+            - **`daily`** / **`trend`**: only confirm or contradict the materials; a money-flow reading that diverges
+              from price leads over price. In-session, `daily` is the prior bar and today's 出来高 is
+              `daily.vol_x_20d_intraday` (null → too early, ignore). `na` → ignore. `trend.full_year: false` → do not
+              call the high/low 52週.
+            - **`sector`** / **`relative`**: separate a name-specific move from the market's; `sector` leads over `premarket`.
+            - **`premarket`**: lead on the field this name is most exposed to per `context_body` or `ticker_note`;
+              other exposed fields only confirm; ignore the rest. `us_session: carried_over` → not fresh.
+            - **`event_context`**: a driver of the tape, never a material. A `先行ピア` whose results are out may be
+              looked up and cited for what it implies here; never read the peer's price move as this name's.
+            - **`event_reactions`**: how the market took a material. `partial: true` → the second session is not in yet.
+            - **`earnings`**: a coming date. `estimated: true` → a rough timing (`…頃の見込み`), never 確定日.
+            - **`earnings_result`**: lead on `yoy_pct`; `qoq_pct` / `progress_pct` only confirm; say them in words.
+              `progress_pct: null` → skip progress. `consensus_mentions` → the direction vs 市場予想, cited (株探, `date`).
+            - **`revisions`**: lead on one within the holding horizon; older → background only.
+            - **`margin`** / **`short_interest`** / **`forced`**: 需給 facts. An old `positions.calc_date` → weak evidence.
+            - **`supply`**: a 需給 fact. A lock-up term only when the filing confirms it; `ratio_pct: null` → no
+              direction; older than a few weeks → background only.
+            - **`valuation`**: how much good news the price carries, never 割安/割高 alone.
+            - **`market_brief`** / **`ticker_note`**: background only, never a material of this name. `market_brief.date`
+              before today → not today's.
             - The ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
-            ## Web research (supplementary)
+            ## Web research
 
-            You may use WebSearch/WebFetch to deepen `bull` / `bear` with
-            一次情報 (会社 IR/取引所/当局), 海外報道, or アナリスト見解: at most 4 search+fetch calls total; only to
-            corroborate or deepen a material already in the inputs; cite the source inline (媒体名, 日付); if
-            nothing solid turns up, write nothing — never invent a source or a fact.
+            Up to 4 WebSearch/WebFetch calls, only to corroborate or deepen a material already in the inputs.
+            Cite inline (媒体名, 日付); nothing solid → write nothing.
 
             ## Output
 
-            Write in Japanese for a reader who sees only this post. Put each fact in one place only. Give each
-            line one point in about 40 characters, in clipped note style: the fact, then its effect. Do not
-            use polite endings, narrating connectives, or hedges unless the uncertainty is the point. Do not
-            name an input or describe your research; state an unresolved point as unconfirmed.
+            Japanese, for a reader who sees only this post. Clipped note style, about 40 characters per line, one
+            point per line, each fact in one place. State levels in words, not figures. Do not name
+            an input or describe your research.
 
-            - `status`: default `brief`. Return `no_update` only when the freshest entry in 直近の重大トピック
-              is older than 14 days and there is no fresh earnings or guidance, forced-flow reading, or notable
-              tape move. When in doubt, brief. On `no_update`, leave `headline` and `lean` null and every array
-              empty.
-            - `headline`: `📰 <ticker> <name>: <one-phrase summary of the fresh materials>`.
-            - `materials`: the fresh items, newest first; merge items on one theme. Each is
-              `YYYY-MM-DD <what happened>` only — no effect or analysis.
-            - `technical`: whether trend and money flow confirm or diverge from the fresh materials. Do not
-              restate indicators one by one, forecast, or name a level to act on. Empty when `daily` is absent.
-            - `bull` / `bear`: the strongest points on earnings and supply-demand, fresh materials first, as
-              facts and their weight. For a fresh material, give the concrete path into earnings or price, and a
-              precedent or first market reaction when known. Either side may be empty when the materials lean
-              one way.
-            - `lean`: which way the `bull` / `bear` case nets out over the holding horizon.
-              - `direction`: the side `basis` points to, also when the case looks balanced or thin.
-              - `basis`: the one fact that decides the lean, about 40 characters, no figures.
-            - `watch`: the next verifiable fact that would change the picture, leading with its date when known.
+            - `status`: `brief` by default. `no_update` only when the freshest 直近の重大トピック entry is older than
+              14 days and nothing fresh moved (earnings, guidance, forced flow, tape); then `headline` and `lean`
+              null and every array empty.
+            - `headline` (exact format, verbatim prefix): `📰 <ticker> <name>: <one-phrase summary of the fresh materials>`.
+            - `materials` (exact format, verbatim): `YYYY-MM-DD <what happened>`, newest first, themes merged, no analysis.
+            - `technical`: whether trend and money flow confirm or diverge from the materials. Empty when `daily` is absent.
+            - `bull` / `bear`: the strongest points, fresh materials first, each with its path into price.
+            - `lean`: `direction` = the side the case nets out to; `basis` = the deciding point, no figures.
+            - `watch`: the next verifiable fact that would change the picture, date first when known.
 
             ## 数値コンテキスト
 

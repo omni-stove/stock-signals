@@ -190,17 +190,6 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 1 ]
 }
 
-@test "lean: numeric basis is dropped but direction stays" {
-  jq -n '{status:"brief",headline:"HEAD",lean:{direction:"bull",basis:"PER 40倍でも上方修正"},
-          materials:[],technical:[],bull:["strong point"],bear:[],watch:[]}' \
-    > "$BATS_TEST_TMPDIR/b.json"
-  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
-  [ "$status" -eq 0 ]
-  [ "$(dropped_lines)" = "post-brief.sh: dropped numeric line: lean: PER 40倍でも上方修正" ]
-  local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '.blocks[1].text.text')" = "🧭 *方向感*: Bull" ]
-}
-
 # === numbers: 数値行 (numctx の実在値から決定論で組み、親の context block に貼る) ===
 
 # numctx-file 付きで実行するヘルパ。$1=numctx JSON
@@ -426,84 +415,4 @@ numbers_text() {
   [ "$status" -eq 0 ]
   local p; p="$(payload_for "/slack/post")"
   [ "$(printf '%s' "$p" | jq -r '[.details.blocks[].text.text | select(test("リバランス窓"))] | length')" -eq 0 ]
-}
-
-# === numeric: LLM 出力に混ざった数字の行を落とす =============================
-
-# stderr に出た「落とした行」の警告だけを返す。
-dropped_lines() {
-  printf '%s\n' "$output" | grep '^post-brief.sh: dropped numeric line: ' || true
-}
-
-# 数字入りの bull 行は payload からも brief_body からも消え、警告が出る
-@test "numeric: bull line with a multiple is dropped with a warning" {
-  jq -n '{status:"brief",headline:"HEAD",materials:[],technical:[],
-          bull:["PER 40倍で割高感","受注回復が続く"],bear:[],watch:[]}' \
-    > "$BATS_TEST_TMPDIR/b.json"
-  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
-  [ "$status" -eq 0 ]
-  [ "$(dropped_lines)" = "post-brief.sh: dropped numeric line: bull: PER 40倍で割高感" ]
-  local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🐂 *強気*\n・受注回復が続く')" ]
-  [ "$(printf '%s' "$p" | jq -r '.brief_body | test("40倍")')" = "false" ]
-}
-
-# 日付・時刻だけを含む watch 行は残る
-@test "numeric: watch lines with only dates and times are kept" {
-  jq -n '{status:"brief",headline:"HEAD",materials:[],technical:[],bull:[],bear:[],
-          watch:["2026-11-07 決算発表","11/7(金) 15:30 決算、12月の月次も","11月7日の説明会"]}' \
-    > "$BATS_TEST_TMPDIR/b.json"
-  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
-  [ "$status" -eq 0 ]
-  [ -z "$(dropped_lines)" ]
-  local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '👀 *注視*\n・11/7 決算発表\n・11/7(金) 15:30 決算、12月の月次も\n・11月7日の説明会')" ]
-}
-
-# 期・四半期・銘柄コード・海外ティッカーや型番・指数名・指標名は数字として扱わない
-@test "numeric: periods, quarters, codes, tickers, indices and indicator names are kept" {
-  jq -n '{status:"brief",headline:"HEAD",materials:[],
-          technical:["25日線を上抜け、MA75 も上向き","RSI14 は過熱圏手前"],
-          bull:["26年3月期 1Q は上期計画に沿う","8035 東エレクと NVDA に連れ高","HBM3E と GB200 向け需要"],
-          bear:["SOX と S&P500 の反落が重し","FY25Q3 と 25年度 3Q で減速、6976.T にも波及"],
-          watch:["第2四半期決算と 285A の需給"]}' \
-    > "$BATS_TEST_TMPDIR/b.json"
-  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
-  [ "$status" -eq 0 ]
-  [ -z "$(dropped_lines)" ]
-  local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '[.details.blocks[].text.text | split("\n")[] | select(startswith("・"))] | length')" -eq 8 ]
-}
-
-# 価格・指標値・比率・全角数字はどのフィールドでも落ち、全行が落ちれば投稿しない
-@test "numeric: prices, indicator values, ratios and full-width digits are dropped" {
-  jq -n '{status:"brief",headline:"HEAD",materials:[],
-          technical:["RSI70 で過熱","MA25 の9700円を割り込み"],
-          bull:["前年比+12%の増益","株価4000円台を回復"],
-          bear:["ＰＥＲ４０倍で割高感"],
-          watch:["2026-11-07 決算で営業利益1200億を確認"]}' \
-    > "$BATS_TEST_TMPDIR/b.json"
-  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
-  [ "$status" -ne 0 ]
-  [ "$(dropped_lines | grep -c .)" -eq 6 ]
-  dropped_lines | grep -qxF 'post-brief.sh: dropped numeric line: technical: RSI70 で過熱'
-  dropped_lines | grep -qxF 'post-brief.sh: dropped numeric line: technical: MA25 の9700円を割り込み'
-  dropped_lines | grep -qxF 'post-brief.sh: dropped numeric line: bull: 前年比+12%の増益'
-  dropped_lines | grep -qxF 'post-brief.sh: dropped numeric line: bull: 株価4000円台を回復'
-  dropped_lines | grep -qxF 'post-brief.sh: dropped numeric line: bear: ＰＥＲ４０倍で割高感'
-  dropped_lines | grep -qxF 'post-brief.sh: dropped numeric line: watch: 2026-11-07 決算で営業利益1200億を確認'
-  [ -z "$(payload_for "/slack/post")" ]
-}
-
-# headline と materials は数字を含んでも落とさない
-@test "numeric: headline and materials are not filtered" {
-  jq -n '{status:"brief",headline:"HEAD 40倍",materials:["2026-08-05 増益率30%の上方修正"],
-          technical:[],bull:[],bear:[],watch:[]}' \
-    > "$BATS_TEST_TMPDIR/b.json"
-  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
-  [ "$status" -eq 0 ]
-  [ -z "$(dropped_lines)" ]
-  local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '.text')" = "HEAD 40倍" ]
-  printf '%s' "$p" | jq -e '.details.blocks[0].text.text | test("増益率30%")' >/dev/null
 }

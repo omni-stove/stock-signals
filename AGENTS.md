@@ -7,7 +7,7 @@
 
 ## Design
 
-- The Worker does all fetching and normalization; LLMs only judge and organize what it collected, in the GitHub Actions `claude-code-action`. Use web search only to corroborate collected data, and cite the source.
+- The Worker does all fetching and normalization; LLMs only judge and organize what it collected, in the GitHub Actions `claude-code-action`.
 - Keep buy/sell actions, limit price, stop-loss, and position actions out of every prompt and output schema rather than listing them as prohibitions. Only `ticker-brief` and `slack-reply` state a directional lean (Bull/Bear), with its basis and reversal condition.
 - LLMs never produce a figure; post scripts build every figure and signal deterministically from real data.
 - Never implement or propose anything in `docs/non-goals.md`; add newly decided non-goals there.

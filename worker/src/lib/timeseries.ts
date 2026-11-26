@@ -6,7 +6,7 @@
 // 銘柄リスト (WATCHLIST / WATCHLIST_NAMES) の出所は watchlist.ts (銘柄定義の唯一の真のソース)。
 // ここで re-export し、Worker 内の各モジュールは timeseries から import する。
 
-import { eq, sql } from "drizzle-orm";
+import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { db } from "./db";
 import { decodeEntities, scanHtml, scanTables, tablesWithClass } from "./html";
 import { sliceStockInfo } from "./kabutan";
@@ -291,6 +291,72 @@ async function collectDailyOne(
 	return { written, skipped };
 }
 
+/**
+ * 株探の最新ページと保存済みの日足を比べ、分割・併合で株探が過去の足を遡って調整したかを判定する。
+ * 両方にある日付のうち新しい順に最大 3 日の「保存済み終値 / 株探の終値」が 1 から 2% 超外れ、
+ * 互いに 0.5% 以内で揃えば調整とみなす。
+ * @param bars 株探の日足ページを parseKabutanDaily した行
+ * @param stored 同じ銘柄の保存済み日足 (順不同)
+ * @returns factor = 保存済み終値 / 調整後終値 (1:3 分割なら約 3)、exDate = 保存に無い最古の足の日付。
+ *   調整が無い・判定できないときは null
+ */
+function detectSplit(
+	bars: DailyBar[],
+	stored: { date: string; close: number | null }[],
+): { exDate: string; factor: number } | null {
+	const storedClose = new Map(stored.map((r) => [r.date, r.close]));
+	const fresh = bars
+		.filter((b) => !storedClose.has(b.date))
+		.map((b) => b.date)
+		.sort();
+	if (fresh.length === 0) return null;
+	const ratios = bars
+		.filter((b) => storedClose.has(b.date) && b.date < fresh[0])
+		.sort((a, b) => (a.date < b.date ? 1 : -1))
+		.slice(0, 3)
+		.flatMap((b) => {
+			const s = storedClose.get(b.date);
+			return s && b.close ? [s / b.close] : [];
+		});
+	if (ratios.length === 0) return null;
+	const factor = ratios[0];
+	if (Math.abs(factor - 1) <= 0.02) return null;
+	if (ratios.some((r) => Math.abs(r / factor - 1) > 0.005)) return null;
+	return { exDate: fresh[0], factor };
+}
+
+/**
+ * 権利落ち日より前に保存した未調整の日足を、株探の調整後と同じ尺度に直す。
+ * 価格と前日比は factor で割り、出来高は掛ける。
+ */
+async function adjustDailyForSplit(
+	d1: D1Database,
+	code: string,
+	split: { exDate: string; factor: number },
+): Promise<number> {
+	const f = split.factor;
+	const r = await db(d1)
+		.update(daily)
+		.set({
+			open: sql`round(${daily.open} / ${f}, 1)`,
+			high: sql`round(${daily.high} / ${f}, 1)`,
+			low: sql`round(${daily.low} / ${f}, 1)`,
+			close: sql`round(${daily.close} / ${f}, 1)`,
+			change: sql`round(${daily.change} / ${f}, 1)`,
+			volume: sql`cast(round(${daily.volume} * ${f}) as integer)`,
+		})
+		.where(
+			and(
+				eq(daily.ticker, code),
+				lt(daily.date, split.exDate),
+				// 権利落ち後に補完した過去の足は株探が調整済みの値で返しているので、二重に割らない。
+				lt(daily.fetchedAt, split.exDate),
+			),
+		)
+		.run();
+	return r.meta.changes ?? 0;
+}
+
 async function writeDailyPage(
 	env: TimeseriesEnv,
 	code: string,
@@ -301,6 +367,23 @@ async function writeDailyPage(
 	if (bars.length === 0) return { written: 0, skipped: 0 };
 	const fetched_at = new Date().toISOString();
 	const source = `${SITE}:${code}`;
+
+	if (page === 1) {
+		const stored = await db(env.DB)
+			.select({ date: daily.date, close: daily.close })
+			.from(daily)
+			.where(eq(daily.ticker, code))
+			.orderBy(desc(daily.date))
+			.limit(DAILY_ROWS_PER_PAGE * 2)
+			.all();
+		const split = detectSplit(bars, stored);
+		if (split) {
+			const n = await adjustDailyForSplit(env.DB, code, split);
+			console.log(
+				`daily ${code}: split x${split.factor} at ${split.exDate}, adjusted ${n} rows`,
+			);
+		}
+	}
 
 	// (ticker, date) PK の INSERT OR IGNORE で重複日付を自動スキップ。
 	// 1文に全行をまとめると D1/SQLite のバインド変数上限 (100個) を超えるため、
@@ -649,6 +732,64 @@ if (import.meta.vitest) {
 				forecast_dividend: null,
 				forecast_announced_at: "2026-10-28",
 			});
+		});
+	});
+
+	describe("detectSplit", () => {
+		const bar = (date: string, close: number): DailyBar => ({
+			date,
+			open: close,
+			high: close,
+			low: close,
+			close,
+			change: null,
+			change_pct: null,
+			volume: 1,
+		});
+		const stored = [
+			{ date: "2026-09-24", close: 54580 },
+			{ date: "2026-09-25", close: 55780 },
+			{ date: "2026-09-28", close: 53340 },
+		];
+
+		it("株探が過去の足を遡って調整していれば比率と権利落ち日を返す", () => {
+			const bars = [
+				bar("2026-09-29", 17880),
+				bar("2026-09-28", 17779),
+				bar("2026-09-25", 18592),
+				bar("2026-09-24", 18193),
+			];
+			const s = detectSplit(bars, stored);
+			expect(s?.exDate).toBe("2026-09-29");
+			expect(s?.factor).toBeCloseTo(3, 2);
+		});
+
+		it("保存済みと株探が一致していれば null", () => {
+			const bars = [
+				bar("2026-09-29", 53500),
+				...stored.map((r) => bar(r.date, r.close)),
+			];
+			expect(detectSplit(bars, stored)).toBeNull();
+		});
+
+		it("1 日だけの訂正は比率が揃わないので null", () => {
+			const bars = [
+				bar("2026-09-29", 53500),
+				bar("2026-09-28", 17779),
+				bar("2026-09-25", 55780),
+				bar("2026-09-24", 54580),
+			];
+			expect(detectSplit(bars, stored)).toBeNull();
+		});
+
+		it("新しい足が無い・重なる日が無ければ null", () => {
+			expect(
+				detectSplit(
+					stored.map((r) => bar(r.date, r.close / 3)),
+					stored,
+				),
+			).toBeNull();
+			expect(detectSplit([bar("2026-10-01", 100)], stored)).toBeNull();
 		});
 	});
 

@@ -301,16 +301,6 @@ export async function runScheduled(
 		// intake (寄り前 8:30 / 引け後 18:00) は新規の有無によらず全銘柄を brief 付きで signal-update し、
 		// 全銘柄の ticker-brief まで出す (定時ブリーフ。新着が無い銘柄は簡易版)。場中 (prices, 5分毎) は
 		// LLM コストを抑えるため新規ベース (下の分岐) で、ticker-brief は新着材料があった銘柄だけ。
-		//
-		// dispatch は 2 段で撃つ (どちらも全銘柄・brief 付き):
-		//   1) ここ (収集より先): 保険。この invocation が収集ジョブの待ちの途中で打ち切られても、
-		//      判定と定時ブリーフはここで必ず発火する。
-		//   2) 収集後 (下の再dispatch): この回の収集で入った新規 IR/ニュースを「同じ回」の
-		//      context-builder に乗せる (cron → 収集 → context → brief の順序保証)。concurrency
-		//      (cancel-in-progress) が銘柄単位なので、1) の走行中ジョブは 2) が上書きし二重 LLM にはならない。
-		// 寄り前 (8:30) の market-brief dispatch は上で既に撃ち終えており、順序
-		// (市場全体→個別) も保たれる。
-		await dispatchSignalUpdate(env, WATCHLIST, { brief: true });
 		// IR(公式サイト) + 適時開示(TDnet) + ニュースを銘柄ごと、市場テーマニュースと証券会社レーティングを
 		// 1 本ずつ、別 invocation で収集する。市場テーマニュースは新規見出しに watchlist 銘柄の言及
 		// (matchTickers) があればその銘柄を fresh に合流させる (例: 「サムスン、HBM増産」→ 6857)。
@@ -328,8 +318,10 @@ export async function runScheduled(
 			"fresh:",
 			intake.fresh.join(","),
 		);
-		// 上記 2 段 dispatch の 2)。全銘柄を brief 付きで再dispatch し、入ったばかりの IR/ニュースを
-		// 同じ回の context-builder に読ませる。
+		// 収集の後に撃ち、入ったばかりの IR/ニュースを同じ回の context-builder に読ませる。
+		// 収集の前には撃たない: Free プランのサブリクエスト上限 (50/invocation) に dispatch 1 回で
+		// 銘柄数 + 1 件を食うため。寄り前 (8:30) の market-brief は上で撃ち終えており、市場全体→個別の
+		// 順序は保たれる。
 		await dispatchSignalUpdate(env, WATCHLIST, { brief: true });
 		// 新規ニュース (銘柄 + 市場テーマ) を専用チャンネルに通知する。webhook 未設定なら no-op。
 		await notifyFreshNews(env, intake);

@@ -129,7 +129,7 @@ payload_for() {
   local p; p="$(payload_for "/slack/post")"
   # 新着 + テクニカル + 強気 + 弱気 + 注視 = 5 blocks
   [ "$(printf '%s' "$p" | jq -r '.details.blocks | length')" -eq 5 ]
-  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🆕 *新着*\n・2026-08-05 topic\n・2026-08-04 other')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🆕 *新着*\n・8/5 topic\n・8/4 other')" ]
   [ "$(printf '%s' "$p" | jq -r '.details.blocks[1].text.text')" = "$(printf '📈 *テクニカル*\n・tape read')" ]
   [ "$(printf '%s' "$p" | jq -r '.details.blocks[2].text.text')" = "$(printf '🐂 *強気*\n・strong point\n・second point')" ]
   [ "$(printf '%s' "$p" | jq -r '.details.blocks[3].text.text')" = "$(printf '🐻 *弱気*\n・risk point')" ]
@@ -231,7 +231,7 @@ numbers_text() {
   [ "$status" -eq 0 ]
   [ "$(payload_for "/slack/post" | jq -r '.blocks | map(.type) | join(",")')" = "section,context" ]
   [ "$(payload_for "/slack/post" | jq -r '[.details.blocks[] | select(.type == "context")] | length')" -eq 0 ]
-  [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000\n2026-10-26 確定足: MA5 9800 / MA25 9700（乖離 +2.3%%） / 20日レンジ 9000〜10200（位置 85%%） / RSI14 72 / ATR 2.4%%（平常比 1.31倍） / 出来高 1.9倍 / OBV 上向き / CMF20 0.12')" ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000\n10/26 確定足: MA5 9800 / MA25 9700（乖離 +2.3%%） / 20日レンジ 9000〜10200（位置 85%%） / RSI14 72 / ATR 2.4%%（平常比 1.31倍） / 出来高 1.9倍 / OBV 上向き / CMF20 0.12')" ]
 }
 
 # ザラ場中の出来高ペースは現在の行に載せ、確定足の行には出来高を載せない。マイナス乖離はそのまま出す
@@ -240,7 +240,7 @@ numbers_text() {
                "daily":{"status":"ok","latest_date":"2026-10-26","ma25_dev_pct":-3.4,
                         "vol_x_20d":1.9,"vol_x_20d_intraday":0.8}}'
   [ "$status" -eq 0 ]
-  [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000 / 出来高 当日ペース0.8倍\n2026-10-26 確定足: MA25乖離 -3.4%%')" ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000 / 出来高 当日ペース0.8倍\n10/26 確定足: MA25乖離 -3.4%%')" ]
 }
 
 # prices が無ければ現値は daily.close にフォールバックし、null のフィールドは省かれる
@@ -269,6 +269,25 @@ numbers_text() {
                "valuation":{"status":"unavailable"}}'
   [ "$status" -eq 0 ]
   [ "$(numbers_text)" = "$(printf '📐 *数値*\n中期: TOPIX比 20日 +3.2%%')" ]
+}
+
+# 需給の行 (信用倍率と集計基準日) は中期の行の下に載る
+@test "numbers: supply line shows margin ratio with its week date" {
+  run_pb_ctx '{"prices":{"latest":{"price":10000}},
+               "valuation":{"status":"ok","per":30.6},
+               "margin":{"status":"ok","latest_date":"2026-11-20","ratio":3.42,"long_qty":360000,"short_qty":105000}}'
+  [ "$status" -eq 0 ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000\n中期: 予想PER 30.6倍\n需給: 信用倍率 3.42倍（11/20 時点）')" ]
+}
+
+# 倍率が null (売り残ゼロなど) や margin が unavailable なら需給の行は付かない
+@test "numbers: null ratio or unavailable margin adds no supply line" {
+  run_pb_ctx '{"prices":{"latest":{"price":10000}},"margin":{"status":"ok","latest_date":"2026-11-20","ratio":null}}'
+  [ "$status" -eq 0 ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000')" ]
+  run_pb_ctx '{"prices":{"latest":{"price":10000}},"margin":{"status":"unavailable"}}'
+  [ "$status" -eq 0 ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000')" ]
 }
 
 # 値が 1 つも無ければ context block ごと付かない
@@ -352,6 +371,22 @@ numbers_text() {
   printf '%s' "$p" | jq -e '.details.blocks[-1].text.text | test("MSCI")' >/dev/null
 }
 
+# Slack のブロックでは本文・観測行の YYYY-MM-DD が年なしの M/D になり、brief_body は年付きのまま
+@test "dates: blocks drop the year while brief_body keeps it" {
+  jq -n '{status:"brief",headline:"HEAD",materials:["2026-11-20 t"],bull:[],bear:[],
+          watch:["2026-11-30 MSCIリバランス"]}' > "$BATS_TEST_TMPDIR/b.json"
+  FETCH_FORCED_JSON='{"rows":[]}' \
+    FETCH_REBALANCE_JSON='{"ok":true,"note":"MSCI半期リバランス(実施=2026-11-30/4日後)"}' \
+    run_pb 285A "$BATS_TEST_TMPDIR/b.json"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '🆕 *新着*\n・11/20 t')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[1].text.text')" = "$(printf '👀 *注視*\n・11/30 MSCIリバランス')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[-1].text.text')" = "📅 *リバランス窓*: MSCI半期リバランス(実施=11/30/4日後)" ]
+  printf '%s' "$p" | jq -e '.details.text | test("2026") | not' >/dev/null
+  printf '%s' "$p" | jq -e '.brief_body | test("2026-11-20 t")' >/dev/null
+}
+
 # forced 観測 + リバランス観測が両方ある日は両方付く (順序: forced → rebalance)
 @test "rebalance: forced and rebalance observations stack" {
   write_brief "HEAD" "2026-08-05 t" "a" > "$BATS_TEST_TMPDIR/b.json"
@@ -422,7 +457,7 @@ dropped_lines() {
   [ "$status" -eq 0 ]
   [ -z "$(dropped_lines)" ]
   local p; p="$(payload_for "/slack/post")"
-  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '👀 *注視*\n・2026-11-07 決算発表\n・11/7(金) 15:30 決算、12月の月次も\n・11月7日の説明会')" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[0].text.text')" = "$(printf '👀 *注視*\n・11/7 決算発表\n・11/7(金) 15:30 決算、12月の月次も\n・11月7日の説明会')" ]
 }
 
 # 期・四半期・銘柄コード・海外ティッカーや型番・指数名・指標名は数字として扱わない

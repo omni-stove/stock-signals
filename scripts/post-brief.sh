@@ -9,7 +9,7 @@
 #   - 太字の headline・方向感・数値行をサマリーとして親に投稿し、本文・観測行は details として親のスレッドに
 #     1 通でぶら下げる (チャンネルにはサマリーだけが流れる)。
 #   - 数値行 (現在の現値・出来高ペース / 確定足の MA・レンジ・RSI・ATR・出来高倍率・OBV・CMF /
-#     中期の MA75・52週高値安値・TOPIX比・予想PER) は LLM に
+#     中期の MA75・52週高値安値・TOPIX比・予想PER / 需給の信用倍率) は LLM に
 #     出させず、numctx の実在値からここで決定論で組んで親の context block に貼る。LLM が水準・指標の
 #     数値を創作する余地を残さない (LLM はテクニカルの読みだけを返す)。
 #   - それでも LLM の technical / bull / bear / watch / lean.basis に価格・指標・比率の数字が混ざった行は
@@ -132,10 +132,11 @@ LEAN_LINE="$(printf '%s' "$BRIEF_JSON" | jq -r '
 BRIEF_BODY="$(printf '%s\n' "$LEAN_LINE" "$BODY" | sed '/^$/d')"
 
 # --- 数値行 (決定論): numctx の実在値から組み、親の context block に貼る ----
-# 📐 数値 の見出しの下に 3 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
+# 📐 数値 の見出しの下に 4 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
 # 確定足 = daily の最新確定足の指標。ザラ場中は前営業日の足なので、当日の値とは行を分ける。
 # 中期 = MA75 と乖離 / 52週高値・安値と現値からの距離 / TOPIX 比 20 日超過リターン / 予想 PER。
-# どちらも値があるものだけを " / " 連結し、値が 1 つも無ければ行ごとスキップする。
+# 需給 = 信用倍率と、その週次の集計基準日 (margin.latest_date)。
+# どれも値があるものだけを " / " 連結し、値が 1 つも無ければ行ごとスキップする。
 # daily が insufficient/stale なら確定足の行は出さない。
 NUMBERS=""
 if [[ -n "$NUMCTX_FILE" && -s "$NUMCTX_FILE" ]] && jq -e . "$NUMCTX_FILE" >/dev/null 2>&1; then
@@ -179,7 +180,13 @@ if [[ -n "$NUMCTX_FILE" && -s "$NUMCTX_FILE" ]] && jq -e . "$NUMCTX_FILE" >/dev/
         (if (.valuation.status // "") == "ok" and .valuation.per != null then "予想PER \(.valuation.per)倍" else empty end) ]
     | if length == 0 then "" else "中期: " + join(" / ") end' "$NUMCTX_FILE")"
 
-  NUMBERS="$(printf '%s\n%s\n%s\n' "$CURRENT_LINE" "$CONFIRMED_LINE" "$MEDIUM_LINE" | sed '/^$/d')"
+  SUPPLY_LINE="$(jq -r '
+    (.margin // {}) as $m
+    | if ($m.status // "") == "ok" and $m.ratio != null
+      then "需給: 信用倍率 \($m.ratio)倍" + (if $m.latest_date != null then "（\($m.latest_date) 時点）" else "" end)
+      else "" end' "$NUMCTX_FILE")"
+
+  NUMBERS="$(printf '%s\n%s\n%s\n%s\n' "$CURRENT_LINE" "$CONFIRMED_LINE" "$MEDIUM_LINE" "$SUPPLY_LINE" | sed '/^$/d')"
   NUMBERS="${NUMBERS:+📐 *数値*
 ${NUMBERS}}"
 fi
@@ -234,6 +241,8 @@ fi
 # 親 = 太字の headline → 方向感 → 数値行 (context block)。details = 本文グループ → 観測行 (1 行 1 section)。
 # LLM 由来の文字列はリテラル "\n" を本物の改行へ正規化する (どちらで来ても同じ結果になる)。
 # brief_body は LLM 由来の本文素テキスト。Worker /slack/post が briefs テーブルに upsert する。
+# Slack に見せるブロックだけ YYYY-MM-DD を年なし・ゼロ埋めなしの M/D にする (noyear)。text と brief_body は briefs に
+# 保存されて position-report の LLM 入力に回り、年をまたぐ日付を取り違えないよう年付きのまま渡す。
 DETAILS_TEXT="$(printf '%s\n' "$BODY" "$OBSERVATIONS" | sed '/^$/d')"
 PAYLOAD="$(jq -n \
   --arg ticker "$TICKER" \
@@ -244,7 +253,8 @@ PAYLOAD="$(jq -n \
   --arg lean "$LEAN_LINE" \
   --arg brief_body "$BRIEF_BODY" \
   --arg details_text "$DETAILS_TEXT" \
-  'def section: {type:"section", text:{type:"mrkdwn", text:.}};
+  'def noyear: gsub("(?<![0-9])20[0-9]{2}-(?<m>[0-9]{2})-(?<d>[0-9]{2})(?![0-9])"; "\(.m | tonumber)/\(.d | tonumber)");
+  def section: {type:"section", text:{type:"mrkdwn", text:noyear}};
   def bold: "*" + gsub("\\*"; "") + "*";
   {
     ticker: $ticker,
@@ -253,9 +263,9 @@ PAYLOAD="$(jq -n \
     brief_body: $brief_body,
     blocks: ([$headline | bold | section]
       + (if $lean == "" then [] else [$lean | section] end)
-      + (if $numbers == "" then [] else [{type:"context", elements:[{type:"mrkdwn", text:$numbers}]}] end)),
+      + (if $numbers == "" then [] else [{type:"context", elements:[{type:"mrkdwn", text:($numbers | noyear)}]}] end)),
     details: {
-      text: $details_text,
+      text: ($details_text | noyear),
       blocks: (($sections | map(gsub("\\\\n"; "\n") | section))
         + [$observations | gsub("\\\\n"; "\n") | split("\n")[] | select(length > 0) | section])
     }

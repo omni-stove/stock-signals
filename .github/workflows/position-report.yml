@@ -107,8 +107,7 @@ jobs:
 
             Return the **facts that bear on each of one user's positions** — the fresh materials and standing
             risks a holder of this name should know tonight. **Never output an action or a verdict**:
-            no 利確/損切り/増し玉/継続, no urgency grade, no "should". Never write a figure (price, %, count); the
-            posting step renders 建値・現値・含み損益 — add only what the numbers alone don't say.
+            no 利確/損切り/増し玉/継続, no urgency grade, no "should". Never write a figure (price, %, count).
 
             Report on what you can see now — the brief, the context, the position row — never hindsight, and
             never a market view the inputs do not carry.
@@ -134,7 +133,7 @@ jobs:
             Japanese.
 
             - `positions`: one entry per input position. `ticker`: exact format, verbatim — the input row's
-              `ticker` copied as is (the posting step matches on it). `notes` = 0–3 lines on
+              `ticker` copied as is. `notes` = 0–3 lines on
               which fresh material in `brief` or standing risk in `context` bears on this 建玉 and how it meets
               the position's situation (信用 with a loss makes a 需給 risk weigh more; a large 含み益 makes a
               fading driver worth naming). Empty when `brief` and `context` add nothing or are both null.

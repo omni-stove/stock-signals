@@ -126,6 +126,8 @@ marketContext.get("/market-context", async (c: Context<{ Bindings: Env }>) => {
 			.select({
 				date: daily.date,
 				close: daily.close,
+				high: daily.high,
+				low: daily.low,
 				change_pct: daily.changePct,
 				volume: daily.volume,
 			})

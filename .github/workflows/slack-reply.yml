@@ -169,7 +169,8 @@ jobs:
             - **`trend` / `relative` / `event_reactions` / `revisions` / `valuation` / `short_interest` / `sector` /
               `supply`** answer questions on positioning and flows. Never call `valuation` 割安/割高 on the number
               alone; an old `short_interest` `calc_date` is weak evidence; `supply.lockup_*` are rough dates from
-              the announcement.
+              the announcement. `sector`'s `high_pct` / `low_pct` / `close_pos` (and `avg_` counterparts) only
+              qualify its `change_pct` — a rebound off a deep low or a fade from a high, in words; null → skip.
             - The ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
             ## Answering

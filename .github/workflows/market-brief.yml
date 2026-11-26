@@ -92,8 +92,8 @@ jobs:
 
             `unavailable` or empty → skip that field.
 
-            - **`market_phase`**: `premarket` → the gap isn't in yet; 場中 → `sectors` and `live_indexes` are live,
-              read breadth directly; `closed` → report today's close plus tonight's NY setup.
+            - **`market_phase`**: `premarket` → the gap isn't in yet; 場中 → `live_indexes` is live, read breadth
+              from it; `closed` → report today's close plus tonight's NY setup.
             - **`premarket`** leads pre-open. Lead on the field the watchlist's sectors are most exposed to, judged
               from `sectors` and each name's `sector_role`; the others only confirm. `vix_peak`: state whether the
               fear spike is building or unwinding; `unwind: true` → say the fear spike has run its course from a
@@ -105,9 +105,12 @@ jobs:
               much larger move); never list them all. `earnings: after_this_close` → the reaction comes in today's
               session; `in_close` → the close already reflects it.
             - **`live_indexes`**: `stale` → demote; pre-open → skip.
-            - **`sectors`** is how the watchlist itself moved: in-session or `closed` it leads on breadth;
-              pre-open it is the prior session and only confirms. `backdrop.tone` is SOX-derived; read it only for
-              a sector that tracks SOX.
+            - **`sectors`** is how the watchlist itself moved on its last confirmed daily bar: rows' `last_date`
+              is today → it leads on breadth; earlier → the prior session, it only confirms. Lead on
+              `avg_change_pct`; `avg_low_pct` / `avg_high_pct` (the bar's extremes vs the prior close) and
+              `avg_close_pos` (0 = closed at the low, 1 = at the high) only qualify it — say in words whether the
+              sector rebounded off a deep low or faded from a high, never their figures. Any of them null → read
+              `avg_change_pct` alone. `backdrop.tone` is SOX-derived; read it only for a sector that tracks SOX.
             - **`event_context`**: a `特になし` tail → ignore.
             - **`market_news`**: pick the 1–2 that bear on today's tape.
             - **`investor_flows`**: report it only on the morning it is new or when the foreigners' streak flips. `net` is positive for net buying; `foreigners_streak_weeks` is positive for consecutive net-buying weeks and negative for consecutive net-selling weeks.

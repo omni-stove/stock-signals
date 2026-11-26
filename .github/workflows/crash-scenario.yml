@@ -124,7 +124,8 @@ jobs:
               carries: `trend`, `relative`, `valuation` against its range and peers, a good-news disclosure in
               `event_reactions` that sold off (exhausted buyers), a `down` revision or a forecast left unchanged
               into a strong cycle in `revisions`, an `earnings_result` that shrank or runs behind pace (read the
-              reaction through 決算の特色・クセ in `context_body`). `sector` separates a name-specific run-up from the sector's.
+              reaction through 決算の特色・クセ in `context_body`). `sector` separates a name-specific run-up from the sector's;
+              a `close_pos` near 0 with a high `high_pct` (a fade from the high) only confirms fragility; null → skip.
             - **Supply shocks**: `supply.items[]` (lock-up dates are rough; `ratio_pct` below `prev_ratio_pct` = a
               large holder selling down), rising `short_interest.positions` (institutions building shorts; a running
               `lending.fee` is squeeze fuel, not a crash path; an old `positions.calc_date` is weak evidence), and

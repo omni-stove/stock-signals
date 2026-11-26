@@ -23,6 +23,7 @@ import {
 	forcedLiquidation,
 	fundamentals,
 	investorFlows,
+	jsfBalance,
 	macroEvents,
 	margin,
 	marketShortRatio,
@@ -45,6 +46,7 @@ export interface FreshnessSnapshot {
 	premarket: string | null; // 最新取得の JST 日付
 	usPeers: boolean | null; // 最新の寄り前取得で海外ピアの騰落が 1 銘柄でも取れたか (行なしは null)
 	margin: string | null; // 信用残の最新集計基準日
+	jsfBalance: string | null; // 証金残の最新申込日
 	investorFlows: string | null; // 投資部門別の最新 week_end
 	marketShortRatio: string | null;
 	memoryPrices: string | null; // メモリのスポット価格の最新公表日
@@ -63,6 +65,7 @@ function toJstDate(iso: string | null): string | null {
 // 公表データの許容遅れ (今日までの東証営業日数)。週次は公表曜日のずれを見込む。
 const MAX_LAG_DAYS = {
 	margin: 10,
+	jsfBalance: 3,
 	investorFlows: 12,
 	marketShortRatio: 3,
 	memoryPrices: MEMORY_PRICES_MAX_LAG,
@@ -92,6 +95,8 @@ export function staleSources(s: FreshnessSnapshot, today: string): string[] {
 	if (s.usPeers === false) out.push("us-peers (騰落が全銘柄なし)");
 	if (lagOver(s.margin, MAX_LAG_DAYS.margin))
 		out.push(label("margin", s.margin));
+	if (lagOver(s.jsfBalance, MAX_LAG_DAYS.jsfBalance))
+		out.push(label("jsf-balance", s.jsfBalance));
 	if (lagOver(s.investorFlows, MAX_LAG_DAYS.investorFlows))
 		out.push(label("investor-flows", s.investorFlows));
 	if (lagOver(s.marketShortRatio, MAX_LAG_DAYS.marketShortRatio))
@@ -199,6 +204,12 @@ export async function readFreshness(
 				.from(margin)
 				.get(),
 		),
+		jsfBalance: await one(
+			d
+				.select({ v: max(jsfBalance.date) })
+				.from(jsfBalance)
+				.get(),
+		),
 		investorFlows: await one(
 			d
 				.select({ v: max(investorFlows.weekEnd) })
@@ -276,6 +287,7 @@ if (import.meta.vitest) {
 			premarket: today,
 			usPeers: true,
 			margin: "2026-11-06",
+			jsfBalance: daily,
 			investorFlows: "2026-11-06",
 			marketShortRatio: daily,
 			memoryPrices: daily,
@@ -334,6 +346,7 @@ if (import.meta.vitest) {
 			const s = fresh();
 			s.margin = "2026-10-23"; // 15 営業日
 			s.marketShortRatio = "2026-11-12";
+			s.jsfBalance = null;
 			s.nextMacro = null;
 			s.premarket = "2026-11-12";
 			s.usPeers = false;
@@ -341,6 +354,7 @@ if (import.meta.vitest) {
 				"premarket (最新 2026-11-12)",
 				"us-peers (騰落が全銘柄なし)",
 				"margin (最新 2026-10-23)",
+				"jsf-balance (最新 なし)",
 				"macro-events (今後の FOMC/日銀なし)",
 			]);
 		});

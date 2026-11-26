@@ -1,4 +1,4 @@
-// Cloudflare Worker: 収集モジュール共通のユーティリティ (hash / sleep / fetchHtml)。
+// Cloudflare Worker: 収集モジュール共通のユーティリティ (hash / sleep / fetchHtml / fetchBytes)。
 
 // 指定ミリ秒だけ待つ (kabutan への連続アクセス間隔調整に使う)。
 export function sleep(ms: number): Promise<void> {
@@ -49,6 +49,29 @@ export async function fetchHtml(
 		if (status !== undefined && status < 500) throw e;
 		await sleep(RETRY_PAUSE_MS);
 		return attempt();
+	}
+}
+
+// URL を GET し本文をバイト列で返す (PDF・Shift_JIS の CSV など UTF-8 でない取得物用)。
+export async function fetchBytes(
+	url: string,
+	env: { USER_AGENT: string },
+): Promise<Uint8Array> {
+	const res = await fetch(url, {
+		headers: { "User-Agent": env.USER_AGENT },
+		signal: AbortSignal.timeout(15_000),
+	});
+	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
+	return new Uint8Array(await res.arrayBuffer());
+}
+
+// 日証金 CSV は Shift_JIS。数値とコードは ASCII なので、デコーダが無い環境でも latin1 で読める
+// (その場合は日本語の欄だけ文字化けする。sjis=false で呼び出し側に知らせる)。
+export function decodeSjis(bytes: Uint8Array): { text: string; sjis: boolean } {
+	try {
+		return { text: new TextDecoder("shift_jis").decode(bytes), sjis: true };
+	} catch {
+		return { text: new TextDecoder("latin1").decode(bytes), sjis: false };
 	}
 }
 

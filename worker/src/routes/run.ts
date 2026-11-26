@@ -1,5 +1,5 @@
 // Cloudflare Worker: 手動起動 (dev検証/オンデマンド) ルート。
-//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|peer-earnings-jp|macro-events|margin|short-interest|investor-flows|large-holdings|memory-prices|tw-monthly-revenue|seaj-sales|index-changes|premarket&code=285A[&limit=N][&part=]
+//   /run?kind=ir|news|market-news|disclosure|ratings|prices|daily|fundamentals|earnings|peer-earnings|peer-earnings-jp|macro-events|margin|jsf-balance|short-interest|investor-flows|large-holdings|memory-prices|tw-monthly-revenue|seaj-sales|index-changes|premarket&code=285A[&limit=N][&part=]
 //   short-interest は part=lending|positions|market で 1 つだけ取れる。cron は重い収集をここへ
 //   1 ジョブずつ投げる (lib/fan-out.ts)。
 //   kind 省略時は ir (後方互換)。time系列は limit を無視し watchlist 全件取得。
@@ -20,6 +20,7 @@ import { collectIndexChanges } from "../lib/index-changes";
 import { collectInvestorFlows } from "../lib/investor-flows";
 import { collectAll } from "../lib/ir-collect";
 import { DEFAULT_LIMIT } from "../lib/ir-sources";
+import { collectJsfBalance } from "../lib/jsf-balance";
 import { collectLargeHoldings } from "../lib/large-holdings";
 import { collectMacroEvents } from "../lib/macro-events";
 import { collectMargin } from "../lib/margin";
@@ -165,10 +166,25 @@ run.get("/", async (c) => {
 		return c.json({ ok: true, kind, result });
 	}
 	if (kind === "margin") {
-		// 信用残 (週次) の収集 → D1 margin に保存。通常は引け後 intake cron で自動取得。
+		// 信用残 (週次) の収集 → D1 margin に保存。通常は引け後 intake の flows で自動取得。
 		const { results, freshTickers } = await collectMargin(env, code);
 		if (dispatch) await dispatchSignalUpdate(env, freshTickers);
-		return c.json({ ok: true, kind, result: results, fresh: freshTickers });
+		// 銘柄ごとの取得失敗は results に入って正常終了するため、ここで失敗にしないと fanOut が成功扱いにして通知されない。
+		const failed = Object.values(results).some(
+			(r) => (r as { error?: unknown } | null)?.error != null,
+		);
+		return c.json(
+			{ ok: !failed, kind, result: results, fresh: freshTickers },
+			failed ? 502 : 200,
+		);
+	}
+	if (kind === "jsf-balance") {
+		// 日証金の貸借取引残高 (証金残、日次) → D1 jsf_balance。通常は引け後 intake の flows で自動取得。
+		const result = await collectJsfBalance(env);
+		return c.json(
+			{ ok: result.error == null, kind, result },
+			result.error == null ? 200 : 502,
+		);
 	}
 	if (kind === "short-interest") {
 		// 逆日歩 / 機関の空売り残高 / 東証全体の空売り比率 (code 指定時は銘柄別の 2 つだけ)。

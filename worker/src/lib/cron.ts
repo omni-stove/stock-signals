@@ -12,7 +12,6 @@ import { dispatchEventPayload, dispatchSignalUpdate } from "./github-dispatch";
 import { collectAll } from "./ir-collect";
 import { DEFAULT_LIMIT } from "./ir-sources";
 import { collectLiveIndexes } from "./live-indexes";
-import { collectMargin } from "./margin";
 import { collectMarketNews } from "./market-news";
 import { collectNews } from "./news";
 import { listPositionUsers } from "./position-report";
@@ -86,7 +85,7 @@ async function notifyFreshNews(
 //   - intake (8:30/18:00):  IR + ニュースを収集し、全銘柄を signal-update (定時ブリーフ付き) で起動。
 //                           寄り前(8:30)のみ地合い(米国指数+日経先物)も先に取得する。
 //                           引け後(18:00)は先に flows (空売り需給 (逆日歩/機関の空売り残高/東証全体の
-//                           空売り比率) + 投資部門別 + 大量保有報告書 (EDINET)) を収集し、信用残も取る。
+//                           空売り比率) + 投資部門別 + 大量保有報告書 (EDINET) + 信用残 + 証金残) を収集する。
 //                           18:00 以降の開示は翌朝 8:30 の intake で拾う。
 //   - prices (場中5分毎):   prices + ニュース速報を収集し、新規ニュースのあった銘柄を signal-update で起動。
 //                           さらに JST 12:30 相当スロットでは IR intake も相乗りさせる (昼の専用 cron を
@@ -149,7 +148,7 @@ function isJstMonthStart(scheduledTime: number): boolean {
 
 // 空売りまわり (逆日歩 / 機関の空売り残高 / 東証全体の空売り比率)・投資部門別売買 (週次)・
 // 大量保有報告書 (EDINET)・メモリのスポット価格 (DRAMeXchange)・TSMC の月次売上 (MOPS)・
-// SEAJ の装置販売高速報。
+// SEAJ の装置販売高速報・信用残 (週次)・証金残 (日証金の貸借取引残高、日次)。
 // 公表が夕方以降のもの、または 1 日 1 回取れば足りるものなので引け後 intake (18:00) の先頭で回す。
 async function collectFlows(env: Env): Promise<void> {
 	const { results, failed } = await fanOut(env, [
@@ -165,6 +164,8 @@ async function collectFlows(env: Env): Promise<void> {
 		{ kind: "memory-prices" },
 		{ kind: "tw-monthly-revenue" },
 		{ kind: "seaj-sales" },
+		{ kind: "margin" },
+		{ kind: "jsf-balance" },
 	]);
 	if (failed.length > 0) console.error("flows jobs failed:", failed);
 	await notifyJobFailure(env, "flows", failed);
@@ -266,15 +267,6 @@ export async function runScheduled(
 		// 証券会社レーティング (個社別 目標株価) も intake で収集する。日報は当日夕方〜夜に
 		// 出揃うため、引け後 (18:00) intake で拾う。
 		const rat = await collectRatings(env, null);
-		// 信用残 (週次の需給データ) は引け後 (18:00) intake にだけ相乗りさせる。週1更新なので
-		// 毎日取っても (ticker, 集計基準日) PK で1週1行に収束する (margin.ts 参照)。新しい週次行が
-		// 公表された夜だけ freshTickers に乗る。
-		const mgn = evening
-			? await collectMargin(env, null).catch((e) => {
-					console.error("margin failed:", e);
-					return { results: null, freshTickers: [] as string[] };
-				})
-			: { results: null, freshTickers: [] as string[] };
 		const fresh = [
 			...new Set([
 				...ir.freshTickers,
@@ -282,18 +274,16 @@ export async function runScheduled(
 				...news.freshTickers,
 				...(mnews?.freshTickers ?? []),
 				...rat.freshTickers,
-				...mgn.freshTickers,
 			]),
 		];
 		console.log(
-			"scheduled ir+disclosure+news+ratings+margin done:",
+			"scheduled ir+disclosure+news+ratings done:",
 			JSON.stringify({
 				ir: ir.results,
 				disclosure: disc.results,
 				news: news.results,
 				...(mnews ? { marketNews: mnews } : {}),
 				ratings: rat.results,
-				...(mgn.results ? { margin: mgn.results } : {}),
 			}),
 			"fresh:",
 			fresh.join(","),

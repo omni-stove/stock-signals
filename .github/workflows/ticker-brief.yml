@@ -175,6 +175,8 @@ jobs:
               `progress_pct: null` → skip progress. `consensus_mentions` → the direction vs 市場予想, cited (株探, `date`).
             - **`revisions`**: lead on one within the holding horizon; older → background only.
             - **`margin`** / **`short_interest`** / **`forced`**: 需給 facts. An old `positions.calc_date` → weak evidence.
+              `margin.jsf` is the daily 証金残, a small part of 信用残: lead on its change since `margin.latest_date`
+              for the direction; never read it as the size of 信用残 or as a 信用倍率.
             - **`supply`**: a 需給 fact. A lock-up term only when the filing confirms it; `ratio_pct: null` → no
               direction; older than a few weeks → background only.
             - **`valuation`**: how much good news the price carries, never 割安/割高 alone.

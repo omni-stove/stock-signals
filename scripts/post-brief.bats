@@ -269,6 +269,21 @@ numbers_text() {
   [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000\n中期: 予想PER 30.6倍\n需給: 信用倍率 3.42倍（11/20 時点）')" ]
 }
 
+# 証金残は信用倍率の後ろに、1 万株以上は万株で、前日比を符号つきで載る
+@test "numbers: supply line appends daily JSF balance after the margin ratio" {
+  run_pb_ctx '{"margin":{"status":"ok","latest_date":"2026-11-20","ratio":2.73,
+               "jsf":{"date":"2026-11-25","loan_qty":446700,"loan_chg":23100,"lend_qty":100,"lend_chg":-5900}}}'
+  [ "$status" -eq 0 ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n需給: 信用倍率 2.73倍（11/20 時点） / 証金 融資残 44.7万株（前日比 +2.3万株）・貸株残 100株（前日比 -5900株）（11/25 時点）')" ]
+}
+
+# 週次の倍率が無くても証金残だけで需給の行が付く
+@test "numbers: supply line shows JSF balance alone without a margin ratio" {
+  run_pb_ctx '{"margin":{"status":"ok","rows_n":0,"jsf":{"date":"2026-11-25","loan_qty":124600,"loan_chg":0}}}'
+  [ "$status" -eq 0 ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n需給: 証金 融資残 12.5万株（前日比 ±0株）（11/25 時点）')" ]
+}
+
 # 倍率が null (売り残ゼロなど) や margin が unavailable なら需給の行は付かない
 @test "numbers: null ratio or unavailable margin adds no supply line" {
   run_pb_ctx '{"prices":{"latest":{"price":10000}},"margin":{"status":"ok","latest_date":"2026-11-20","ratio":null}}'

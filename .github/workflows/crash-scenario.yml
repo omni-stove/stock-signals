@@ -118,7 +118,7 @@ jobs:
             - **`sector` / `sector_role`** (this ticker in `worker/src/lib/watchlist.ts`) set the systematic
               exposure and which part of the cycle hits first.
             - **Run-up fragility**: `daily` stretch and position in the 20日レンジ, `vol_x_20d`, and the WoW change
-              in `margin`. In-session, `daily` is the prior bar — take today's 出来高 from
+              in `margin` (the daily `margin.jsf` change only confirms it). In-session, `daily` is the prior bar — take today's 出来高 from
               `daily.vol_x_20d_intraday`. `prices.quote_status: closed` → do not read a move into the tape.
             - **Medium-term fragility** — how much gain holders could give back and how much good news the price
               carries: `trend`, `relative`, `valuation` against its range and peers, a good-news disclosure in

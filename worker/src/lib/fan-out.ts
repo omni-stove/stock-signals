@@ -16,7 +16,7 @@ export interface FanOutJob {
 
 type FanOutEnv = Pick<Env, "SELF" | "SYNC_TOKEN" | "MIN_INTERVAL_MS">;
 
-function jobKey(job: FanOutJob): string {
+export function jobKey(job: FanOutJob): string {
 	return [job.kind, job.code, job.part].filter(Boolean).join(":");
 }
 

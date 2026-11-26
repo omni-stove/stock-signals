@@ -242,6 +242,28 @@ export const margin = sqliteTable(
 	],
 );
 
+// ── jsf_balance (日証金の貸借取引残高。冪等キー = (ticker, date)) ──────────────
+// 日証金の貸借取引残高 CSV (1 申込日分・全銘柄) から watchlist 銘柄の行を日次で書く。
+// 証金を通る制度信用の分だけなので、信用残 (margin) の一部にあたる。同じ申込日の速報は確報で上書きする。
+export const jsfBalance = sqliteTable(
+	"jsf_balance",
+	{
+		ticker: text("ticker").notNull(),
+		date: text("date").notNull(), // 貸借申込日 YYYY-MM-DD
+		loanNew: integer("loan_new"), // 融資新規株数
+		loanRepay: integer("loan_repay"), // 融資返済株数
+		loanQty: integer("loan_qty"), // 融資残高株数
+		lendNew: integer("lend_new"), // 貸株新規株数
+		lendRepay: integer("lend_repay"), // 貸株返済株数
+		lendQty: integer("lend_qty"), // 貸株残高株数
+		fetchedAt: text("fetched_at").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.ticker, t.date] }),
+		index("idx_jsf_balance_ticker_date").on(t.ticker, sql`${t.date} DESC`),
+	],
+);
+
 // ── stock_lending (日証金の品貸料 = 逆日歩。冪等キー = (ticker, date)) ─────────
 // 日証金の品貸料率一覧 CSV を引け後に取り、watchlist 全銘柄について貸借申込日ごとに 1 行書く。
 // 一覧に無い銘柄も listed=0 で書き、「確認済みで逆日歩なし」を残す。

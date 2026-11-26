@@ -27,8 +27,8 @@ account_id = "020120735d111b7d06111196719171c1"  # admin@omnistove.com
 #                            (寄り前 08:30 のみ地合い=米国指数+日経先物も先に取得し、
 #                             その直後に market-brief ワークフローを dispatch する。市場全体の
 #                             事実サマリーなので個別 ticker-brief より先に発火させる)
-#                            引け後 18:00 は先に flows (空売り需給 + 投資部門別 + 大量保有報告書 (EDINET))
-#                            を収集し、信用残も相乗りさせる。18:00 以降の開示は翌朝 08:30 の intake で拾う。
+#                            引け後 18:00 は先に flows (空売り需給 + 投資部門別 + 大量保有報告書 (EDINET)
+#                            + 信用残) を収集する。18:00 以降の開示は翌朝 08:30 の intake で拾う。
 #   prices (場中5分毎):      JST 09:00-15:00 = UTC 00:00-06:00 を5分毎。prices+ニュース速報。
 #                            さらに JST 12:30 相当 (UTC 03:30) のスロットでは IR intake も相乗りさせる
 #                            (event.scheduledTime の時刻で判定。下記 scheduled() 参照)。
@@ -39,7 +39,7 @@ crons = [
   "30 23 * * *",    # JST 08:30 寄り前 IR + ニュース + 地合い (+ market-brief を dispatch)
   "*/5 0-6 * * *",  # JST 09:00-15:00 5分毎  prices + ニュース速報 (12:30 相当スロットで IR intake も)
   "0 7 * * *",      # JST 16:00 引け後  daily + fundamentals + earnings (eod)
-  "0 9 * * *",      # JST 18:00 引け後 flows (空売り需給 + 投資部門別 + 大量保有) → IR + ニュース + 信用残
+  "0 9 * * *",      # JST 18:00 引け後 flows (空売り需給 + 投資部門別 + 大量保有 + 信用残) → IR + ニュース
 ]
 
 # 自分自身への service binding。cron が重い収集を /run に 1 ジョブずつ投げ、別 invocation として

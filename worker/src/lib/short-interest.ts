@@ -12,7 +12,7 @@ import { scanTables } from "./html";
 import { pdfStreams } from "./inflate";
 import { marketShortRatio, shortPositions, stockLending } from "./schema";
 import { WATCHLIST } from "./timeseries";
-import { fetchHtml, sleep } from "./utils";
+import { decodeSjis, fetchBytes, fetchHtml, sleep } from "./utils";
 
 export interface ShortInterestEnv {
 	DB: D1Database;
@@ -35,28 +35,6 @@ function toNumber(raw: string | undefined | null): number | null {
 		return null;
 	const n = Number(cleaned);
 	return Number.isFinite(n) ? n : null;
-}
-
-async function fetchBytes(
-	url: string,
-	env: { USER_AGENT: string },
-): Promise<Uint8Array> {
-	const res = await fetch(url, {
-		headers: { "User-Agent": env.USER_AGENT },
-		signal: AbortSignal.timeout(15_000),
-	});
-	if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
-	return new Uint8Array(await res.arrayBuffer());
-}
-
-// 日証金 CSV は Shift_JIS。数値とコードは ASCII なので、デコーダが無い環境でも latin1 で読める
-// (その場合は日本語の制限措置欄だけ文字化けするので捨てる)。
-function decodeSjis(bytes: Uint8Array): { text: string; sjis: boolean } {
-	try {
-		return { text: new TextDecoder("shift_jis").decode(bytes), sjis: true };
-	} catch {
-		return { text: new TextDecoder("latin1").decode(bytes), sjis: false };
-	}
 }
 
 // ── 逆日歩 ────────────────────────────────────────────────────────────────

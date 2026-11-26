@@ -330,8 +330,13 @@ export interface MarginRow {
 	ratio?: number | null;
 }
 
-export function buildMargin(rows: MarginRow[]): Record<string, unknown> {
-	if (!rows || rows.length < 1) return { status: "unavailable" };
+// jsf は日次の証金残 (jsf-balance.ts の buildJsfBalance)。週次の行が無くても jsf があれば ok で返す。
+export function buildMargin(
+	rows: MarginRow[],
+	jsf: Record<string, unknown> | null = null,
+): Record<string, unknown> {
+	if (!rows || rows.length < 1)
+		return jsf ? { status: "ok", rows_n: 0, jsf } : { status: "unavailable" };
 	const cur = rows[0];
 	const prev = rows[1] ?? null;
 	const wow = (
@@ -348,6 +353,7 @@ export function buildMargin(rows: MarginRow[]): Record<string, unknown> {
 		long_chg: wow(cur.long_qty, prev?.long_qty),
 		short_chg: wow(cur.short_qty, prev?.short_qty),
 		prev_date: prev?.date ?? null,
+		...(jsf ? { jsf } : {}),
 	};
 }
 
@@ -1181,6 +1187,23 @@ if (import.meta.vitest) {
 		});
 		it("行なしは unavailable", () => {
 			expect(buildMargin([])).toEqual({ status: "unavailable" });
+		});
+		it("証金残は jsf に載り、週次が無くても ok で返す", () => {
+			const jsf = { date: "2026-11-25", loan_qty: 446700, loan_chg: 23100 };
+			expect(
+				buildMargin(
+					[
+						{
+							date: "2026-11-20",
+							long_qty: 3892.5,
+							short_qty: 1426.6,
+							ratio: 2.73,
+						},
+					],
+					jsf,
+				).jsf,
+			).toEqual(jsf);
+			expect(buildMargin([], jsf)).toEqual({ status: "ok", rows_n: 0, jsf });
 		});
 	});
 

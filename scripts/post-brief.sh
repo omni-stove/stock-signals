@@ -91,7 +91,7 @@ BRIEF_BODY="$(printf '%s\n' "$LEAN_LINE" "$BODY" | sed '/^$/d')"
 # 📐 数値 の見出しの下に 4 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
 # 確定足 = daily の最新確定足の指標。ザラ場中は前営業日の足なので、当日の値とは行を分ける。
 # 中期 = MA75 と乖離 / 52週高値・安値と現値からの距離 / TOPIX 比 20 日超過リターン / 予想 PER。
-# 需給 = 信用倍率と、その週次の集計基準日 (margin.latest_date)。
+# 需給 = 信用倍率と週次の集計基準日 (margin.latest_date)、日次の証金残 (margin.jsf) の融資残・貸株残と前日比。
 # どれも値があるものだけを " / " 連結し、値が 1 つも無ければ行ごとスキップする。
 # daily が insufficient/stale なら確定足の行は出さない。
 NUMBERS=""
@@ -137,10 +137,22 @@ if [[ -n "$NUMCTX_FILE" && -s "$NUMCTX_FILE" ]] && jq -e . "$NUMCTX_FILE" >/dev/
     | if length == 0 then "" else "中期: " + join(" / ") end' "$NUMCTX_FILE")"
 
   SUPPLY_LINE="$(jq -r '
-    (.margin // {}) as $m
-    | if ($m.status // "") == "ok" and $m.ratio != null
-      then "需給: 信用倍率 \($m.ratio)倍" + (if $m.latest_date != null then "（\($m.latest_date) 時点）" else "" end)
-      else "" end' "$NUMCTX_FILE")"
+    def qty: if fabs >= 10000 then "\((. / 1000 | round) / 10)万株" else "\(.)株" end;
+    def signed_qty: if . > 0 then "+\(qty)" elif . == 0 then "±0株" else qty end;
+    (if (.margin.status // "") == "ok" then .margin else {} end) as $m
+    | ($m.jsf // {}) as $j
+    | [ (if $m.ratio != null
+         then "信用倍率 \($m.ratio)倍" + (if $m.latest_date != null then "（\($m.latest_date) 時点）" else "" end)
+         else empty end),
+        ([ (if $j.loan_qty != null
+            then "融資残 \($j.loan_qty | qty)" + (if $j.loan_chg != null then "（前日比 \($j.loan_chg | signed_qty)）" else "" end)
+            else empty end),
+           (if $j.lend_qty != null
+            then "貸株残 \($j.lend_qty | qty)" + (if $j.lend_chg != null then "（前日比 \($j.lend_chg | signed_qty)）" else "" end)
+            else empty end) ]
+         | if length == 0 then empty
+           else "証金 " + join("・") + (if $j.date != null then "（\($j.date) 時点）" else "" end) end) ]
+    | if length == 0 then "" else "需給: " + join(" / ") end' "$NUMCTX_FILE")"
 
   NUMBERS="$(printf '%s\n%s\n%s\n%s\n' "$CURRENT_LINE" "$CONFIRMED_LINE" "$MEDIUM_LINE" "$SUPPLY_LINE" | sed '/^$/d')"
   NUMBERS="${NUMBERS:+📐 *数値*

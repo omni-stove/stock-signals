@@ -25,6 +25,7 @@ import type { Env } from "../lib/env";
 import { buildEventContext, type MacroEventRow } from "../lib/event-context";
 import type { DailyRow } from "../lib/indicators";
 import { avgVolume20d } from "../lib/indicators";
+import { buildJsfBalance, readJsfBalance } from "../lib/jsf-balance";
 import {
 	buildDaily,
 	buildEarnings,
@@ -272,6 +273,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.orderBy(desc(margin.date))
 		.limit(4)
 		.all()) as MarginRow[];
+	const jsfRows = await readJsfBalance(env.DB, code);
 
 	// 強制決済フローの最新スコア (eod cron が算出済み)。「投げ/踏みが今日いつ出るか」を
 	// judge が読む材料として渡す。post-signal.sh が末尾に貼る観測行とは別経路。
@@ -437,7 +439,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 				today,
 			),
 			prices: buildPrices(priceRows, epochNow),
-			margin: buildMargin(marginRows),
+			margin: buildMargin(marginRows, buildJsfBalance(jsfRows)),
 			short_interest: {
 				lending: buildLending(shortInterest.lending),
 				positions: buildShortPositions(shortInterest.positions, today),

@@ -73,14 +73,12 @@ ir:
     note: "当年ページのみ表示。見出しを本文として保存"
 
   # 6976 太陽誘電。
-  #  IR トップ (www.yuden.co.jp/ir/) のニュース一覧を、クラス名に依らず
-  #  「日付テキスト (2026年11月5日 / 2026.11.05 等) + 記事リンク」の並びとして読む。
-  #  li / tr / dt / article でブロックを切り、日付の無いブロック (ナビ・フッタ) は捨てる。
-  #  リンク文言が「PDF」等なら項目のテキストを見出しにする。
+  #  IR ニュース (www.yuden.co.jp/jp/ir/news/) は irpocket の JSONP を JS で描画するので、
+  #  その JSONP (直近 12 か月) を読む。PDF は pdf.irpocket.com。
   #  決算系の見出しは category=earnings、それ以外は ir。
   - code: "6976"
-    site: "yuden"
-    list_url: "https://www.yuden.co.jp/ir/"
+    site: "irpocket"
+    list_url: "https://xml.irpocket.com/6976/JS/release-all-latest-12m.js"
     encoding: "utf-8"
     note: "決算短信・業績予想の修正・説明資料の PDF は定性部分の抜粋を見出しに足す。他は見出しを本文として保存"
 

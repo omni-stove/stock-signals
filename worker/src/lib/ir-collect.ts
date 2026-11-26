@@ -9,7 +9,7 @@
 //                       本文も取得する (唯一 fetchBody=true)。
 //   - advantest (6857): li.m-list-news__item (time.datetime / p.m-text__item)。
 //   - lasertec  (6920): article.news__article (time.datetime / h3.news__title)。当年ページのみ。
-//   - yuden     (6976): 日付と記事リンクの並び (ir-sources.ts の parseYudenList)。
+//   - irpocket  (6976): irpocket の JSONP (ir-sources.ts の parseIrpocketList)。
 //   kioxia 以外は記事リンクが PDF/カレンダーで本文HTMLが取れないため、一覧の見出しを本文として
 //   保存する (適時開示はタイトルで判定材料になる。disclosure.ts と同思想)。ただしリンクが PDF の
 //   決算系開示は、PDF の定性部分の抜粋を見出しの後ろに足す (pdf-text.ts)。

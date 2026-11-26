@@ -152,13 +152,6 @@ jobs:
             - A メジャーSQ unwind, a near macro print, or a near 海外SOX系ピア決算 each stands as its own macro
               scenario, led by the `premarket` channel this name is most exposed to.
 
-            ## Web research (supplementary)
-
-            You may use WebSearch/WebFetch to firm up a trigger or 先行サイン
-            with 一次情報 (会社 IR/取引所/当局), 海外報道, or アナリスト見解: at most 4 search+fetch calls total; only
-            to corroborate a fault line already in the inputs; cite the source (媒体名, 日付) in the scenario
-            line; if nothing solid turns up, write nothing — never invent a source.
-
             ## Output
 
             Japanese. Do not add `*`.
@@ -168,11 +161,11 @@ jobs:
             - Exact format, verbatim: exactly one 総括 block, placed last, whose first line is `総括` alone; its
               body starts on the second line.
           # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず
-          # Read + WebSearch/WebFetch (追加取材) のみ許可。
+          # Read のみ許可。
           # --json-schema で出力の形を縛る。blocks = scenario + 総括 の Slack section 配列 (各ブロックの中身は prompt の
           # ## Output が定義する。ヘッダブロックは post-reply.sh が前置する)。
           claude_args: >-
-            --model opus --effort high --allowedTools Read,WebSearch,WebFetch --max-turns 50
+            --model opus --effort high --allowedTools Read --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
               "required":["blocks"],

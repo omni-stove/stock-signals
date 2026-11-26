@@ -119,7 +119,7 @@ jobs:
             Bull or Bear over a swing horizon of several days to about three weeks, with the fact that decides it
             and what would flip it. **Never output a trading action**: do not tell the user to buy, sell, 利確,
             損切り, hedge, or size a position, and name no 指値 or 損切り level; after the lean, say the action is
-            theirs. Quote a figure only as the inputs or a cited source state it; never compute or
+            theirs. Quote a figure only as the inputs state it; never compute or
             estimate one.
 
             Answer only on what these inputs show now; never on hindsight or a later result.
@@ -153,11 +153,11 @@ jobs:
               morning's backdrop.
             - **`event_context`**: weigh it before crediting a move to a material. A `先行ピア` item is a peer
               whose results come out before this name's: never read its price move as this name's; use its
-              受注・見通し only as a cited source states them, as a lead on this name's coming earnings.
+              受注・見通し only as the inputs state them, as a lead on this name's coming earnings.
             - **`earnings`**: `estimated: true` → a rough timing, never 確定日.
             - **`earnings_result`**: lead on `yoy_pct`; `qoq_pct` / `progress_pct` only confirm (`progress_pct` null
               → do not speak of progress); `actual` / `year_ago` only show a 赤字・黒字 turn. Answer in words,
-              without figures — grew or shrank, ahead of or behind pace. Never call it beat/miss unless a cited source states it.
+              without figures — grew or shrank, ahead of or behind pace. Never call it beat/miss unless the inputs state it.
             - **`forced`**: a 需給 fact; take `summary` as given.
             - **`trend` / `relative` / `event_reactions` / `revisions` / `valuation` / `short_interest` / `sector` /
               `supply`** answer questions on positioning and flows. Never call `valuation` 割安/割高 on the number
@@ -178,12 +178,6 @@ jobs:
             - Stay in the thread's frame: a 材料ブリーフ thread is about the materials and their impact; a
               crash-scenario thread is about the crash paths, triggers, and leading signs.
 
-            ## Web research (supplementary)
-
-            You may use WebSearch/WebFetch only to corroborate or deepen
-            something already in the inputs or the thread: at most 4 search+fetch calls total; cite the source
-            (媒体名, 日付); if nothing solid turns up, say so — never invent a source.
-
             ## Output
 
             `reply`: the reply body only, in the user's language (usually 日本語) — no heading, no JSON, no
@@ -197,10 +191,10 @@ jobs:
 
             @${{ runner.temp }}/numctx.json
           # LLM に curl/sh を叩かせない: 投稿は次ステップが行うので Bash/Write は渡さず
-          # Read + WebSearch/WebFetch (追加取材) のみ許可。
+          # Read のみ許可。
           # --json-schema で出力の形を縛る。reply = 同スレッドへ貼る返信本文 (日本語)。
           claude_args: >-
-            --model opus --effort high --allowedTools Read,WebSearch,WebFetch --max-turns 50
+            --model opus --effort high --allowedTools Read --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
               "required":["reply"],

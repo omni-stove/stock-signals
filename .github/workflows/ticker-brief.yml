@@ -148,7 +148,7 @@ jobs:
 
             `routine` = no new IR/news since the last context update: give a short status check —
             `headline` (exact format, verbatim prefix) `📊 <ticker> <name>: <where the name stands now>`, `materials` empty, at most 1 `technical`,
-            2 each of `bull` / `bear`, 1 `watch`. Skip Web research; never present a topic from 直近の重大トピック as new.
+            2 each of `bull` / `bear`, 1 `watch`. Never present a topic from 直近の重大トピック as new.
 
             ## Inputs
 
@@ -167,12 +167,12 @@ jobs:
               `high_pct` / `low_pct` / `close_pos` and their `avg_` counterparts only qualify it — a rebound off a deep low or a fade from a high, in words. null → `change_pct` alone.
             - **`premarket`**: lead on the field this name is most exposed to per `context_body` or `ticker_note`;
               other exposed fields only confirm; ignore the rest. `us_session: carried_over` → not fresh.
-            - **`event_context`**: a driver of the tape, never a material. A `先行ピア` whose results are out may be
-              looked up and cited for what it implies here; never read the peer's price move as this name's.
+            - **`event_context`**: a driver of the tape, never a material. Never read a `先行ピア`'s price move as
+              this name's.
             - **`event_reactions`**: how the market took a material. `partial: true` → the second session is not in yet.
             - **`earnings`**: a coming date. `estimated: true` → a rough timing (`…頃の見込み`), never 確定日.
             - **`earnings_result`**: lead on `yoy_pct`; `qoq_pct` / `progress_pct` only confirm; say them in words.
-              `progress_pct: null` → skip progress. `consensus_mentions` → the direction vs 市場予想, cited (株探, `date`).
+              `progress_pct: null` → skip progress. `consensus_mentions` → the direction vs 市場予想.
             - **`revisions`**: lead on one within the holding horizon; older → background only.
             - **`margin`** / **`short_interest`** / **`forced`**: 需給 facts. An old `positions.calc_date` → weak evidence.
             - **`supply`**: a 需給 fact. A lock-up term only when the filing confirms it; `ratio_pct: null` → no
@@ -181,11 +181,6 @@ jobs:
             - **`market_brief`** / **`ticker_note`**: background only, never a material of this name. `market_brief.date`
               before today → not today's.
             - The ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
-
-            ## Web research
-
-            Up to 4 WebSearch/WebFetch calls, only to corroborate or deepen a material already in the inputs.
-            Cite inline (媒体名, 日付); nothing solid → write nothing.
 
             ## Output
 
@@ -208,10 +203,10 @@ jobs:
             @${{ runner.temp }}/numctx.json
           # --json-schema で出力の形を縛る (= ticker-brief の構造化スキーマの唯一の定義場所)。
           # 検証済み JSON は steps.brief.outputs.structured_output で受ける。skill には curl/sh を
-          # 叩かせない (投稿/保存は次ステップ): Bash は渡さず Read + WebSearch/WebFetch (追加取材) のみ許可。
+          # 叩かせない (投稿/保存は次ステップ): Bash は渡さず Read のみ許可。
           claude_args: >-
             --model opus --effort ${{ steps.mode.outputs.mode == 'routine' && 'medium' || 'high' }}
-            --allowedTools Read,WebSearch,WebFetch --max-turns 50
+            --allowedTools Read --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
               "required":["status","headline","lean","materials","technical","bull","bear","watch"],

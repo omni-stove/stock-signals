@@ -63,22 +63,22 @@ HEADLINE="$(printf '%s' "$BRIEF_JSON" | jq -r '.headline // ""')"
 [[ -n "$HEADLINE" && "$HEADLINE" != "null" ]] || {
   echo "post-brief.sh: empty headline in $BRIEF_FILE" >&2; exit 1; }
 
-# 本文を emoji 見出しのセクションごとの文字列に組む: 🆕 新着 (見出しのみ) / 📈 テクニカル /
-# 🐂 強気 / 🐻 弱気 / 👀 注視。項目が無いセクションは出さず、1 セクション 1 section block になる。
+# 本文を見出し付きのセクションごとの文字列に組む: 🆕 新着 (見出しのみ) / 📈 テクニカル /
+# 強気 / 弱気 / 👀 注視。項目が無いセクションは出さず、1 セクション 1 section block になる。
 SECTIONS_JSON="$(printf '%s' "$BRIEF_JSON" | jq -c '
   def group($heading): if length == 0 then empty else ([$heading] + .) | join("\n") end;
   def bullets: map("・" + .);
   [ ((.materials // []) | bullets | group("🆕 *新着*")),
     ((.technical // []) | bullets | group("📈 *テクニカル*")),
-    ((.bull // []) | bullets | group("🐂 *強気*")),
-    ((.bear // []) | bullets | group("🐻 *弱気*")),
+    ((.bull // []) | bullets | group("*強気*")),
+    ((.bear // []) | bullets | group("*弱気*")),
     ((.watch // []) | bullets | group("👀 *注視*")) ]')"
 BODY="$(printf '%s' "$SECTIONS_JSON" | jq -r 'join("\n")')"
 [[ -n "$BODY" ]] || { echo "post-brief.sh: empty body in $BRIEF_FILE" >&2; exit 1; }
 
-# 方向感の 1 行: 「🧭 *方向感*: Bull — <basis>」。lean が null なら空文字。
+# 方向感の 1 行: 「🧭 *方向感*: 🐂 ↗ — <basis>」 / 「🧭 *方向感*: 🐻 ↘ — <basis>」。lean が null なら空文字。
 LEAN_LINE="$(printf '%s' "$BRIEF_JSON" | jq -r '
-  ({bull:"Bull",bear:"Bear"}[.lean.direction? // ""]) as $dir
+  ({bull:"🐂 ↗",bear:"🐻 ↘"}[.lean.direction? // ""]) as $dir
   | if $dir == null then "" else
     "🧭 *方向感*: \($dir)" + (if (.lean.basis // "") != "" then " — \(.lean.basis)" else "" end)
   end')"

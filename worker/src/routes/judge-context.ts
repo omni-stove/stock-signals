@@ -37,6 +37,7 @@ import {
 	buildRevisions,
 	buildValuation,
 	compactJudgeContext,
+	estimateMarginCost,
 	type ForcedRow,
 	type ForecastSnapshot,
 	type MarginRow,
@@ -88,6 +89,9 @@ import { TICKERS, WATCHLIST_META } from "../lib/watchlist";
 // 52週高値・安値と MA75 に使う日足の本数 (約1年 + 余裕)。短期指標 (buildDaily) は直近 DAILY_SHORT 本で組む。
 const DAILY_LONG = 260;
 const DAILY_SHORT = 70;
+// 信用の推定建値に使う信用残の週数。buildMargin の週次比較は直近 MARGIN_SHOW 週だけ読む。
+const MARGIN_COST_WEEKS = 26;
+const MARGIN_SHOW = 4;
 // 材料の超過リターンと供給イベントを拾う見出しの遡り日数。
 const ARTICLE_LOOKBACK_DAYS = 400;
 
@@ -271,7 +275,7 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 		.from(margin)
 		.where(eq(margin.ticker, code))
 		.orderBy(desc(margin.date))
-		.limit(4)
+		.limit(MARGIN_COST_WEEKS)
 		.all()) as MarginRow[];
 	const jsfRows = await readJsfBalance(env.DB, code);
 
@@ -439,7 +443,14 @@ judgeContext.get("/judge-context", async (c: Context<{ Bindings: Env }>) => {
 				today,
 			),
 			prices: buildPrices(priceRows, epochNow),
-			margin: buildMargin(marginRows, buildJsfBalance(jsfRows)),
+			margin: buildMargin(
+				marginRows.slice(0, MARGIN_SHOW),
+				buildJsfBalance(jsfRows),
+				estimateMarginCost(marginRows, dailyLong),
+				(priceRows[0]?.price as number | null | undefined) ??
+					dailyRows[0]?.close ??
+					null,
+			),
 			short_interest: {
 				lending: buildLending(shortInterest.lending),
 				positions: buildShortPositions(shortInterest.positions, today),

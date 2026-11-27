@@ -200,6 +200,31 @@ payload_for() {
   [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 1 ]
 }
 
+# === day: 当日の需給 (親の方向感の下に傾き 1 行、details に売り買いの出所と反転) ===
+
+@test "day: direction and basis render under the lean, points and flip go to details" {
+  jq -n '{status:"brief",headline:"HEAD",lean:{direction:"bull",basis:"受注が加速"},
+          materials:[],technical:[],bull:["upside point"],bear:[],watch:[],
+          day:{direction:"bear",basis:"信用買いの建値で戻り売り",points:["寄りは先物安で売り先行","上値は建値で重い"],flip:"建値を出来高で抜ける"}}' \
+    > "$BATS_TEST_TMPDIR/b.json"
+  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.blocks[2].text.text')" = "⏱ *当日*: 🐻 ↘ — 信用買いの建値で戻り売り" ]
+  [ "$(printf '%s' "$p" | jq -r '.brief_body | split("\n")[1]')" = "⏱ *当日*: 🐻 ↘ — 信用買いの建値で戻り売り" ]
+  [ "$(printf '%s' "$p" | jq -r '.details.blocks[-1].text.text')" = "$(printf '⏱ *当日の需給*\n・寄りは先物安で売り先行\n・上値は建値で重い\n・反転: 建値を出来高で抜ける')" ]
+}
+
+@test "day: null day adds no block and no section" {
+  jq -n '{status:"brief",headline:"HEAD",lean:null,materials:[],technical:[],bull:[],bear:["risk point"],watch:[],day:null}' \
+    > "$BATS_TEST_TMPDIR/b.json"
+  run_pb 285A "$BATS_TEST_TMPDIR/b.json"
+  [ "$status" -eq 0 ]
+  local p; p="$(payload_for "/slack/post")"
+  [ "$(printf '%s' "$p" | jq -r '.blocks | length')" -eq 1 ]
+  printf '%s' "$p" | jq -e '.details.text | test("当日") | not' >/dev/null
+}
+
 # === numbers: 数値行 (numctx の実在値から決定論で組み、親の context block に貼る) ===
 
 # numctx-file 付きで実行するヘルパ。$1=numctx JSON
@@ -285,6 +310,16 @@ numbers_text() {
                "jsf":{"date":"2026-11-25","loan_qty":446700,"loan_chg":23100,"lend_qty":100,"lend_chg":-5900}}}'
   [ "$status" -eq 0 ]
   [ "$(numbers_text)" = "$(printf '📐 *数値*\n需給: 信用倍率 2.73倍（11/20 時点） / 証金 融資残 44.7万株（前日比 +2.3万株）・貸株残 100株（前日比 -5900株）（11/25 時点）')" ]
+}
+
+# 節目の行 (確定足の高安終と信用の推定建値・現値比) は現在の行の直後に載る
+@test "numbers: levels line shows the confirmed bar and margin cost basis" {
+  run_pb_ctx '{"prices":{"latest":{"price":10000}},
+               "daily":{"status":"ok","latest_date":"2026-11-26","high":10200,"low":9800,"close":9900},
+               "margin":{"status":"ok","latest_date":"2026-11-20","ratio":null,
+                         "long_cost":10500,"long_cost_dev_pct":-4.8,"short_cost":9000,"short_cost_dev_pct":11.1}}'
+  [ "$status" -eq 0 ]
+  [ "$(numbers_text)" = "$(printf '📐 *数値*\n現在: 現値 10000\n節目: 11/26 高値 10200・安値 9800・終値 9900 / 信用買い推定建値 10500（現値比 -4.8%%） / 信用売り推定建値 9000（現値比 +11.1%%）')" ]
 }
 
 # 週次の倍率が無くても証金残だけで需給の行が付く

@@ -13,6 +13,7 @@ import {
 	maDevPct,
 	withMovingAverages,
 } from "./indicators";
+import { avgCost, estimateCostLots } from "./margin-cost";
 import {
 	classifyUsSession,
 	type MacroRow,
@@ -330,10 +331,48 @@ export interface MarginRow {
 	ratio?: number | null;
 }
 
+export interface MarginCost {
+	long_cost: number | null;
+	short_cost: number | null;
+}
+
+/**
+ * 信用買い残・売り残の推定平均建値 (円、整数丸め) を返す。marginDesc は信用残 (date 降順)、
+ * dailyDesc は日足 (date 降順)。建値の推定は margin-cost.ts の estimateCostLots。
+ */
+export function estimateMarginCost(
+	marginDesc: MarginRow[],
+	dailyDesc: DailyRow[],
+): MarginCost {
+	const marginAsc = [...marginDesc].reverse();
+	const barsAsc = [...dailyDesc].reverse().map((b) => ({
+		date: b.date,
+		high: b.high,
+		low: b.low,
+		close: b.close,
+		volume: b.volume ?? null,
+	}));
+	const side = (pick: (r: MarginRow) => number | null | undefined) => {
+		const lots = estimateCostLots(
+			marginAsc.map((r) => ({ date: r.date, qty: pick(r) ?? null })),
+			barsAsc,
+		);
+		const cost = lots ? avgCost(lots) : null;
+		return cost == null ? null : Math.round(cost);
+	};
+	return {
+		long_cost: side((r) => r.long_qty),
+		short_cost: side((r) => r.short_qty),
+	};
+}
+
 // jsf は日次の証金残 (jsf-balance.ts の buildJsfBalance)。週次の行が無くても jsf があれば ok で返す。
+// cost を渡すと推定建値と、refPrice (現値) の建値からの乖離率を足す。
 export function buildMargin(
 	rows: MarginRow[],
 	jsf: Record<string, unknown> | null = null,
+	cost: MarginCost | null = null,
+	refPrice: number | null = null,
 ): Record<string, unknown> {
 	if (!rows || rows.length < 1)
 		return jsf ? { status: "ok", rows_n: 0, jsf } : { status: "unavailable" };
@@ -353,6 +392,14 @@ export function buildMargin(
 		long_chg: wow(cur.long_qty, prev?.long_qty),
 		short_chg: wow(cur.short_qty, prev?.short_qty),
 		prev_date: prev?.date ?? null,
+		...(cost
+			? {
+					long_cost: cost.long_cost,
+					long_cost_dev_pct: maDevPct(refPrice, cost.long_cost),
+					short_cost: cost.short_cost,
+					short_cost_dev_pct: maDevPct(refPrice, cost.short_cost),
+				}
+			: {}),
 		...(jsf ? { jsf } : {}),
 	};
 }
@@ -451,6 +498,8 @@ export function buildDaily(
 		rows_n: n,
 		// latest_date は daily の最新確定足の日付。ザラ場中は当日ではなく前営業日を指す。
 		latest_date: cur.date,
+		high: (cur.high as number | null) ?? null,
+		low: (cur.low as number | null) ?? null,
 		close,
 		range_high_20d: ind.range_high_20d,
 		range_low_20d: ind.range_low_20d,
@@ -1205,6 +1254,47 @@ if (import.meta.vitest) {
 			).toEqual(jsf);
 			expect(buildMargin([], jsf)).toEqual({ status: "ok", rows_n: 0, jsf });
 		});
+		it("cost を渡すと推定建値と現値の乖離率を足す", () => {
+			const out = buildMargin(
+				[{ date: "2026-06-19", long_qty: 150, short_qty: 40, ratio: 3.75 }],
+				null,
+				{ long_cost: 1000, short_cost: null },
+				900,
+			);
+			expect(out.long_cost).toBe(1000);
+			expect(out.long_cost_dev_pct).toBe(-10);
+			expect(out.short_cost).toBeNull();
+			expect(out.short_cost_dev_pct).toBeNull();
+		});
+	});
+
+	describe("estimateMarginCost", () => {
+		const bar = (date: string, close: number): DailyRow => ({
+			date,
+			high: close,
+			low: close,
+			close,
+			volume: 100,
+		});
+		it("買い残・売り残それぞれの平均建値を整数で返す", () => {
+			const out = estimateMarginCost(
+				[
+					{ date: "2026-01-16", long_qty: 150, short_qty: 40 },
+					{ date: "2026-01-09", long_qty: 100, short_qty: 40 },
+				],
+				[bar("2026-01-15", 1300), bar("2026-01-09", 1000)],
+			);
+			// 買い: 100@1000 + 50@1300 → 1100。売り: 増減なしで 40@1000
+			expect(out).toEqual({ long_cost: 1100, short_cost: 1000 });
+		});
+		it("初回集計日以前の日足が無ければ null", () => {
+			expect(
+				estimateMarginCost(
+					[{ date: "2026-01-09", long_qty: 100, short_qty: 40 }],
+					[bar("2026-01-15", 1000)],
+				),
+			).toEqual({ long_cost: null, short_cost: null });
+		});
 	});
 
 	describe("buildForced", () => {
@@ -1266,6 +1356,8 @@ if (import.meta.vitest) {
 			expect(out.status).toBe("ok");
 			expect(out.range_pct as number).toBeGreaterThanOrEqual(80);
 			expect(out.ma_position).toBe("above");
+			expect(out.high).toBe(40);
+			expect(out.low).toBe(38);
 		});
 		it("安値圏 (単調下降) は range_pct≦20 / ma below", () => {
 			const out = buildDaily(

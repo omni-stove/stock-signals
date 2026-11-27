@@ -7,8 +7,8 @@
 #
 # 起動後はブリーフのルールを prompt にベタ書きした Claude Code Action が対象銘柄の数値コンテキスト
 # (context-builder が育てたコンテキスト本文 + Worker /judge-context の価格/日足/市場ブリーフ/決算日/信用残)
-# を @ で読み、新着材料の見出し・方向感・テクニカルの読み・強気/弱気材料 (新着材料の背景・影響分析を含む) を
-# structured_output で返す。売買アクション・指値・損切りは出さない。投稿は後続ステップ (post-brief.sh)。
+# を @ で読み、新着材料の見出し・方向感・テクニカルの読み・強気/弱気材料 (新着材料の背景・影響分析を含む)・
+# 当日の需給 (デイトレ向けの当日の傾きと、売り買いが出やすい所) を structured_output で返す。売買アクション・指値・損切りは出さない。投稿は後続ステップ (post-brief.sh)。
 # **このワークフローはコンテキストを一切書き換えない** (出力は Slack のみ)。context-builder がコンテキストを書き、ticker-brief が Slack を書く、という
 # 役割の固定により、brief → context の編集ループは発生しない。
 #
@@ -134,7 +134,8 @@ jobs:
 
             Produce a **材料ブリーフ** for a reader who holds swing positions of several days to about three
             weeks: headline the fresh materials on this name, lay out the 強気/弱気 case, and state which way it
-            leans over that horizon.
+            leans over that horizon. Separately, for a reader who day-trades it, state how the 需給 is likely
+            to run through the day's session (`day`).
 
             Read each material the way the market will: what it changes for earnings, supply-demand, capital
             policy, or expectations, and what the company's move likely signals. Use your own judgment on what
@@ -148,7 +149,7 @@ jobs:
 
             `routine` = no new IR/news since the last context update: give a short status check —
             `headline` (exact format, verbatim prefix) `📊 <ticker> <name>: <where the name stands now>`, `materials` empty, at most 1 `technical`,
-            2 each of `bull` / `bear`, 1 `watch`. Never present a topic from 直近の重大トピック as new.
+            2 each of `bull` / `bear`, 1 `watch`, `day` in full. Never present a topic from 直近の重大トピック as new.
 
             ## Inputs
 
@@ -184,6 +185,21 @@ jobs:
               before today → not today's.
             - The ticker's `name`/`sector` are in `worker/src/lib/watchlist.ts`.
 
+            ### For `day`
+
+            The session is today's when `market_phase` is `premarket` or in-session; when `closed`, the next one.
+            - Lead on what moves size within the session: `forced` with `stance: building` and its
+              `settle_warning_in_days`; an `event_context` entry or `earnings.next_date` that falls on the session;
+              pre-open, the `premarket` gap; in-session, `prices.trajectory` with `daily.vol_x_20d_intraday`.
+            - Confirm with where supply sits: `margin.long_cost_dev_pct` slightly below zero → 戻り売り near the
+              cost, well below → 投げ fuel; `margin.short_cost_dev_pct` above zero → 踏み fuel, stronger with a
+              `short_interest.lending.fee_streak_days` streak; the `margin.jsf` change for the direction; the
+              `daily` bar's `high` / `low` / `close` as the nearest 節目 (in-session, the prior day's).
+            - Ignore for `day`: `valuation`, `revisions`, `trend`, `relative`, and materials whose effect plays out
+              over weeks.
+            - `margin.latest_date` older than two weeks → the cost basis is weak evidence. When only background is
+              left (`closed` with no overnight `premarket` yet), say the session hinges on the overnight tape.
+
             ## Output
 
             Japanese, for a reader who sees only this post. Clipped note style, about 40 characters per line, one
@@ -191,14 +207,17 @@ jobs:
             an input or describe your research.
 
             - `status`: `brief` by default. `no_update` only when the freshest 直近の重大トピック entry is older than
-              14 days and nothing fresh moved (earnings, guidance, forced flow, tape); then `headline` and `lean`
-              null and every array empty.
+              14 days and nothing fresh moved (earnings, guidance, forced flow, tape); then `headline`, `lean`, and
+              `day` null and every array empty.
             - `headline` (exact format, verbatim prefix): `📰 <ticker> <name>: <one-phrase summary of the fresh materials>`.
             - `materials` (exact format, verbatim): `YYYY-MM-DD <what happened>`, newest first, themes merged, no analysis.
             - `technical`: whether trend and money flow confirm or diverge from the materials. Empty when `daily` is absent.
             - `bull` / `bear`: the strongest points, fresh materials first, each with its path into price.
             - `lean`: `direction` = the side the case nets out to; `basis` = the deciding point, no figures.
             - `watch`: the next verifiable fact that would change the picture, date first when known.
+            - `day`: `direction` = the side the session's 需給 nets out to; `basis` = the deciding 需給 point;
+              `points` = where selling or buying is likely to show up — 寄り, 上値, 下値, 引け — one each, only
+              those the inputs support; `flip` = the in-session sign that would reverse it. No figures.
 
             ## 数値コンテキスト
 
@@ -211,7 +230,7 @@ jobs:
             --allowedTools Read --max-turns 50
             --json-schema '{
               "type":"object","additionalProperties":false,
-              "required":["status","headline","lean","materials","technical","bull","bear","watch"],
+              "required":["status","headline","lean","materials","technical","bull","bear","watch","day"],
               "properties":{
                 "status":{"enum":["brief","no_update"]},
                 "headline":{"type":["string","null"],"maxLength":70},
@@ -224,7 +243,14 @@ jobs:
                 "technical":{"type":"array","items":{"type":"string","maxLength":80},"maxItems":2},
                 "bull":{"type":"array","items":{"type":"string","maxLength":60},"maxItems":4},
                 "bear":{"type":"array","items":{"type":"string","maxLength":60},"maxItems":4},
-                "watch":{"type":"array","items":{"type":"string","maxLength":50},"maxItems":2}
+                "watch":{"type":"array","items":{"type":"string","maxLength":50},"maxItems":2},
+                "day":{"type":["object","null"],"additionalProperties":false,
+                  "required":["direction","basis","points","flip"],
+                  "properties":{
+                    "direction":{"enum":["bull","bear"]},
+                    "basis":{"type":"string","maxLength":60},
+                    "points":{"type":"array","items":{"type":"string","maxLength":50},"maxItems":4},
+                    "flip":{"type":"string","maxLength":50}}}
               }
             }'
         env:

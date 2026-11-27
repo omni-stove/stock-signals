@@ -6,10 +6,11 @@
 #   - skill 本体に curl を叩かせない。投稿経路 (Worker /slack/post, Bearer 認証, kind 付与,
 #     channel 省略, 503=Bot未設定→stdout フォールバック) は決定論的なのでこのスクリプトが持つ。
 #     skill は「材料・分析・強気/弱気・方向感」を構造化出力で渡すだけ。
-#   - 太字の headline・方向感・数値行をサマリーとして親に投稿し、本文・観測行は details として親のスレッドに
+#   - 太字の headline・方向感・当日の傾き・数値行をサマリーとして親に投稿し、本文・観測行は details として親のスレッドに
 #     1 通でぶら下げる (チャンネルにはサマリーだけが流れる)。
 #   - 数値行 (現在の現値・出来高ペース / 確定足の MA・レンジ・RSI・ATR・出来高倍率・OBV・CMF /
-#     中期の MA75・52週高値安値・TOPIX比・予想PER / 需給の信用倍率) は LLM に
+#     節目の確定足の高安終・信用の推定建値 / 中期の MA75・52週高値安値・TOPIX比・予想PER /
+#     需給の信用倍率) は LLM に
 #     出させず、numctx の実在値からここで決定論で組んで親の context block に貼る。LLM が水準・指標の
 #     数値を創作する余地を残さない (LLM はテクニカルの読みだけを返す)。
 #   - 強制決済スコア (追証売り/踏み上げ) は eod cron が D1 に算出済み。ここで D1 から最新行を引き、
@@ -18,9 +19,9 @@
 # 入力:
 #   $1 = ticker          (必須)
 #   $2 = brief-file      (必須。ticker-brief スキルの構造化出力 (structured_output) を書いた JSON の
-#                         パス。{status, headline, lean, materials[], technical[], bull[], bear[], watch[]}
-#                         を持つ。lean = {direction: bull|bear, basis}
-#                         または null。
+#                         パス。{status, headline, lean, materials[], technical[], bull[], bear[], watch[], day}
+#                         を持つ。lean = {direction: bull|bear, basis}、day = {direction: bull|bear, basis,
+#                         points[], flip}。どちらも null 可。
 #                         status=no_update なら投稿も保存もせず正常終了する)
 #   $3 = rebalance-file  (任意。前段ステップが /index-rebalance を並行取得して書いた JSON のパス。
 #                         LLM には渡さない観測事実なので numctx とは別ファイルで運ぶ。
@@ -72,7 +73,11 @@ SECTIONS_JSON="$(printf '%s' "$BRIEF_JSON" | jq -c '
     ((.technical // []) | bullets | group("📈 *テクニカル*")),
     ((.bull // []) | bullets | group("*強気*")),
     ((.bear // []) | bullets | group("*弱気*")),
-    ((.watch // []) | bullets | group("👀 *注視*")) ]')"
+    ((.watch // []) | bullets | group("👀 *注視*")),
+    (if .day == null then empty else
+      (((.day.points // []) | bullets)
+       + (if (.day.flip // "") != "" then ["・反転: " + .day.flip] else [] end))
+      | group("⏱ *当日の需給*") end) ]')"
 BODY="$(printf '%s' "$SECTIONS_JSON" | jq -r 'join("\n")')"
 [[ -n "$BODY" ]] || { echo "post-brief.sh: empty body in $BRIEF_FILE" >&2; exit 1; }
 
@@ -83,12 +88,20 @@ LEAN_LINE="$(printf '%s' "$BRIEF_JSON" | jq -r '
     "🧭 *方向感*: \($dir)" + (if (.lean.basis // "") != "" then " — \(.lean.basis)" else "" end)
   end')"
 
+# 当日の傾きの 1 行: 「⏱ *当日*: 🐂 ↗ — <basis>」。day が null なら空文字。
+DAY_LINE="$(printf '%s' "$BRIEF_JSON" | jq -r '
+  ({bull:"🐂 ↗",bear:"🐻 ↘"}[.day.direction? // ""]) as $dir
+  | if $dir == null then "" else
+    "⏱ *当日*: \($dir)" + (if (.day.basis // "") != "" then " — \(.day.basis)" else "" end)
+  end')"
+
 # briefs テーブルに保存する本文 = LLM 由来の内容のみ (数値行・観測行はここから導出可能なので含めない)。
 # position-report が建玉銘柄の最新材料としてこれを読む。
-BRIEF_BODY="$(printf '%s\n' "$LEAN_LINE" "$BODY" | sed '/^$/d')"
+BRIEF_BODY="$(printf '%s\n' "$LEAN_LINE" "$DAY_LINE" "$BODY" | sed '/^$/d')"
 
 # --- 数値行 (決定論): numctx の実在値から組み、親の context block に貼る ----
-# 📐 数値 の見出しの下に 4 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
+# 📐 数値 の見出しの下に 5 行。現在 = 現値 (prices.latest.price、closed なら daily.close) と当日ペース出来高。
+# 節目 = daily の最新確定足の高値・安値・終値と、信用買い残・売り残の推定建値 (margin.long_cost / short_cost) と現値比。
 # 確定足 = daily の最新確定足の指標。ザラ場中は前営業日の足なので、当日の値とは行を分ける。
 # 中期 = MA75 と乖離 / 52週高値・安値と現値からの距離 / TOPIX 比 20 日超過リターン / 予想 PER。
 # 需給 = 信用倍率と週次の集計基準日 (margin.latest_date)、日次の証金残 (margin.jsf) の融資残・貸株残と前日比。
@@ -100,6 +113,20 @@ if [[ -n "$NUMCTX_FILE" && -s "$NUMCTX_FILE" ]] && jq -e . "$NUMCTX_FILE" >/dev/
     [ ((.prices.latest.price // .daily.close) as $v | if $v != null then "現値 \($v)" else empty end),
       (.daily.vol_x_20d_intraday as $v | if $v != null then "出来高 当日ペース\($v)倍" else empty end) ]
     | if length == 0 then "" else "現在: " + join(" / ") end' "$NUMCTX_FILE")"
+
+  LEVELS_LINE="$(jq -r '
+    def signed: "\(if . > 0 then "+" else "" end)\(.)";
+    def cost($label; $v; $dev):
+      if $v == null then empty
+      else "\($label) \($v)" + (if $dev != null then "（現値比 \($dev | signed)%）" else "" end) end;
+    (.daily // {}) as $d
+    | (if (.margin.status // "") == "ok" then .margin else {} end) as $m
+    | [ (if ($d.status // "ok") == "ok" and $d.high != null and $d.low != null
+         then "\($d.latest_date // "最新") 高値 \($d.high)・安値 \($d.low)" + (if $d.close != null then "・終値 \($d.close)" else "" end)
+         else empty end),
+        cost("信用買い推定建値"; $m.long_cost; $m.long_cost_dev_pct),
+        cost("信用売り推定建値"; $m.short_cost; $m.short_cost_dev_pct) ]
+    | if length == 0 then "" else "節目: " + join(" / ") end' "$NUMCTX_FILE")"
 
   CONFIRMED_LINE="$(jq -r '
     def signed: "\(if . > 0 then "+" else "" end)\(.)";
@@ -154,7 +181,7 @@ if [[ -n "$NUMCTX_FILE" && -s "$NUMCTX_FILE" ]] && jq -e . "$NUMCTX_FILE" >/dev/
            else "証金 " + join("・") + (if $j.date != null then "（\($j.date) 時点）" else "" end) end) ]
     | if length == 0 then "" else "需給: " + join(" / ") end' "$NUMCTX_FILE")"
 
-  NUMBERS="$(printf '%s\n%s\n%s\n%s\n' "$CURRENT_LINE" "$CONFIRMED_LINE" "$MEDIUM_LINE" "$SUPPLY_LINE" | sed '/^$/d')"
+  NUMBERS="$(printf '%s\n' "$CURRENT_LINE" "$LEVELS_LINE" "$CONFIRMED_LINE" "$MEDIUM_LINE" "$SUPPLY_LINE" | sed '/^$/d')"
   NUMBERS="${NUMBERS:+📐 *数値*
 ${NUMBERS}}"
 fi
@@ -206,7 +233,7 @@ if [[ -n "$REBAL_LINE" ]]; then
 }📅 *リバランス窓*: ${REBAL_LINE}"
 fi
 
-# 親 = 太字の headline → 方向感 → 数値行 (context block)。details = 本文グループ → 観測行 (1 行 1 section)。
+# 親 = 太字の headline → 方向感 → 当日 → 数値行 (context block)。details = 本文グループ → 観測行 (1 行 1 section)。
 # LLM 由来の文字列はリテラル "\n" を本物の改行へ正規化する (どちらで来ても同じ結果になる)。
 # brief_body は LLM 由来の本文素テキスト。Worker /slack/post が briefs テーブルに upsert する。
 # Slack に見せるブロックだけ YYYY-MM-DD を年なし・ゼロ埋めなしの M/D にする (noyear)。text と brief_body は briefs に
@@ -219,6 +246,7 @@ PAYLOAD="$(jq -n \
   --arg observations "$OBSERVATIONS" \
   --arg numbers "$NUMBERS" \
   --arg lean "$LEAN_LINE" \
+  --arg day "$DAY_LINE" \
   --arg brief_body "$BRIEF_BODY" \
   --arg details_text "$DETAILS_TEXT" \
   'def noyear: gsub("(?<![0-9])20[0-9]{2}-(?<m>[0-9]{2})-(?<d>[0-9]{2})(?![0-9])"; "\(.m | tonumber)/\(.d | tonumber)");
@@ -231,6 +259,7 @@ PAYLOAD="$(jq -n \
     brief_body: $brief_body,
     blocks: ([$headline | bold | section]
       + (if $lean == "" then [] else [$lean | section] end)
+      + (if $day == "" then [] else [$day | section] end)
       + (if $numbers == "" then [] else [{type:"context", elements:[{type:"mrkdwn", text:($numbers | noyear)}]}] end)),
     details: {
       text: ($details_text | noyear),
@@ -257,6 +286,6 @@ HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
 if [[ "$HTTP_CODE" == "200" ]]; then
   echo "slack ok"
 else
-  printf '%s\n' "$HEADLINE" "$LEAN_LINE" "$NUMBERS" "$DETAILS_TEXT" | sed '/^$/d'
+  printf '%s\n' "$HEADLINE" "$LEAN_LINE" "$DAY_LINE" "$NUMBERS" "$DETAILS_TEXT" | sed '/^$/d'
   echo "slack skipped (HTTP ${HTTP_CODE})"
 fi

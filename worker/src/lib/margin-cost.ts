@@ -81,6 +81,13 @@ export function estimateCostLots(
 	return lots.filter((l) => l.qty > 0);
 }
 
+/** ロットの数量加重の平均建値 (円)。ロットが無ければ null。 */
+export function avgCost(lots: CostLot[]): number | null {
+	const qty = lots.reduce((s, l) => s + l.qty, 0);
+	if (qty <= 0) return null;
+	return lots.reduce((s, l) => s + l.cost * l.qty, 0) / qty;
+}
+
 /**
  * `refPrice` から `close` までの値動きで追証ラインを新たに越えたロットの量 (千株) を返す。
  * 買い方 (long) は終値が建値の (1 - callLossPct%) を割ったロットのうち、`refPrice` ではまだ
@@ -168,6 +175,20 @@ if (import.meta.vitest) {
 					[bar("2026-01-15", 1000)],
 				),
 			).toBeNull();
+		});
+	});
+
+	describe("avgCost", () => {
+		it("数量で加重する", () => {
+			expect(
+				avgCost([
+					{ cost: 1000, qty: 30 },
+					{ cost: 2000, qty: 10 },
+				]),
+			).toBe(1250);
+		});
+		it("ロットが無ければ null", () => {
+			expect(avgCost([])).toBeNull();
 		});
 	});
 
